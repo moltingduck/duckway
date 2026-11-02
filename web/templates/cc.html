@@ -119,7 +119,7 @@
   </div>
 </div>
 
-<script nonce="{{.CSPNonce}}">
+<script nonce="{{$.CSPNonce}}">
 var allKeys = [];
 var allServices = [];
 var allClients = [];
@@ -230,7 +230,7 @@ function loadCCs() {
       try {
         var cfg = JSON.parse(c.config || '{}');
         cfgPreview = Object.keys(cfg).filter(function(k){return k !== 'agent_options';})
-          .map(function(k){return k+'='+escapeShort(cfg[k]);}).join(', ');
+          .map(function(k){return k+'='+truncate(cfg[k]);}).join(', ');
       } catch(e) { cfgPreview = '(invalid)'; }
       var tr = document.createElement('tr');
       var needsKey = ccNeedsKey(c);
@@ -243,7 +243,7 @@ function loadCCs() {
   });
 }
 
-function escapeShort(v) {
+function truncate(v) {
   v = String(v||'');
   if (v.length > 20) v = v.substring(0,16)+'…';
   return v;

@@ -181,7 +181,7 @@
 
   <!-- Collapsible: API Keys -->
   <div class="mt-1">
-    <div class="flex-between" style="cursor:pointer;padding:0.375rem 0" data-action="toggleSection" data-target="keys-section-{{.ID}}">
+    <div class="flex-between" style="cursor:pointer;padding:0.375rem 0" data-action="toggleSection" data-target="keys-section-{{.ID}}" role="button" tabindex="0" aria-expanded="false" aria-controls="keys-section-{{.ID}}">
       <strong class="text-sm">API Keys &amp; Phantom Tokens <span class="toggle-arrow">&#9654;</span></strong>
     </div>
     <div id="keys-section-{{.ID}}" style="display:none">
@@ -194,7 +194,7 @@
 
   <!-- Collapsible: Canary Tokens -->
   <div>
-    <div class="flex-between" style="cursor:pointer;padding:0.375rem 0" data-action="toggleSection" data-target="canary-section-{{.ID}}">
+    <div class="flex-between" style="cursor:pointer;padding:0.375rem 0" data-action="toggleSection" data-target="canary-section-{{.ID}}" role="button" tabindex="0" aria-expanded="false" aria-controls="canary-section-{{.ID}}">
       <strong class="text-sm">Canary Tokens {{if not .CanaryEnabled}}<span class="badge badge-gray">Disabled</span>{{end}} <span class="toggle-arrow">&#9654;</span></strong>
     </div>
     <div id="canary-section-{{.ID}}" style="display:none">
@@ -505,7 +505,7 @@ sudo loginctl enable-linger "$USER"</code></pre>
   </div>
 </div>
 
-<script nonce="{{.CSPNonce}}">
+<script nonce="{{$.CSPNonce}}">
 var currentClient = null;
 
 DW.actions.openClientDetail = function(el) { openClientDetail(el.dataset.id); };
@@ -691,7 +691,7 @@ document.getElementById('client-edit-form').addEventListener('submit', function(
 });
 </script>
 
-<script nonce="{{.CSPNonce}}">
+<script nonce="{{$.CSPNonce}}">
 var apiKeys = [
   {{range .Keys}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}", isRefreshable:{{.IsRefreshable}}, isMintable:{{.IsMintable}}},{{end}}
 ];
@@ -899,10 +899,12 @@ function toggleSection(id, header) {
   var arrow = header.querySelector('.toggle-arrow');
   if (el.style.display === 'none') {
     el.style.display = 'block';
-    arrow.textContent = '\u25BC';
+    header.setAttribute('aria-expanded', 'true');
+    if (arrow) arrow.textContent = '\u25BC';
   } else {
     el.style.display = 'none';
-    arrow.textContent = '\u25B6';
+    header.setAttribute('aria-expanded', 'false');
+    if (arrow) arrow.textContent = '\u25B6';
   }
 }
 

@@ -33,14 +33,14 @@ func TestCSPNonceUniqueAndHeader(t *testing.T) {
 }
 
 func TestCSPDefaultsToEnforcing(t *testing.T) {
-	if !EnforceCSP {
+	if !EnforceCSPEnabled() {
 		t.Fatal("EnforceCSP must default to true")
 	}
 }
 
 func TestCSPReportOnlyToggle(t *testing.T) {
-	EnforceCSP = false
-	t.Cleanup(func() { EnforceCSP = true })
+	SetEnforceCSP(false)
+	t.Cleanup(func() { SetEnforceCSP(true) })
 	rec := httptest.NewRecorder()
 	CSP(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Header().Get("Content-Security-Policy-Report-Only") == "" || rec.Header().Get("Content-Security-Policy") != "" {

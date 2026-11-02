@@ -2,7 +2,7 @@
 <style>
 .usage-tabs { display:flex; gap:.5rem; margin-bottom:1rem; }
 .usage-tab { border:1px solid var(--border); background:var(--bg-input); color:var(--text-muted); border-radius:var(--radius); padding:.45rem .75rem; cursor:pointer; font-size:.8125rem; }
-.usage-tab.active { color:var(--text); border-color:var(--accent); background:rgba(99,102,241,.12); }
+.usage-tab.active { color:var(--text); border-color:var(--accent); background:color-mix(in srgb, var(--accent) 14%, transparent); }
 .usage-toolbar { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin-bottom:1rem; }
 .usage-toolbar select { width:auto; min-width:9rem; }
 .usage-toolbar input { max-width:18rem; }
@@ -12,8 +12,8 @@
 .usage-section { display:none; }
 .usage-section.active { display:block; }
 .usage-table-wrap { overflow-x:auto; }
-.usage-expand-row { background:rgba(255,255,255,.015); }
-.usage-progress { width:110px; height:7px; border-radius:4px; background:#252830; overflow:hidden; display:inline-block; vertical-align:middle; margin-right:.4rem; }
+.usage-expand-row { background:color-mix(in srgb, var(--ink) 3%, transparent); }
+.usage-progress { width:110px; height:7px; border-radius:4px; background:var(--raised); overflow:hidden; display:inline-block; vertical-align:middle; margin-right:.4rem; }
 .usage-progress > span { display:block; height:100%; border-radius:4px; }
 .usage-status { white-space:nowrap; }
 .usage-key-table { margin:.5rem 0 .75rem 2rem; width:calc(100% - 2rem); }
@@ -22,7 +22,7 @@
 .usage-detail-toolbar .form-group { margin:0; }
 .usage-range, .usage-heatmap-toggle { display:flex; flex-wrap:wrap; gap:.25rem; }
 .usage-range button, .usage-heatmap-toggle button { min-height:2.25rem; }
-.usage-range button.active, .usage-heatmap-toggle button.active { border-color:var(--accent); color:var(--text); background:rgba(99,102,241,.12); }
+.usage-range button.active, .usage-heatmap-toggle button.active { border-color:var(--accent); color:var(--text); background:color-mix(in srgb, var(--accent) 14%, transparent); }
 .usage-detail-state { padding:1rem 0; color:var(--text-muted); }
 .usage-client-picker { display:flex; flex-wrap:wrap; gap:.5rem 1rem; margin:.25rem 0 1rem; }
 .usage-client-picker label { display:inline-flex; align-items:center; gap:.4rem; font-size:.8125rem; cursor:pointer; }
@@ -166,7 +166,7 @@
   </div>
 </div>
 
-<script nonce="{{.CSPNonce}}">
+<script nonce="{{$.CSPNonce}}">
 var clientRows = [];
 var usageDetailDays = 3;
 var usageDetailData = null;
@@ -267,10 +267,10 @@ function renderClients() {
     return;
   }
   DW.setHTML(tb, DW.html`${rows.map(function(c){
-    var id = escapeAttr(c.client_id || c.client_name || 'unknown');
+    var id = slugId(c.client_id || c.client_name || 'unknown');
     var services = (c.services || []).map(function(s){ return DW.html`<span class="badge badge-blue">${s}</span>`; });
     var servicesHTML = services.reduce(function(acc, x, i){ return i === 0 ? x : DW.html`${acc} ${x}`; }, '');
-    return DW.html`<tr data-action="toggleClient" data-id="${id}" style="cursor:pointer">
+    return DW.html`<tr data-action="toggleClient" data-id="${id}" role="button" tabindex="0" aria-expanded="false" aria-controls="${'client-detail-' + id}" style="cursor:pointer">
       <td><span class="usage-caret" id="${'caret-client-' + id}">▸</span><strong>${c.client_name || c.client_id || '(unknown)'}</strong></td>
       <td>${fmtInt(c.total_tokens)}</td>
       <td>${fmtInt(c.requests)}</td>
@@ -313,11 +313,13 @@ function renderClientKeys(keys) {
 }
 
 function toggleClient(id) {
+  var trigger = document.querySelector('tr[data-action="toggleClient"][data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
   var row = document.getElementById('client-detail-' + id);
   var caret = document.getElementById('caret-client-' + id);
   if (!row) return;
   var open = row.style.display === 'none';
   row.style.display = open ? 'table-row' : 'none';
+  if (trigger) trigger.setAttribute('aria-expanded', String(open));
   if (caret) caret.textContent = open ? '▾' : '▸';
 }
 
@@ -357,11 +359,11 @@ function loadUsageDetailTargets(keys) {
     .then(function(groups){
       var select = document.getElementById('usage-detail-target');
       var keyOptions = (keys || []).map(function(k){
-        return DW.html`<option value="${'key:' + escapeAttr(k.key_id)}">${k.key_name} · ${k.service || ''}</option>`;
+        return DW.html`<option value="${'key:' + slugId(k.key_id)}">${k.key_name} · ${k.service || ''}</option>`;
       });
       var groupRows = Array.isArray(groups) ? groups : (groups.groups || []);
       var groupOptions = groupRows.map(function(g){
-        return DW.html`<option value="${'group:' + escapeAttr(g.id)}">${g.name} · group</option>`;
+        return DW.html`<option value="${'group:' + slugId(g.id)}">${g.name} · group</option>`;
       });
       DW.setHTML(select, DW.html`<option value="">Select a key or group...</option>${keyOptions.length ? DW.html`<optgroup label="Keys">${keyOptions}</optgroup>` : ''}${groupOptions.length ? DW.html`<optgroup label="Key groups">${groupOptions}</optgroup>` : ''}`);
       var query = new URLSearchParams(window.location.search);
@@ -592,7 +594,7 @@ function loadSessions() {
     });
 }
 
-function escapeAttr(s) {
+function slugId(s) {
   return String(s).replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 

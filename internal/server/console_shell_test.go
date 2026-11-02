@@ -113,3 +113,54 @@ func TestAdminShellShowsPendingApprovalsBadge(t *testing.T) {
 		t.Fatalf("badge for 2 pending not rendered")
 	}
 }
+
+// TestEveryAdminPageRendersWithNonceAndShell executes every admin page through
+// the real render path (seeded with a key group that has members, so the
+// detail template runs with a non-pageData dot) and asserts the template
+// executed fully: no truncation, shell.js present, every script nonced.
+func TestEveryAdminPageRendersWithNonceAndShell(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	exec := func(q string, args ...interface{}) {
+		t.Helper()
+		if _, err := s.db.Exec(q, args...); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+	exec(`INSERT INTO services (id, name, display_name, upstream_url, host_pattern) VALUES ('svc-r', 'render-svc', 'Render', 'https://r.example', 'r.example')`)
+	exec(`INSERT INTO api_keys (id, service_id, name, key_encrypted) VALUES ('k-r1', 'svc-r', 'key one', 'x')`)
+	exec(`INSERT INTO api_keys (id, service_id, name, key_encrypted, usage_snapshot) VALUES ('k-r2', 'svc-r', 'key two', 'x', '{"tokens_remaining":5,"tokens_limit":10}')`)
+	g, err := queries.CreateKeyGroup(s.db, "render group", "d", "render-svc", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{"k-r1", "k-r2"} {
+		if err := queries.AddKeyToGroup(s.db, g.ID, id, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths := []string{
+		"/admin/", "/admin/services", "/admin/keys", "/admin/usage", "/admin/placeholders",
+		"/admin/clients", "/admin/client-updates", "/admin/groups", "/admin/key-groups",
+		"/admin/key-groups/" + g.ID, "/admin/key-suites", "/admin/approvals", "/admin/logs",
+		"/admin/notifications", "/admin/canary", "/admin/oauth", "/admin/cc", "/admin/onboarding",
+		"/admin/settings", "/admin/supply-chain", "/admin/docs",
+	}
+	for _, p := range paths {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: status %d: %.200s", p, rec.Code, rec.Body.String())
+			continue
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "</html>") {
+			t.Errorf("%s: page truncated (template execution error)", p)
+		}
+		if !strings.Contains(body, `src="/static/shell.js"`) {
+			t.Errorf("%s: shell.js script missing", p)
+		}
+		checkPage(t, rec)
+	}
+}

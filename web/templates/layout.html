@@ -7,13 +7,13 @@
   <meta name="color-scheme" content="dark light">
   <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"selfRequestsOnly":true}'>
   <title>{{.Title}} — Duckway</title>
-  <script nonce="{{.CSPNonce}}">(function(){var m='auto';try{var v=localStorage.getItem('dw-theme');if(v==='light'||v==='dark')m=v}catch(e){}document.documentElement.setAttribute('data-theme',m)})();</script>
+  <script nonce="{{$.CSPNonce}}">(function(){var m='auto';try{var v=localStorage.getItem('dw-theme');if(v==='light'||v==='dark')m=v}catch(e){}document.documentElement.setAttribute('data-theme',m)})();</script>
   <link rel="stylesheet" href="/static/style.css">
-  <script nonce="{{.CSPNonce}}" src="/static/dw.js"></script>
-  <script nonce="{{.CSPNonce}}" src="/static/htmx.min.js"></script>
-  <script nonce="{{.CSPNonce}}" src="/static/search.js"></script>
-  <script nonce="{{.CSPNonce}}" src="/static/acl-preview.js"></script>
-  <script nonce="{{.CSPNonce}}" src="/static/usage-snapshot.js"></script>
+  <script nonce="{{$.CSPNonce}}" src="/static/dw.js"></script>
+  <script nonce="{{$.CSPNonce}}" src="/static/htmx.min.js"></script>
+  <script nonce="{{$.CSPNonce}}" src="/static/search.js"></script>
+  <script nonce="{{$.CSPNonce}}" src="/static/acl-preview.js"></script>
+  <script nonce="{{$.CSPNonce}}" src="/static/usage-snapshot.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -80,7 +80,7 @@
     </div>
   </div>
   <div id="toast" aria-live="polite" aria-atomic="false"></div>
-  <script nonce="{{.CSPNonce}}" src="/static/shell.js"></script>
+  <script nonce="{{$.CSPNonce}}" src="/static/shell.js"></script>
 </body>
 </html>
 {{end}}

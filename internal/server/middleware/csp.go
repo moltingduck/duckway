@@ -6,15 +6,21 @@ import (
 	"encoding/base64"
 	"net/http"
 	"strings"
+	"sync/atomic"
 )
 
-// EnforceCSP selects the CSP header name used by the CSP middleware.
-//
-// When false it sends Content-Security-Policy-Report-Only so
-// templates that still carry inline scripts or handlers keep working while
-// they are converted. It defaults to true (enforcing Content-Security-Policy). Set it before
-// the server starts serving; it is read on every request without locking.
-var EnforceCSP = true
+var enforceCSP atomic.Bool
+
+func init() { enforceCSP.Store(true) }
+
+// SetEnforceCSP selects the CSP header name used by the CSP middleware: true
+// (the default) sends the enforcing Content-Security-Policy, false sends
+// Content-Security-Policy-Report-Only. It is safe to call concurrently with
+// request handling.
+func SetEnforceCSP(enforce bool) { enforceCSP.Store(enforce) }
+
+// EnforceCSPEnabled reports whether the enforcing header is in use.
+func EnforceCSPEnabled() bool { return enforceCSP.Load() }
 
 type cspNonceKey struct{}
 
@@ -58,7 +64,7 @@ func CSP(next http.Handler) http.Handler {
 			return
 		}
 		name := "Content-Security-Policy-Report-Only"
-		if EnforceCSP {
+		if enforceCSP.Load() {
 			name = "Content-Security-Policy"
 		}
 		w.Header().Set(name, CSPHeaderValue(nonce))

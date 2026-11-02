@@ -16,7 +16,7 @@
 
 <!-- Settings (collapsible) -->
 <div class="card mt-2">
-  <div class="flex-between" style="cursor:pointer" data-action="toggleSection" data-target="settings-body">
+  <div class="flex-between" style="cursor:pointer" data-action="toggleSection" data-target="settings-body" role="button" tabindex="0" aria-expanded="false" aria-controls="settings-body">
     <h3 style="margin:0">Settings <span class="toggle-arrow">&#9654;</span></h3>
   </div>
   <div id="settings-body" style="display:none;margin-top:1rem">
@@ -62,7 +62,7 @@
 
 <!-- How It Works (collapsible) -->
 <div class="card mt-2">
-  <div class="flex-between" style="cursor:pointer" data-action="toggleSection" data-target="howitworks-body">
+  <div class="flex-between" style="cursor:pointer" data-action="toggleSection" data-target="howitworks-body" role="button" tabindex="0" aria-expanded="false" aria-controls="howitworks-body">
     <h3 style="margin:0">How It Works <span class="toggle-arrow">&#9654;</span></h3>
   </div>
   <div id="howitworks-body" style="display:none;margin-top:1rem">
@@ -75,16 +75,18 @@
   </div>
 </div>
 
-<script nonce="{{.CSPNonce}}">
+<script nonce="{{$.CSPNonce}}">
 DW.actions.loadClientCanaries = function() { loadClientCanaries(); };
 DW.actions.toggleSection = function(header) {
   var el = document.getElementById(header.dataset.target);
   var arrow = header.querySelector('.toggle-arrow');
   if (el.style.display === 'none') {
     el.style.display = '';
+    header.setAttribute('aria-expanded', 'true');
     if (arrow) arrow.textContent = '\u25BC';
   } else {
     el.style.display = 'none';
+    header.setAttribute('aria-expanded', 'false');
     if (arrow) arrow.textContent = '\u25B6';
   }
 };

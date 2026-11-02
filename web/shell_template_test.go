@@ -20,7 +20,7 @@ func TestShellTemplatesHaveNoInlineHandlersAndNonceEveryScript(t *testing.T) {
 			t.Errorf("%s contains inline handler %q", name, m)
 		}
 		for _, tag := range scriptTag.FindAllString(src, -1) {
-			if !strings.Contains(tag, `nonce="{{.CSPNonce}}"`) {
+			if !strings.Contains(tag, `nonce="{{$.CSPNonce}}"`) {
 				t.Errorf("%s script tag lacks nonce: %s", name, tag)
 			}
 		}

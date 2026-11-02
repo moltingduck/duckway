@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark light">
   <title>Login — Duckway</title>
-  <script nonce="{{.CSPNonce}}">(function(){var m='auto';try{var v=localStorage.getItem('dw-theme');if(v==='light'||v==='dark')m=v}catch(e){}document.documentElement.setAttribute('data-theme',m)})();</script>
+  <script nonce="{{$.CSPNonce}}">(function(){var m='auto';try{var v=localStorage.getItem('dw-theme');if(v==='light'||v==='dark')m=v}catch(e){}document.documentElement.setAttribute('data-theme',m)})();</script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="login-page">
@@ -24,6 +24,6 @@
       <button type="submit" class="btn btn-primary login-submit">Sign In</button>
     </form>
   </main>
-  <script nonce="{{.CSPNonce}}" src="/static/login.js"></script>
+  <script nonce="{{$.CSPNonce}}" src="/static/login.js"></script>
 </body>
 </html>

@@ -14,7 +14,10 @@ var (
 	ratchetPropRE    = regexp.MustCompile(`(?i)\.on(?:click|change|input|submit|keydown|keyup|keypress|load|error|focus|blur|mouse[a-z]+|dblclick)\s*=`)
 	ratchetHxOnRE    = regexp.MustCompile(`(?i)\bhx-on\b|\bhx-on[:\-:]|\bdata-hx-on`)
 	ratchetInnerRE   = regexp.MustCompile(`\.innerHTML\b|\.outerHTML\s*=|insertAdjacentHTML`)
-	ratchetJSURLRE   = regexp.MustCompile(`(?i)javascript\s*:`)
+	ratchetJSURLRE   = regexp.MustCompile(`(?i)\b(?:href|src|action|formaction)\s*=\s*["']?\s*javascript\s*:`)
+	// DW.raw( must take a plain string literal: no ${} template, identifier or concatenation.
+	ratchetRawCallRE = regexp.MustCompile(`DW\.raw\(`)
+	ratchetRawOKRE   = regexp.MustCompile(`^DW\.raw\(\s*(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*")(?:\s*\+\s*(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"))*\s*\)`)
 	ratchetEvalRE    = regexp.MustCompile(`\beval\s*\(|\bnew\s+Function\b|\bFunction\s*\(|setTimeout\s*\(\s*["'` + "`" + `]|setInterval\s*\(\s*["'` + "`" + `]`)
 	ratchetScriptRE  = regexp.MustCompile(`(?i)<script\b[^>]*>`)
 )
@@ -93,7 +96,7 @@ func TestCSPRatchetEveryScriptTagHasNonce(t *testing.T) {
 			continue
 		}
 		for _, tag := range ratchetScriptRE.FindAllString(src, -1) {
-			if !strings.Contains(tag, `nonce="{{.CSPNonce}}"`) {
+			if !strings.Contains(tag, `nonce="{{$.CSPNonce}}"`) {
 				t.Errorf("%s: script tag without nonce: %s", name, tag)
 			}
 		}
@@ -121,8 +124,8 @@ func TestCSPRatchetPatternsDetectViolations(t *testing.T) {
 		ratchetHandlerRE: {`<button onclick="x()">`, `'<a onchange=\"f\">'`, `<input\n oninput='y'>`},
 		ratchetPropRE:    {`btn.onclick = f;`},
 		ratchetHxOnRE:    {`<div hx-on:click="x">`, `<div hx-on::after-request="x">`},
-		ratchetInnerRE:   {`el.innerHTML = x`},
-		ratchetJSURLRE:   {`<a href="javascript:void(0)">`},
+		ratchetInnerRE:   {`el.innerHTML = x`, `el.outerHTML = x`, `el.insertAdjacentHTML('beforeend', x)`},
+		ratchetJSURLRE:   {`<a href="javascript:void(0)">`, `<form action=javascript:x()>`, `<img src='javascript:x'>`},
 		ratchetEvalRE:    {`eval(x)`, `new Function("a")`},
 	}
 	for re, samples := range bad {
@@ -135,6 +138,46 @@ func TestCSPRatchetPatternsDetectViolations(t *testing.T) {
 	for _, ok := range []string{`<div data-on-click="x">`, `data-onchange="x"`, `<button data-action="go">`} {
 		if ratchetHandlerRE.MatchString(ok) {
 			t.Errorf("handler pattern flagged benign %q", ok)
+		}
+	}
+}
+
+func TestCSPRatchetDWRawTakesOnlyStringLiterals(t *testing.T) {
+	for name, src := range ratchetTargets(t) {
+		for _, loc := range ratchetRawCallRE.FindAllStringIndex(src, -1) {
+			if !ratchetRawOKRE.MatchString(src[loc[0]:]) {
+				line := 1 + strings.Count(src[:loc[0]], "\n")
+				end := loc[0] + 80
+				if end > len(src) {
+					end = len(src)
+				}
+				t.Errorf("%s:%d: DW.raw argument must be string literal(s) only: %s", name, line, strings.SplitN(src[loc[0]:end], "\n", 2)[0])
+			}
+		}
+	}
+}
+
+func TestCSPRatchetRawPatternSamples(t *testing.T) {
+	for _, ok := range []string{`DW.raw('<b>x</b>')`, `DW.raw("a" + 'b')`, "DW.raw('x' +\n  'y')"} {
+		if !ratchetRawOKRE.MatchString(ok) {
+			t.Errorf("literal flagged: %q", ok)
+		}
+	}
+	for _, bad := range []string{"DW.raw(`<b>${x}</b>`)", `DW.raw(name)`, `DW.raw('a' + name)`, `DW.raw(x + 'a')`} {
+		if ratchetRawOKRE.MatchString(bad) {
+			t.Errorf("non-literal accepted: %q", bad)
+		}
+	}
+}
+
+func TestCSPRatchetFleetTemplatesStillCarryScripts(t *testing.T) {
+	for _, name := range []string{"clients.html", "client_updates.html", "onboarding.html", "cc.html", "approvals.html", "notifications.html"} {
+		b, err := Content.ReadFile("templates/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ratchetScriptRE.Match(b) {
+			t.Errorf("%s has no script tag; ratchet coverage list is stale", name)
 		}
 	}
 }

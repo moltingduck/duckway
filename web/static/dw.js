@@ -19,6 +19,7 @@
  *                click on an <a data-action> also gets preventDefault.
  *                Built-ins: data-action="modal-open" data-target="#id"; data-action="modal-close"
  *                (closest .modal-backdrop); clicking a .modal-backdrop itself closes it.
+ *   Keyboard:    elements with data-action AND role="button" (tabindex=0) activate on Enter/Space.
  *   Toast:       DW.toast('Saved', 'success'|'error'|''); window.showToast is an alias.
  *   Modals:      DW.modal.open(elOrSelector) / DW.modal.close(elOrSelector). Works on .modal-backdrop
  *                (display toggled). Esc closes the topmost, Tab is trapped, focus returns to the
@@ -82,18 +83,28 @@
   }
   EVENTS.forEach(([type, attr]) => document.addEventListener(type, (e) => dispatch(type, attr, e)));
 
+  /* Keyboard activation for non-native controls: <tr|div|span data-action role="button" tabindex="0">. */
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const t = e.target;
+    if (!(t instanceof Element) || !t.matches('[data-action][role="button"]')) return;
+    e.preventDefault();
+    dispatch('click', 'data-action', e);
+  });
+
   /* ---- toast ---- */
   function toast(msg, type) {
     let box = document.getElementById('toast');
     if (!box) {
       box = document.createElement('div');
       box.id = 'toast';
+      box.setAttribute('role', 'status');
       box.setAttribute('aria-live', 'polite');
       document.body.appendChild(box);
     }
     const el = document.createElement('div');
     el.className = 'toast-msg ' + (type || '');
-    if (type === 'error') el.setAttribute('role', 'alert');
+    // announced once via the polite live region; no per-message role=alert
     el.textContent = msg;
     box.appendChild(el);
     setTimeout(() => el.remove(), 4000);
@@ -112,12 +123,42 @@
   function isShown(b) { return b.isConnected && b.style.display !== 'none' && !b.hidden && getComputedStyle(b).display !== 'none'; }
   function focusables(b) { return Array.from(b.querySelectorAll(FOCUSABLE)).filter((x) => x.offsetParent !== null || x === document.activeElement); }
 
+  let uidN = 0;
+  function uid(prefix) { uidN += 1; return prefix + '-' + uidN; }
+
+  /* Associate <label> (without for) with the single control in its .form-group, when unambiguous. */
+  const CONTROL = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]),select,textarea';
+  function labelControls(root) {
+    root.querySelectorAll('.form-group > label:not([for])').forEach((l) => {
+      if (l.querySelector(CONTROL)) return; // implicit association
+      const controls = l.parentElement.querySelectorAll(CONTROL);
+      if (controls.length !== 1) return;
+      const c = controls[0];
+      if (!c.id) c.id = uid('dw-field');
+      if (document.querySelectorAll('[id="' + c.id + '"]').length > 1) return;
+      l.setAttribute('for', c.id);
+    });
+  }
+  document.addEventListener('DOMContentLoaded', () => labelControls(document));
+  window.addEventListener('load', () => labelControls(document));
+
+  let loaded = document.readyState === 'complete';
+  window.addEventListener('load', () => { loaded = true; });
   function activate(b) {
     if (state.has(b)) return;
     state.set(b, { opener: document.activeElement });
     stack.push(b);
     const dlg = b.querySelector('.modal');
-    if (dlg) { dlg.setAttribute('role', 'dialog'); dlg.setAttribute('aria-modal', 'true'); if (!dlg.hasAttribute('tabindex')) dlg.setAttribute('tabindex', '-1'); }
+    if (dlg) {
+      dlg.setAttribute('role', 'dialog'); dlg.setAttribute('aria-modal', 'true');
+      if (!dlg.hasAttribute('tabindex')) dlg.setAttribute('tabindex', '-1');
+      if (!dlg.hasAttribute('aria-labelledby') && !dlg.hasAttribute('aria-label')) {
+        const h = dlg.querySelector('h2,h3');
+        if (h) { if (!h.id) h.id = uid('dw-modal-title'); dlg.setAttribute('aria-labelledby', h.id); }
+      }
+      labelControls(dlg);
+    }
+    if (!loaded) return; // visible at page load: track for Esc/Tab but do not steal focus
     const f = focusables(b);
     const target = b.querySelector('[autofocus]') || f[0] || dlg || b;
     if (target && target.focus) target.focus();
@@ -150,21 +191,21 @@
 
   function sync(b) { if (isShown(b)) activate(b); else deactivate(b); }
 
+  function eachBackdrop(n, fn) {
+    if (n.nodeType !== 1) return; // skip text/comment nodes
+    if (n.classList.contains('modal-backdrop')) fn(n);
+    if (!n.firstElementChild) return; // childless: nothing nested
+    const found = n.getElementsByClassName('modal-backdrop');
+    for (let k = 0; k < found.length; k++) fn(found[k]);
+  }
+
   new MutationObserver((muts) => {
     for (const m of muts) {
       if (m.type === 'attributes') {
         if (m.target.classList && m.target.classList.contains('modal-backdrop')) sync(m.target);
       } else {
-        m.addedNodes.forEach((n) => {
-          if (n.nodeType !== 1) return;
-          if (n.classList.contains('modal-backdrop')) sync(n);
-          n.querySelectorAll && n.querySelectorAll('.modal-backdrop').forEach(sync);
-        });
-        m.removedNodes.forEach((n) => {
-          if (n.nodeType !== 1) return;
-          if (state.has(n)) deactivate(n);
-          n.querySelectorAll && n.querySelectorAll('.modal-backdrop').forEach((x) => { if (state.has(x)) deactivate(x); });
-        });
+        m.addedNodes.forEach((n) => eachBackdrop(n, sync));
+        m.removedNodes.forEach((n) => eachBackdrop(n, (x) => { if (state.has(x)) deactivate(x); }));
       }
     }
   }).observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'hidden'], childList: true, subtree: true });

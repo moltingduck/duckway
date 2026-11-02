@@ -44,7 +44,7 @@
         <td style="width:80px">
           <div style="display:flex;align-items:center;gap:.25rem">
             <input type="number" value="{{.Position}}" min="0" style="width:52px;padding:2px 4px"
-                   data-on-change="updatePosition" data-group-id="{{$.ID}}" data-key-id="{{.APIKeyID}}">
+                   data-on-change="updatePosition" data-group-id="{{.GroupID}}" data-key-id="{{.APIKeyID}}">
           </div>
         </td>
         <td>
@@ -79,7 +79,7 @@
           {{end}}
         </td>
         <td>
-          <button class="btn btn-sm btn-danger" data-action="removeMember" data-group-id="{{$.ID}}" data-key-id="{{.APIKeyID}}">Remove</button>
+          <button class="btn btn-sm btn-danger" data-action="removeMember" data-group-id="{{.GroupID}}" data-key-id="{{.APIKeyID}}">Remove</button>
         </td>
       </tr>
       {{end}}
@@ -135,7 +135,7 @@
   </div>
 </div>
 
-<script nonce="{{.CSPNonce}}">
+<script nonce="{{$.CSPNonce}}">
 const GROUP_ID = document.getElementById('strategy-desc').dataset.groupId;
 const STRATEGY = document.getElementById('strategy-desc').dataset.strategy;
 

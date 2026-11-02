@@ -484,7 +484,9 @@ func (h *AdminHandler) RejectAction(w http.ResponseWriter, r *http.Request) {
 func (h *AdminHandler) render(w http.ResponseWriter, r *http.Request, page string, data pageData) {
 	data.CSPNonce = middleware.CSPNonce(r.Context())
 	if h.approvals != nil {
-		if n, err := h.approvals.CountPending(); err == nil {
+		if n, err := h.approvals.CountPending(); err != nil {
+			log.Printf("admin: count pending approvals for nav badge: %v", err)
+		} else {
 			data.PendingApprovals = n
 		}
 	}

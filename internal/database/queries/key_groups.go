@@ -145,13 +145,13 @@ func GetKeyGroupWithMembers(db *sql.DB, groupID string) (*models.KeyGroupWithMem
 
 	rows, err := db.Query(`
 		SELECT m.api_key_id, k.name, m.position, m.exhausted_until, m.last_used_at,
-		       json_extract(k.usage_snapshot, '$.tokens_remaining'),
-		       json_extract(k.usage_snapshot, '$.tokens_limit'),
-		       json_extract(k.usage_snapshot, '$.requests_remaining'),
-		       json_extract(k.usage_snapshot, '$.requests_limit'),
-		       json_extract(k.usage_snapshot, '$.reset_at'),
+		       json_extract(NULLIF(k.usage_snapshot, ''), '$.tokens_remaining'),
+		       json_extract(NULLIF(k.usage_snapshot, ''), '$.tokens_limit'),
+		       json_extract(NULLIF(k.usage_snapshot, ''), '$.requests_remaining'),
+		       json_extract(NULLIF(k.usage_snapshot, ''), '$.requests_limit'),
+		       json_extract(NULLIF(k.usage_snapshot, ''), '$.reset_at'),
 		       (SELECT COUNT(*) FROM placeholder_keys p WHERE p.key_group_id = m.group_id AND p.api_key_id = m.api_key_id),
-		       COALESCE(CAST(json_extract(k.usage_snapshot, '$.tokens_remaining') AS REAL), 9999999999.0)
+		       COALESCE(CAST(json_extract(NULLIF(k.usage_snapshot, ''), '$.tokens_remaining') AS REAL), 9999999999.0)
 		         / MAX(CAST((SELECT COUNT(*) FROM placeholder_keys p WHERE p.key_group_id = m.group_id AND p.api_key_id = m.api_key_id) AS REAL), 1.0) AS score
 		FROM key_group_members m
 		JOIN api_keys k ON k.id = m.api_key_id
@@ -249,8 +249,8 @@ func SelectKeyForGroup(db *sql.DB, groupID, excludeKeyID, strategy string) (stri
 			  AND (? = '' OR m.api_key_id != ?)
 			GROUP BY m.api_key_id, m.position, k.usage_snapshot
 			ORDER BY
-			  CASE WHEN json_extract(k.usage_snapshot, '$.tokens_remaining') IS NULL THEN 0 ELSE 1 END ASC,
-			  COALESCE(CAST(json_extract(k.usage_snapshot, '$.tokens_remaining') AS REAL), 9999999999.0)
+			  CASE WHEN json_extract(NULLIF(k.usage_snapshot, ''), '$.tokens_remaining') IS NULL THEN 0 ELSE 1 END ASC,
+			  COALESCE(CAST(json_extract(NULLIF(k.usage_snapshot, ''), '$.tokens_remaining') AS REAL), 9999999999.0)
 			    / MAX(CAST(COUNT(p.id) AS REAL), 1.0) DESC,
 			  m.position ASC
 			LIMIT 1`

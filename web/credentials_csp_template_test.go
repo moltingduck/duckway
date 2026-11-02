@@ -6,59 +6,7 @@ import (
 	"testing"
 )
 
-var credentialsTemplates = []string{
-	"templates/services.html",
-	"templates/api_keys.html",
-	"templates/key_groups.html",
-	"templates/key_group_detail.html",
-	"templates/key_suites.html",
-	"templates/groups.html",
-	"templates/usage.html",
-	"templates/oauth.html",
-	"templates/placeholders.html",
-}
-
-var credentialsStatics = []string{
-	"static/acl-preview.js",
-	"static/usage-snapshot.js",
-}
-
-var (
-	credInlineHandlerRE = regexp.MustCompile(`(?i)\son[a-z]+\s*=`)
-	credHxOnRE          = regexp.MustCompile(`(?i)\bhx-on[:\w-]*\s*=`)
-	credInnerHTMLRE     = regexp.MustCompile(`\.innerHTML\b`)
-	credScriptTagRE     = regexp.MustCompile(`(?i)<script\b[^>]*>`)
-	credDynamicCodeRE   = regexp.MustCompile(`javascript:|\beval\(|new Function\(|setTimeout\(\s*['"` + "`" + `]`)
-)
-
-func TestCredentialsTemplatesAreCSPClean(t *testing.T) {
-	for _, name := range append(append([]string{}, credentialsTemplates...), credentialsStatics...) {
-		b, err := Content.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		src := string(b)
-		if m := credInlineHandlerRE.FindString(src); m != "" {
-			t.Errorf("%s contains inline event handler %q", name, m)
-		}
-		if m := credHxOnRE.FindString(src); m != "" {
-			t.Errorf("%s contains hx-on attribute %q", name, m)
-		}
-		if credInnerHTMLRE.MatchString(src) {
-			t.Errorf("%s writes .innerHTML (use DW.setHTML / textContent)", name)
-		}
-		if m := credDynamicCodeRE.FindString(src); m != "" {
-			t.Errorf("%s contains dynamic code construct %q", name, m)
-		}
-		if strings.HasSuffix(name, ".html") {
-			for _, tag := range credScriptTagRE.FindAllString(src, -1) {
-				if !strings.Contains(tag, `nonce="{{.CSPNonce}}"`) {
-					t.Errorf("%s script tag lacks nonce: %s", name, tag)
-				}
-			}
-		}
-	}
-}
+// Generic CSP checks (handlers, innerHTML, hx-on, eval, nonces) live in csp_ratchet_test.go.
 
 func TestCredentialsTemplatesEscapeServerValuesInMarkup(t *testing.T) {
 	read := func(name string) string {

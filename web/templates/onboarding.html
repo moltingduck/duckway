@@ -147,7 +147,7 @@
   <div class="card" style="text-align:center;padding:2rem">
     <div style="font-size:2.5rem;margin-bottom:1rem">✅</div>
     <h2 style="margin-bottom:1.5rem">Client onboarded</h2>
-    <div id="summary" style="text-align:left;display:inline-block;min-width:320px;max-width:480px;margin-bottom:1.5rem"></div>
+    <div id="summary" style="text-align:left;display:inline-block;min-width:min(320px,100%);max-width:480px;margin-bottom:1.5rem"></div>
     <div id="setup-commands" style="text-align:left;max-width:760px;margin:0 auto 1.5rem"></div>
     <div style="display:flex;gap:.75rem;justify-content:center">
       <a href="/admin/clients" class="btn btn-primary">View Clients</a>
@@ -156,7 +156,7 @@
   </div>
 </div>
 
-<script nonce="{{.CSPNonce}}">
+<script nonce="{{$.CSPNonce}}">
 var state = { clientID: null, clientName: null, clientToken: null, suiteID: null, suiteName: null, suiteEntries: [], ccID: null };
 var allSuites = [];
 var allServices = [];

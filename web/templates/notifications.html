@@ -121,7 +121,7 @@
   </div>
 </div>
 
-<script nonce="{{.CSPNonce}}">
+<script nonce="{{$.CSPNonce}}">
 var channels = [
   {{range .Channels}}{id:"{{.ID}}", type:"{{.ChannelType}}", config:{{.Config}} },{{end}}
 ];

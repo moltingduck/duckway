@@ -110,7 +110,7 @@
   </div>
 </div>
 
-<script nonce="{{.CSPNonce}}">
+<script nonce="{{$.CSPNonce}}">
 function formatTokens(remaining, limit) {
   if (remaining === null || remaining === undefined) return DW.html`<span class="text-muted">—</span>`;
   const pct = limit ? Math.round(remaining / limit * 100) : 0;

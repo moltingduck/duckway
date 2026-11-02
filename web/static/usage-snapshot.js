@@ -19,7 +19,7 @@ function renderUsageSnapshot(rawJSON) {
       var used = (m.limit > 0 && m.remaining >= 0) ? (m.limit - m.remaining) : 0;
       var pct = (m.limit > 0) ? Math.min(100, Math.round((used / m.limit) * 100)) : 0;
       var label = name.replace(/_/g, ' ');
-      var bar = DW.html`<div style="background:#0002;border-radius:3px;overflow:hidden;height:6px;margin-top:3px"><div style="height:100%;width:${pct}%;background:${barColor(pct)}"></div></div>`;
+      var bar = DW.html`<div style="background:var(--line);border-radius:3px;overflow:hidden;height:6px;margin-top:3px"><div style="height:100%;width:${pct}%;background:${barColor(pct)}"></div></div>`;
       return DW.html`<tr><td>${label}${bar}</td><td>${fmtNum(used)}</td><td>${fmtNum(m.remaining)}</td><td>${fmtNum(m.limit)}</td><td class="text-muted text-sm">${fmtReset(m.reset)}</td></tr>`;
     });
     metricsBlock = DW.html`<table class="mt-1" style="width:100%;font-size:0.85rem"><thead><tr><th>Metric</th><th>Used</th><th>Remaining</th><th>Limit</th><th>Reset</th></tr></thead><tbody>${rows}</tbody></table>`;
