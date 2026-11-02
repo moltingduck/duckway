@@ -10,6 +10,9 @@
  * - Pagination (default 15 per page, search across ALL data)
  */
 
+(function () {
+'use strict';
+
 function initSmartSearch(config) {
   // config: { inputId, targetId, type: 'table'|'cards',
   //           filters: [{key, label, values, col}], countId, perPage }
@@ -29,16 +32,14 @@ function initSmartSearch(config) {
   // Help icon with tooltip
   var helpIcon = document.createElement('span');
   helpIcon.className = 'search-help-icon';
-  helpIcon.innerHTML = '?';
+  helpIcon.textContent = '?';
   helpIcon.title = 'Filter syntax help';
 
   var tooltip = document.createElement('div');
   tooltip.className = 'search-tooltip';
-  tooltip.innerHTML = '<strong>Filter syntax:</strong><br>' +
-    config.filters.map(function(f) {
-      return '<code>' + f.key + ':value</code> ' + f.label;
-    }).join('<br>') +
-    '<br><br><span class="text-muted">Combine filters: <code>service:openai status:active</code><br>Quote spaces: <code>name:"my key"</code><br>Or just type to search all fields</span>';
+  DW.setHTML(tooltip, DW.html`<strong>Filter syntax:</strong><br>${config.filters.map(function(f, i) {
+    return DW.html`${i ? DW.raw('<br>') : ''}<code>${f.key}:value</code> ${f.label}`;
+  })}<br><br><span class="text-muted">Combine filters: <code>service:openai status:active</code><br>Quote spaces: <code>name:"my key"</code><br>Or just type to search all fields</span>`);
   tooltip.style.display = 'none';
 
   helpIcon.addEventListener('mouseenter', function() { tooltip.style.display = 'block'; });
@@ -53,10 +54,15 @@ function initSmartSearch(config) {
   helpWrap.appendChild(tooltip);
   input.parentNode.appendChild(helpWrap);
 
-  // Pagination container
+  // Pagination container (delegated click handling; no inline handlers)
   var pager = document.createElement('div');
   pager.className = 'pagination';
   pager.id = config.inputId + '-pager';
+  pager.addEventListener('click', function(e) {
+    var btn = e.target.closest ? e.target.closest('button[data-page]') : null;
+    if (!btn || !pager.contains(btn)) return;
+    goPage(config.inputId, parseInt(btn.dataset.page, 10));
+  });
   var target = document.getElementById(config.targetId);
   if (target && target.parentNode) {
     target.parentNode.insertBefore(pager, target.nextSibling);
@@ -108,7 +114,7 @@ function initSmartSearch(config) {
 }
 
 function showSuggestions(config, dropdown, query, input) {
-  dropdown.innerHTML = '';
+  dropdown.replaceChildren();
   var suggestions = getSuggestions(config, query);
 
   if (suggestions.length === 0) {
@@ -119,7 +125,7 @@ function showSuggestions(config, dropdown, query, input) {
   suggestions.forEach(function(s) {
     var item = document.createElement('div');
     item.className = 'search-suggest-item';
-    item.innerHTML = s.html;
+    DW.setHTML(item, s.html);
     item.dataset.insert = s.insert;
     item.addEventListener('click', function() {
       selectSuggestion(input, s.insert, config, dropdown);
@@ -141,7 +147,7 @@ function getSuggestions(config, query) {
     config.filters.forEach(function(f) {
       if (!lastPart || f.key.startsWith(lastPart.toLowerCase())) {
         suggestions.push({
-          html: '<strong>' + f.key + ':</strong> <span class="text-muted">' + f.label + '</span>',
+          html: DW.html`<strong>${f.key}:</strong> <span class="text-muted">${f.label}</span>`,
           insert: prefix + f.key + ':'
         });
       }
@@ -162,7 +168,7 @@ function getSuggestions(config, query) {
       var needsQuote = v.includes(' ');
       var insertVal = needsQuote ? '"' + v + '"' : v;
       suggestions.push({
-        html: '<code>' + filterKey + ':</code><strong>' + v + '</strong>',
+        html: DW.html`<code>${filterKey}:</code><strong>${v}</strong>`,
         insert: prefix + filterKey + ':' + insertVal
       });
     }
@@ -242,38 +248,38 @@ function renderPager(config, totalPages, total, query) {
   if (!pager) return;
 
   if (totalPages <= 1) {
-    pager.innerHTML = '';
+    pager.replaceChildren();
     return;
   }
 
-  var html = '';
+  var parts = [];
   // Prev
   if (config.currentPage > 1) {
-    html += '<button class="btn btn-sm" onclick="goPage(\'' + config.inputId + '\',' + (config.currentPage - 1) + ')">← Prev</button> ';
+    parts.push(DW.html`<button class="btn btn-sm" data-page="${config.currentPage - 1}">← Prev</button> `);
   }
 
   // Page numbers
   for (var i = 1; i <= totalPages; i++) {
     if (totalPages > 7 && i > 3 && i < totalPages - 2 && Math.abs(i - config.currentPage) > 1) {
-      if (html.slice(-3) !== '...') html += '<span class="text-muted text-sm"> ... </span>';
+      parts.push(DW.raw('<span class="text-muted text-sm"> ... </span>'));
       continue;
     }
     if (i === config.currentPage) {
-      html += '<button class="btn btn-sm btn-primary" disabled>' + i + '</button> ';
+      parts.push(DW.html`<button class="btn btn-sm btn-primary" disabled>${i}</button> `);
     } else {
-      html += '<button class="btn btn-sm" onclick="goPage(\'' + config.inputId + '\',' + i + ')">' + i + '</button> ';
+      parts.push(DW.html`<button class="btn btn-sm" data-page="${i}">${i}</button> `);
     }
   }
 
   // Next
   if (config.currentPage < totalPages) {
-    html += '<button class="btn btn-sm" onclick="goPage(\'' + config.inputId + '\',' + (config.currentPage + 1) + ')">Next →</button>';
+    parts.push(DW.html`<button class="btn btn-sm" data-page="${config.currentPage + 1}">Next →</button>`);
   }
 
-  pager.innerHTML = html;
+  DW.setHTML(pager, DW.html`${parts}`);
 }
 
-// Global page navigation (called from rendered buttons)
+// Page navigation (called from the delegated pager click handler)
 var _searchConfigs = {};
 function goPage(inputId, page) {
   var cfg = _searchConfigs[inputId];
@@ -289,6 +295,10 @@ initSmartSearch = function(config) {
   _searchConfigs[config.inputId] = config;
   _origInit(config);
 };
+
+// Expose only the public entry point; helpers (renderPager, goPage, ...) stay
+// private so they cannot clash with page-level functions of the same name.
+window.initSmartSearch = initSmartSearch;
 
 function parseQuery(query) {
   var filters = {};
@@ -323,3 +333,5 @@ function getFieldText(el, fieldKey, config) {
 
   return null;
 }
+
+})();

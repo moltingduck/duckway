@@ -17,7 +17,7 @@
       </div>
     </div>
     <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;white-space:nowrap">
-      <input type="checkbox" id="capture-toggle" onchange="onCaptureToggle()">
+      <input type="checkbox" id="capture-toggle" data-on-change="onCaptureToggle">
       <span id="capture-label" class="badge badge-gray">OFF</span>
     </label>
   </div>
@@ -31,32 +31,32 @@
   <div class="flex gap-md mb-1" style="flex-wrap:wrap">
     <div class="form-group" style="flex:1;min-width:150px">
       <label>Service</label>
-      <select id="f-service" onchange="onFilterChange()">
+      <select id="f-service" data-on-change="onFilterChange">
         <option value="">All services</option>
       </select>
     </div>
     <div class="form-group" style="flex:1;min-width:150px">
       <label>Client</label>
-      <select id="f-client" onchange="onFilterChange()">
+      <select id="f-client" data-on-change="onFilterChange">
         <option value="">All clients</option>
       </select>
     </div>
     <div class="form-group" style="flex:1;min-width:120px">
       <label>Key</label>
-      <select id="f-key" onchange="onFilterChange()">
+      <select id="f-key" data-on-change="onFilterChange">
         <option value="">All keys</option>
       </select>
     </div>
     <div class="form-group" style="flex:1;min-width:100px">
       <label>Method</label>
-      <select id="f-method" onchange="onFilterChange()">
+      <select id="f-method" data-on-change="onFilterChange">
         <option value="">All</option>
         <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
       </select>
     </div>
     <div class="form-group" style="flex:1;min-width:100px">
       <label>Status</label>
-      <select id="f-status" onchange="onFilterChange()">
+      <select id="f-status" data-on-change="onFilterChange">
         <option value="">All</option>
         <option value="ok">2xx OK</option>
         <option value="err">4xx/5xx Error</option>
@@ -64,20 +64,20 @@
     </div>
     <div class="form-group" style="flex:1;min-width:120px">
       <label>Search path</label>
-      <input type="text" id="f-path" placeholder="/v1/chat/..." oninput="onFilterChange()">
+      <input type="text" id="f-path" placeholder="/v1/chat/..." data-on-input="onFilterChange">
     </div>
   </div>
   <div class="flex-between mb-1">
     <span id="log-count" class="text-muted text-sm"></span>
     <div class="flex gap-sm" style="align-items:center">
       <label class="text-sm text-muted" for="f-perpage">Per page</label>
-      <select id="f-perpage" onchange="onPerPageChange()" style="width:auto">
+      <select id="f-perpage" data-on-change="onPerPageChange" style="width:auto">
         <option value="15">15</option>
         <option value="30">30</option>
         <option value="50">50</option>
         <option value="100">100</option>
       </select>
-      <button class="btn btn-sm" onclick="loadLogs()">Refresh</button>
+      <button class="btn btn-sm" data-action="loadLogs">Refresh</button>
     </div>
   </div>
 
@@ -98,7 +98,12 @@
   <div id="log-pager" class="pagination" style="display:none"></div>
 </div>
 
-<script>
+<script nonce="{{.CSPNonce}}">
+DW.actions.onCaptureToggle = function() { onCaptureToggle(); };
+DW.actions.onFilterChange = function() { onFilterChange(); };
+DW.actions.onPerPageChange = function() { onPerPageChange(); };
+DW.actions.loadLogs = function() { loadLogs(); };
+
 var allLogs = [];
 var currentPage = 1;
 var perPage = 15;
@@ -153,7 +158,10 @@ function buildFilterOptions() {
 function fillSelect(id, obj, allLabel) {
   var sel = document.getElementById(id);
   var current = sel.value;
-  sel.innerHTML = '<option value="">' + allLabel + '</option>';
+  var first = document.createElement('option');
+  first.value = '';
+  first.textContent = allLabel;
+  sel.replaceChildren(first);
   Object.keys(obj).sort().forEach(function(k) {
     var opt = document.createElement('option');
     opt.value = k;
@@ -197,11 +205,11 @@ function applyFilters() {
       : 'Showing ' + (start + 1) + '–' + end + ' of ' + filtered.length + ' (filtered from ' + allLogs.length + ')';
 
   var tbody = document.getElementById('log-body');
-  tbody.innerHTML = '';
+  tbody.replaceChildren();
 
   if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="text-muted">No matching requests.</td></tr>';
-    renderPager(filtered.length, totalPages);
+    DW.setHTML(tbody, DW.raw('<tr><td colspan="7" class="text-muted">No matching requests.</td></tr>'));
+    logRenderPager(filtered.length, totalPages);
     return;
   }
 
@@ -209,36 +217,30 @@ function applyFilters() {
     var tr = document.createElement('tr');
     tr.style.cursor = 'pointer';
     tr.title = 'Click to view details (only present if capture was ON when this request ran)';
-    tr.onclick = function() { openLogDetail(l); };
+    tr.addEventListener('click', function() { openLogDetail(l); });
     var statusBadge = '';
     if (l.status_code) {
       var cls = l.status_code < 400 ? 'badge-green' : 'badge-red';
-      statusBadge = '<span class="badge ' + cls + '">' + l.status_code + '</span>';
+      statusBadge = DW.html`<span class="badge ${cls}">${l.status_code}</span>`;
     }
-    tr.innerHTML =
-      '<td class="text-muted text-sm" style="white-space:nowrap">' + formatTime(l.created_at) + '</td>' +
-      '<td>' + (l.client_name || '<span class="text-muted">—</span>') + '</td>' +
-      '<td><span class="badge badge-blue">' + l.service_name + '</span></td>' +
-      '<td class="text-sm">' + (l.env_name || '<span class="text-muted">—</span>') + '</td>' +
-      '<td><span class="badge badge-blue">' + l.method + '</span></td>' +
-      '<td class="mono text-sm">' + l.path + '</td>' +
-      '<td>' + statusBadge + '</td>';
+    var dash = DW.raw('<span class="text-muted">—</span>');
+    DW.setHTML(tr, DW.html`<td class="text-muted text-sm" style="white-space:nowrap">${formatTime(l.created_at)}</td><td>${l.client_name || dash}</td><td><span class="badge badge-blue">${l.service_name}</span></td><td class="text-sm">${l.env_name || dash}</td><td><span class="badge badge-blue">${l.method}</span></td><td class="mono text-sm">${l.path}</td><td>${statusBadge}</td>`);
     tbody.appendChild(tr);
   });
 
-  renderPager(filtered.length, totalPages);
+  logRenderPager(filtered.length, totalPages);
 }
 
 // Render Prev / [pages] / Next pagination controls.
-function renderPager(filteredCount, totalPages) {
+function logRenderPager(filteredCount, totalPages) {
   var pager = document.getElementById('log-pager');
   if (totalPages <= 1) {
     pager.style.display = 'none';
-    pager.innerHTML = '';
+    pager.replaceChildren();
     return;
   }
   pager.style.display = '';
-  pager.innerHTML = '';
+  pager.replaceChildren();
 
   function makeBtn(label, page, opts) {
     opts = opts || {};
@@ -248,7 +250,7 @@ function renderPager(filteredCount, totalPages) {
     if (opts.disabled) {
       b.disabled = true;
     } else {
-      b.onclick = function() { goToPage(page); };
+      b.addEventListener('click', function() { goToPage(page); });
     }
     return b;
   }
@@ -284,7 +286,7 @@ function formatTime(ts) {
   // SQLite format: 2026-04-14 03:32:06
   var parts = ts.split(' ');
   if (parts.length === 2) {
-    return '<span class="text-muted">' + parts[0] + '</span> ' + parts[1];
+    return DW.html`<span class="text-muted">${parts[0]}</span> ${parts[1]}`;
   }
   return ts;
 }
@@ -323,19 +325,19 @@ function updateCaptureLabel(enabled) {
 
 function renderCaptureClientChips() {
   var box = document.getElementById('capture-clients-list');
-  box.innerHTML = '';
+  box.replaceChildren();
   allClients.forEach(function(c) {
     var on = captureClientIds.indexOf(c.id) >= 0;
     var chip = document.createElement('span');
     chip.className = 'badge ' + (on ? 'badge-blue' : 'badge-gray');
     chip.style.cssText = 'cursor:pointer;padding:0.25rem 0.5rem';
     chip.textContent = c.name;
-    chip.onclick = function() {
+    chip.addEventListener('click', function() {
       var i = captureClientIds.indexOf(c.id);
       if (i >= 0) captureClientIds.splice(i, 1);
       else captureClientIds.push(c.id);
       saveCaptureSettings();
-    };
+    });
     box.appendChild(chip);
   });
 }
@@ -394,29 +396,35 @@ function openLogDetail(l) {
     });
 }
 
-function renderLogDetail(l, d) {
-  var modal = document.getElementById('log-detail-modal');
+function ensureModal(id, maxWidth, extraStyle, bodyId) {
+  var modal = document.getElementById(id);
   if (!modal) {
     modal = document.createElement('div');
-    modal.id = 'log-detail-modal';
+    modal.id = id;
     modal.className = 'modal-backdrop';
-    modal.style.display = 'flex';
-    modal.onclick = function(e) {
-      if (e.target === modal) modal.style.display = 'none';
-    };
-    modal.innerHTML = '<div class="modal" style="max-width:900px;max-height:90vh;overflow-y:auto"><div id="log-detail-body"></div></div>';
+    modal.style.display = 'none';
+    var dlg = document.createElement('div');
+    dlg.className = 'modal';
+    dlg.style.cssText = 'max-width:' + maxWidth + (extraStyle ? ';' + extraStyle : '');
+    var inner = document.createElement('div');
+    inner.id = bodyId;
+    dlg.appendChild(inner);
+    modal.appendChild(dlg);
     document.body.appendChild(modal);
-  } else {
-    modal.style.display = 'flex';
   }
+  return modal;
+}
+
+function renderLogDetail(l, d) {
+  var modal = ensureModal('log-detail-modal', '900px', 'max-height:90vh;overflow-y:auto', 'log-detail-body');
 
   var body = modal.querySelector('#log-detail-body');
   var hasDetail = !!d;
   var statusBadge = l.status_code
-    ? '<span class="badge ' + (l.status_code < 400 ? 'badge-green' : 'badge-red') + '">' + l.status_code + '</span>'
+    ? DW.html`<span class="badge ${l.status_code < 400 ? 'badge-green' : 'badge-red'}">${l.status_code}</span>`
     : '';
   var truncatedBadge = (hasDetail && d.truncated)
-    ? ' <span class="badge badge-yellow">truncated to 64KB</span>'
+    ? DW.raw(' <span class="badge badge-yellow">truncated to 64KB</span>')
     : '';
 
   function fmtHeaders(jsonStr) {
@@ -427,24 +435,23 @@ function renderLogDetail(l, d) {
         var v = Array.isArray(obj[k]) ? obj[k].join(', ') : obj[k];
         // Mask secrets just in case
         if (/^authorization$|x-api-key|x-duckway/i.test(k)) v = '<redacted>';
-        lines.push('<tr><td class="text-muted mono text-sm">' + k + '</td><td class="mono text-sm" style="word-break:break-all">' + v + '</td></tr>');
+        lines.push(DW.html`<tr><td class="text-muted mono text-sm">${k}</td><td class="mono text-sm" style="word-break:break-all">${v}</td></tr>`);
       });
-      if (lines.length === 0) return '<span class="text-muted text-sm">(none)</span>';
-      return '<table class="detail-table" style="width:100%">' + lines.join('') + '</table>';
-    } catch(e) { return '<pre class="text-sm">' + jsonStr + '</pre>'; }
+      if (lines.length === 0) return DW.raw('<span class="text-muted text-sm">(none)</span>');
+      return DW.html`<table class="detail-table" style="width:100%">${lines}</table>`;
+    } catch(e) { return DW.html`<pre class="text-sm">${jsonStr}</pre>`; }
   }
 
   function fmtBody(b) {
-    if (!b) return '<span class="text-muted text-sm">(empty)</span>';
+    if (!b) return DW.raw('<span class="text-muted text-sm">(empty)</span>');
+    var text;
     // Try pretty-print JSON
     try {
-      var parsed = JSON.parse(b);
-      return '<pre class="mono text-sm" style="white-space:pre-wrap;background:var(--bg-input);padding:0.5rem;border-radius:4px;max-height:300px;overflow:auto">' +
-        escapeHTML(JSON.stringify(parsed, null, 2)) + '</pre>';
+      text = JSON.stringify(JSON.parse(b), null, 2);
     } catch(e) {
-      return '<pre class="mono text-sm" style="white-space:pre-wrap;background:var(--bg-input);padding:0.5rem;border-radius:4px;max-height:300px;overflow:auto">' +
-        escapeHTML(b) + '</pre>';
+      text = b;
     }
+    return DW.html`<pre class="mono text-sm" style="white-space:pre-wrap;background:var(--bg-input);padding:0.5rem;border-radius:4px;max-height:300px;overflow:auto">${text}</pre>`;
   }
 
   // Phantom token used for this request — clickable to open the same detail
@@ -454,24 +461,22 @@ function renderLogDetail(l, d) {
     var short = l.placeholder.length > 28
       ? l.placeholder.substring(0, 22) + '...' + l.placeholder.substring(l.placeholder.length - 4)
       : l.placeholder;
-    phRow =
-      '<tr><td class="text-muted">Phantom Token</td>' +
-        '<td><a href="#" class="mono text-sm" data-ph-id="' + l.placeholder_id + '" ' +
-          'style="text-decoration:underline dotted" ' +
-          'title="Click to view phantom-token details">' + escapeHTML(short) + '</a></td></tr>';
+    phRow = DW.html`<tr><td class="text-muted">Phantom Token</td><td><a href="#" class="mono text-sm" data-action="openPhantomDetail" data-ph-id="${l.placeholder_id}" style="text-decoration:underline dotted" title="Click to view phantom-token details">${short}</a></td></tr>`;
   }
 
   // Always-available metadata block.
-  var metaRows =
-    '<tr><td class="text-muted">Client</td><td>' + escapeHTML(l.client_name || '—') + '</td></tr>' +
-    '<tr><td class="text-muted">Service</td><td><span class="badge badge-blue">' + escapeHTML(l.service_name || '?') + '</span></td></tr>' +
-    '<tr><td class="text-muted">Env Name</td><td>' + escapeHTML(l.env_name || '—') + '</td></tr>' +
-    phRow +
-    '<tr><td class="text-muted">Time</td><td>' + escapeHTML(l.created_at) + '</td></tr>';
+  var metaRows = [
+    DW.html`<tr><td class="text-muted">Client</td><td>${l.client_name || '—'}</td></tr>`,
+    DW.html`<tr><td class="text-muted">Service</td><td><span class="badge badge-blue">${l.service_name || '?'}</span></td></tr>`,
+    DW.html`<tr><td class="text-muted">Env Name</td><td>${l.env_name || '—'}</td></tr>`,
+    phRow,
+    DW.html`<tr><td class="text-muted">Time</td><td>${l.created_at}</td></tr>`
+  ];
   if (hasDetail) {
-    metaRows +=
-      '<tr><td class="text-muted">Duration</td><td>' + d.duration_ms + ' ms</td></tr>' +
-      '<tr><td class="text-muted">Sizes</td><td>req=' + d.request_size + 'B · resp=' + d.response_size + 'B</td></tr>';
+    metaRows.push(
+      DW.html`<tr><td class="text-muted">Duration</td><td>${d.duration_ms} ms</td></tr>`,
+      DW.html`<tr><td class="text-muted">Sizes</td><td>req=${d.request_size}B · resp=${d.response_size}B</td></tr>`
+    );
   }
 
   // If the original headers had a Content-Encoding (gzip/br/deflate), the
@@ -489,46 +494,25 @@ function renderLogDetail(l, d) {
         }
       });
       if (!enc || /^identity$/i.test(enc)) return '';
-      return '<div class="text-muted text-sm" style="margin-bottom:0.25rem;font-style:italic">' +
-             'shown decompressed (original Content-Encoding: ' + escapeHTML(enc) + ')' +
-             '</div>';
+      return DW.html`<div class="text-muted text-sm" style="margin-bottom:0.25rem;font-style:italic">shown decompressed (original Content-Encoding: ${enc})</div>`;
     } catch (e) { return ''; }
   }
 
   // Detail block only present when capture was on at request time.
   var detailBlock;
   if (hasDetail) {
-    detailBlock =
-      '<h3 style="margin-top:1rem">Request Headers</h3>' + fmtHeaders(d.request_headers) +
-      '<h3 style="margin-top:1rem">Request Body</h3>' + decodeNote(d.request_headers) + fmtBody(d.request_body) +
-      '<h3 style="margin-top:1rem">Response Headers</h3>' + fmtHeaders(d.response_headers) +
-      '<h3 style="margin-top:1rem">Response Body</h3>' + decodeNote(d.response_headers) + fmtBody(d.response_body);
+    detailBlock = DW.html`<h3 style="margin-top:1rem">Request Headers</h3>${fmtHeaders(d.request_headers)}<h3 style="margin-top:1rem">Request Body</h3>${decodeNote(d.request_headers)}${fmtBody(d.request_body)}<h3 style="margin-top:1rem">Response Headers</h3>${fmtHeaders(d.response_headers)}<h3 style="margin-top:1rem">Response Body</h3>${decodeNote(d.response_headers)}${fmtBody(d.response_body)}`;
   } else {
-    detailBlock =
-      '<div class="card mt-1" style="background:var(--bg-input)">' +
-        '<strong>No request/response details recorded.</strong><br>' +
-        '<span class="text-muted text-sm">' +
-          'Detail capture was OFF at the time of this request, or the request used loan_proxy delivery (gateway is not in the data path). ' +
-          'Enable capture above to record full headers and bodies for future requests.' +
-        '</span>' +
-      '</div>';
+    detailBlock = DW.raw('<div class="card mt-1" style="background:var(--bg-input)"><strong>No request/response details recorded.</strong><br><span class="text-muted text-sm">Detail capture was OFF at the time of this request, or the request used loan_proxy delivery (gateway is not in the data path). Enable capture above to record full headers and bodies for future requests.</span></div>');
   }
 
-  body.innerHTML =
-    '<h2 style="margin-top:0">' + (l.method || '?') + ' ' + (l.path || '') + ' ' + statusBadge + truncatedBadge + '</h2>' +
-    '<table class="detail-table" style="width:100%;margin-bottom:0.5rem">' + metaRows + '</table>' +
-    detailBlock +
-    '<div class="modal-actions mt-1" style="justify-content:flex-end"><button class="btn" onclick="document.getElementById(\'log-detail-modal\').style.display=\'none\'">Close</button></div>';
-
-  // Wire the phantom-token link inside this modal to open the phantom detail
-  var phLink = body.querySelector('[data-ph-id]');
-  if (phLink) {
-    phLink.onclick = function(e) {
-      e.preventDefault();
-      openPhantomDetail(phLink.dataset.phId);
-    };
-  }
+  DW.setHTML(body, DW.html`<h2 style="margin-top:0">${l.method || '?'} ${l.path || ''} ${statusBadge}${truncatedBadge}</h2><table class="detail-table" style="width:100%;margin-bottom:0.5rem">${metaRows}</table>${detailBlock}<div class="modal-actions mt-1" style="justify-content:flex-end"><button class="btn" data-action="modal-close">Close</button></div>`);
+  DW.modal.open(modal);
 }
+
+DW.actions.openPhantomDetail = function(el) {
+  openPhantomDetail(el.dataset.phId);
+};
 
 // openPhantomDetail mirrors the detail modal on the Phantom Tokens page —
 // shows the same fields (env, full token, key path, approval, ACL, usage,
@@ -546,51 +530,15 @@ function openPhantomDetail(phId, hint) {
     .then(function(ph) {
       if (!ph || ph.error) return;
 
-      var modal = document.getElementById('phantom-detail-modal');
-      if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'phantom-detail-modal';
-        modal.className = 'modal-backdrop';
-        modal.style.display = 'flex';
-        modal.onclick = function(e) {
-          if (e.target === modal) modal.style.display = 'none';
-        };
-        modal.innerHTML = '<div class="modal" style="max-width:720px"><div id="phantom-detail-body"></div></div>';
-        document.body.appendChild(modal);
-      } else {
-        modal.style.display = 'flex';
-      }
+      var modal = ensureModal('phantom-detail-modal', '720px', '', 'phantom-detail-body');
 
       var ttl = ph.approval_ttl_minutes || 0;
       var ttlText = ttl >= 1440 ? (ttl / 1440) + ' days' : (ttl + ' min');
 
       var body = modal.querySelector('#phantom-detail-body');
-      body.innerHTML =
-        '<h2 style="margin-top:0">' + escapeHTML(ph.client_name || '') + ' — ' + escapeHTML(ph.service_name || '') + '</h2>' +
-        '<table class="detail-table">' +
-          '<tr><td class="text-muted">ID</td><td class="mono text-sm">' + escapeHTML(ph.id) + '</td></tr>' +
-          '<tr><td class="text-muted">Client</td><td>' + escapeHTML(ph.client_name || '—') + '</td></tr>' +
-          '<tr><td class="text-muted">API Key</td><td>' + escapeHTML(ph.api_key_name || '—') + '</td></tr>' +
-          '<tr><td class="text-muted">Service</td><td><span class="badge badge-blue">' + escapeHTML(ph.service_name || '?') + '</span></td></tr>' +
-          '<tr><td class="text-muted">Env Name</td><td class="mono">' + escapeHTML(ph.env_name || '') + '</td></tr>' +
-          '<tr><td class="text-muted">Phantom Token</td><td class="mono text-sm" style="word-break:break-all">' + escapeHTML(ph.placeholder || '') + '</td></tr>' +
-          '<tr><td class="text-muted">Key Path</td><td class="mono text-sm">' + (ph.key_path ? '~/' + escapeHTML(ph.key_path) : '—') + '</td></tr>' +
-          '<tr><td class="text-muted">Approval</td><td>' + (ph.requires_approval ? '<span class="badge badge-yellow">Required</span>' : '<span class="badge badge-green">Auto</span>') + '</td></tr>' +
-          '<tr><td class="text-muted">TTL</td><td>' + escapeHTML(ttlText) + '</td></tr>' +
-          '<tr><td class="text-muted">Usage</td><td>' + (ph.usage_count || 0) + '</td></tr>' +
-          '<tr><td class="text-muted">Created</td><td>' + escapeHTML(ph.created_at || '') + '</td></tr>' +
-        '</table>' +
-        '<div class="modal-actions mt-1">' +
-          '<button class="btn" onclick="document.getElementById(\'phantom-detail-modal\').style.display=\'none\'">Close</button>' +
-          '<a href="/admin/placeholders" class="btn btn-primary">Open in Phantom Tokens →</a>' +
-        '</div>';
+      DW.setHTML(body, DW.html`<h2 style="margin-top:0">${ph.client_name || ''} — ${ph.service_name || ''}</h2><table class="detail-table"><tr><td class="text-muted">ID</td><td class="mono text-sm">${ph.id}</td></tr><tr><td class="text-muted">Client</td><td>${ph.client_name || '—'}</td></tr><tr><td class="text-muted">API Key</td><td>${ph.api_key_name || '—'}</td></tr><tr><td class="text-muted">Service</td><td><span class="badge badge-blue">${ph.service_name || '?'}</span></td></tr><tr><td class="text-muted">Env Name</td><td class="mono">${ph.env_name || ''}</td></tr><tr><td class="text-muted">Phantom Token</td><td class="mono text-sm" style="word-break:break-all">${ph.placeholder || ''}</td></tr><tr><td class="text-muted">Key Path</td><td class="mono text-sm">${ph.key_path ? '~/' + ph.key_path : '—'}</td></tr><tr><td class="text-muted">Approval</td><td>${ph.requires_approval ? DW.raw('<span class="badge badge-yellow">Required</span>') : DW.raw('<span class="badge badge-green">Auto</span>')}</td></tr><tr><td class="text-muted">TTL</td><td>${ttlText}</td></tr><tr><td class="text-muted">Usage</td><td>${ph.usage_count || 0}</td></tr><tr><td class="text-muted">Created</td><td>${ph.created_at || ''}</td></tr></table><div class="modal-actions mt-1"><button class="btn" data-action="modal-close">Close</button><a href="/admin/placeholders" class="btn btn-primary">Open in Phantom Tokens →</a></div>`);
+      DW.modal.open(modal);
     });
-}
-
-function escapeHTML(s) {
-  return String(s).replace(/[&<>"']/g, function(c) {
-    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
-  });
 }
 
 document.addEventListener('DOMContentLoaded', function() {

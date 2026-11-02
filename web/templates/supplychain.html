@@ -21,7 +21,7 @@
     rc-file gate are listed for transparency — see their Notes for alternatives.
   </p>
 
-  <form id="minage-form" class="mb-2">
+  <form id="minage-form" class="mb-2" data-on-submit="scSaveMinAge">
     <div class="form-group">
       <label>Minimum package age (days)</label>
       <input type="number" id="sc-min-age" min="1" max="365" placeholder="3" style="max-width:160px">
@@ -50,63 +50,50 @@
   </p>
 </div>
 
-<script>
-function scEsc(s) {
-  return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
-    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
-  });
-}
-
+<script nonce="{{.CSPNonce}}">
 function scRenderRows(mits) {
   var tbody = document.getElementById('sc-rows');
-  tbody.innerHTML = '';
+  tbody.replaceChildren();
   mits.forEach(function(m) {
     var tr = document.createElement('tr');
     var toggle = m.supported
-      ? '<input type="checkbox" data-id="' + scEsc(m.id) + '"' + (m.enabled ? ' checked' : '') + '>'
-      : '<span class="text-muted text-sm">n/a</span>';
+      ? DW.html`<input type="checkbox" data-on-change="scToggle" data-id="${m.id}"${m.enabled ? DW.raw(' checked') : ''}>`
+      : DW.raw('<span class="text-muted text-sm">n/a</span>');
     var rcFile = m.supported
-      ? '<code>~/' + scEsc(m.rc_path) + '</code>'
-      : '<span class="text-muted text-sm">needs registry proxy</span>';
-    var writes = '—';
+      ? DW.html`<code>~/${m.rc_path}</code>`
+      : DW.raw('<span class="text-muted text-sm">needs registry proxy</span>');
+    var writes = DW.raw('—');
     if (m.supported && m.example_lines && m.example_lines.length) {
       var cfgLines = m.example_lines.filter(function(l) {
         return l.trim() !== '' && l.trim().charAt(0) !== '#';
       });
-      writes = cfgLines.length
-        ? cfgLines.map(function(l) {
-            return '<code class="sc-cfg-line">' + scEsc(l) + '</code>';
-          }).join('<br>')
-        : '—';
+      if (cfgLines.length) {
+        writes = DW.html`${cfgLines.map(function(l, i) {
+          return DW.html`${i ? DW.raw('<br>') : ''}<code class="sc-cfg-line">${l}</code>`;
+        })}`;
+      }
     }
-    tr.innerHTML =
-      '<td>' + toggle + '</td>' +
-      '<td><strong>' + scEsc(m.name) + '</strong></td>' +
-      '<td>' + rcFile + '</td>' +
-      '<td>' + writes + '</td>' +
-      '<td class="text-sm text-muted">' + scEsc(m.description) + '</td>';
+    DW.setHTML(tr, DW.html`<td>${toggle}</td><td><strong>${m.name}</strong></td><td>${rcFile}</td><td>${writes}</td><td class="text-sm text-muted">${m.description}</td>`);
     tbody.appendChild(tr);
   });
-
-  tbody.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
-    cb.addEventListener('change', function() {
-      var id = cb.getAttribute('data-id');
-      fetch('/api/supply-chain/' + encodeURIComponent(id), {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({enabled: cb.checked}),
-        credentials: 'same-origin'
-      })
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (data.error) { showToast(data.error, 'error'); cb.checked = !cb.checked; return; }
-        showToast(id + ' ' + (cb.checked ? 'enabled' : 'disabled') + ' — applies on next sync', 'success');
-        scLoad();
-      })
-      .catch(function() { cb.checked = !cb.checked; showToast('Toggle failed', 'error'); });
-    });
-  });
 }
+
+DW.actions.scToggle = function(cb) {
+  var id = cb.getAttribute('data-id');
+  fetch('/api/supply-chain/' + encodeURIComponent(id), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enabled: cb.checked}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); cb.checked = !cb.checked; return; }
+    showToast(id + ' ' + (cb.checked ? 'enabled' : 'disabled') + ' — applies on next sync', 'success');
+    scLoad();
+  })
+  .catch(function() { cb.checked = !cb.checked; showToast('Toggle failed', 'error'); });
+};
 
 function scLoad() {
   fetch('/api/supply-chain', {credentials:'same-origin'})
@@ -117,8 +104,7 @@ function scLoad() {
     });
 }
 
-document.getElementById('minage-form').addEventListener('submit', function(e) {
-  e.preventDefault();
+DW.actions.scSaveMinAge = function() {
   var days = parseInt(document.getElementById('sc-min-age').value, 10);
   if (!(days > 0)) { showToast('Enter a positive number of days', 'error'); return; }
   fetch('/api/supply-chain/min-age', {
@@ -133,7 +119,7 @@ document.getElementById('minage-form').addEventListener('submit', function(e) {
     showToast('Cooldown saved — applies on next sync', 'success');
     scLoad();
   });
-});
+};
 
 document.addEventListener('DOMContentLoaded', scLoad);
 </script>

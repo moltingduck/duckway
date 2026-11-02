@@ -7,7 +7,7 @@
 <div class="card">
   <h3>Deployed Canary Tokens</h3>
   <div class="form-group mt-1">
-    <select id="canary-client-select" onchange="loadClientCanaries()">
+    <select id="canary-client-select" data-on-change="loadClientCanaries">
       <option value="">Select client...</option>
     </select>
   </div>
@@ -16,7 +16,7 @@
 
 <!-- Settings (collapsible) -->
 <div class="card mt-2">
-  <div class="flex-between" style="cursor:pointer" onclick="toggleSection('settings-body', this)">
+  <div class="flex-between" style="cursor:pointer" data-action="toggleSection" data-target="settings-body">
     <h3 style="margin:0">Settings <span class="toggle-arrow">&#9654;</span></h3>
   </div>
   <div id="settings-body" style="display:none;margin-top:1rem">
@@ -25,7 +25,7 @@
     </div>
     <p class="text-sm text-muted mb-1">Canary tokens are <strong>enabled by default</strong> for all new clients. When a client registers, Duckway auto-generates decoy credentials via <a href="https://canarytokens.org" target="_blank">canarytokens.org</a>. If an attacker steals and uses them, you get an email alert.</p>
 
-    <form id="canary-settings-form" class="mt-2">
+    <form id="canary-settings-form" class="mt-2" data-on-submit="saveCanarySettings">
       <div class="form-group">
         <label>Alert Email (required for canary tokens to work)</label>
         <input type="email" id="canary-email" placeholder="you@example.com">
@@ -46,8 +46,8 @@
         <label>Exclude Clients</label>
         <div class="text-sm text-muted mb-1">Clients that should NOT receive canary tokens.</div>
         <div class="flex gap-sm mb-1">
-          <input type="text" id="exclude-search" placeholder="Search clients..." style="flex:1" oninput="filterExcludeList()">
-          <button type="button" class="btn btn-sm" onclick="showExcludeDropdown()">+ Add</button>
+          <input type="text" id="exclude-search" placeholder="Search clients..." style="flex:1" data-on-input="filterExcludeList">
+          <button type="button" class="btn btn-sm" data-action="showExcludeDropdown">+ Add</button>
         </div>
         <div id="exclude-dropdown" style="display:none;position:relative">
           <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);max-height:150px;overflow-y:auto;position:absolute;width:100%;z-index:10" id="exclude-dropdown-list"></div>
@@ -62,7 +62,7 @@
 
 <!-- How It Works (collapsible) -->
 <div class="card mt-2">
-  <div class="flex-between" style="cursor:pointer" onclick="toggleSection('howitworks-body', this)">
+  <div class="flex-between" style="cursor:pointer" data-action="toggleSection" data-target="howitworks-body">
     <h3 style="margin:0">How It Works <span class="toggle-arrow">&#9654;</span></h3>
   </div>
   <div id="howitworks-body" style="display:none;margin-top:1rem">
@@ -75,18 +75,19 @@
   </div>
 </div>
 
-<script>
-function toggleSection(id, header) {
-  var el = document.getElementById(id);
+<script nonce="{{.CSPNonce}}">
+DW.actions.loadClientCanaries = function() { loadClientCanaries(); };
+DW.actions.toggleSection = function(header) {
+  var el = document.getElementById(header.dataset.target);
   var arrow = header.querySelector('.toggle-arrow');
   if (el.style.display === 'none') {
     el.style.display = '';
-    if (arrow) arrow.innerHTML = '&#9660;';
+    if (arrow) arrow.textContent = '\u25BC';
   } else {
     el.style.display = 'none';
-    if (arrow) arrow.innerHTML = '&#9654;';
+    if (arrow) arrow.textContent = '\u25B6';
   }
-}
+};
 
 var allTypes = [];
 
@@ -121,17 +122,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
       function renderType(t, container) {
         var checked = enabled.length === 0 ? (t.default_enabled === 'true') : (enabled.indexOf(t.type) >= 0);
-        var mode = t.deploy_mode === 'append' ? '<span class="badge badge-yellow" style="font-size:0.6rem;vertical-align:middle">merge</span>' : '';
-        var path = t.deploy_path ? ' <code style="font-size:0.75rem">~/' + t.deploy_path + '</code>' : '';
+        var mode = t.deploy_mode === 'append' ? DW.html`<span class="badge badge-yellow" style="font-size:0.6rem;vertical-align:middle">merge</span>` : '';
+        var path = t.deploy_path ? DW.html` <code style="font-size:0.75rem">~/${t.deploy_path}</code>` : '';
         var label = document.createElement('label');
         label.style.display = 'block';
         label.style.marginBottom = '0.5rem';
         label.style.lineHeight = '1.6';
         if (t.default_enabled !== 'true') label.style.opacity = '0.7';
-        label.innerHTML = '<input type="checkbox" name="canary_type" value="' + t.type + '"' +
-          (checked ? ' checked' : '') + '> <strong>' + t.name + '</strong> ' + mode +
-          '<br><span style="margin-left:1.25rem" class="text-muted text-sm">' + t.description + '</span>' +
-          '<br><span style="margin-left:1.25rem">' + path + '</span>';
+        DW.setHTML(label, DW.html`<input type="checkbox" name="canary_type" value="${t.type}"${checked ? DW.raw(' checked') : ''}> <strong>${t.name}</strong> ${mode}<br><span style="margin-left:1.25rem" class="text-muted text-sm">${t.description}</span><br><span style="margin-left:1.25rem">${path}</span>`);
         container.appendChild(label);
       }
 
@@ -141,10 +139,7 @@ document.addEventListener('DOMContentLoaded', function() {
       // Populate reference table
       allTypes.forEach(function(t) {
         var tr = document.createElement('tr');
-        tr.innerHTML = '<td><span class="badge badge-blue">' + t.type + '</span></td>' +
-          '<td><span class="badge ' + (t.category === 'api' ? 'badge-green' : 'badge-gray') + '">' + t.category + '</span></td>' +
-          '<td class="text-sm">' + t.description + '</td>' +
-          '<td class="mono text-sm">~/' + (t.deploy_path || '') + '</td>';
+        DW.setHTML(tr, DW.html`<td><span class="badge badge-blue">${t.type}</span></td><td><span class="badge ${t.category === 'api' ? 'badge-green' : 'badge-gray'}">${t.category}</span></td><td class="text-sm">${t.description}</td><td class="mono text-sm">~/${t.deploy_path || ''}</td>`);
         refTbody.appendChild(tr);
       });
 
@@ -169,8 +164,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-document.getElementById('canary-settings-form').addEventListener('submit', function(e) {
-  e.preventDefault();
+DW.actions.saveCanarySettings = function() {
   var email = document.getElementById('canary-email').value;
   var types = [];
   document.querySelectorAll('input[name="canary_type"]:checked').forEach(function(cb) {
@@ -193,7 +187,7 @@ document.getElementById('canary-settings-form').addEventListener('submit', funct
       document.getElementById('canary-warning').style.display = 'none';
     }
   });
-});
+};
 
 function loadClientCanaries() {
   var sel = document.getElementById('canary-client-select');
@@ -201,38 +195,34 @@ function loadClientCanaries() {
   var clientName = sel.options[sel.selectedIndex].dataset.name || '';
   var div = document.getElementById('canary-tokens-table');
 
-  if (!clientId) { div.innerHTML = ''; return; }
+  if (!clientId) { div.replaceChildren(); return; }
 
   fetch('/api/canary/clients/' + clientId, {credentials:'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(tokens) {
       if (!tokens || tokens.length === 0) {
-        div.innerHTML = '<p class="text-muted text-sm mt-1">No canary tokens for this client. ' +
-          '<button class="btn btn-sm btn-primary" onclick="generateCanaries(\'' + clientId + '\',\'' + clientName + '\')">Generate Now</button></p>';
+        DW.setHTML(div, DW.html`<p class="text-muted text-sm mt-1">No canary tokens for this client. <button class="btn btn-sm btn-primary" data-action="generateCanaries" data-client-id="${clientId}" data-client-name="${clientName}">Generate Now</button></p>`);
         return;
       }
 
-      var html = '<table class="mt-1"><thead><tr><th>Type</th><th>Token ID</th><th>Deploy Path</th><th>Created</th><th></th></tr></thead><tbody>';
-      tokens.forEach(function(t) {
+      var rows = tokens.map(function(t) {
         var tokenShort = t.canary_token ? t.canary_token.substring(0, 12) + '...' : '(local)';
-        var manageLink = t.manage_url ? '<a href="' + t.manage_url + '" target="_blank" class="mono text-sm" title="View on canarytokens.org">' + tokenShort + '</a>' : '<span class="mono text-sm text-muted">' + tokenShort + '</span>';
-        html += '<tr id="ct-' + t.id + '">' +
-          '<td><span class="badge badge-blue">' + t.token_type + '</span></td>' +
-          '<td>' + manageLink + '</td>' +
-          '<td class="mono text-sm">~/' + t.deploy_path + '</td>' +
-          '<td class="text-muted text-sm">' + t.created_at + '</td>' +
-          '<td class="text-right"><button class="btn btn-sm btn-danger" onclick="deleteCanaryToken(\'' + t.id + '\')">Delete</button></td></tr>';
+        var manageLink = t.manage_url
+          ? DW.html`<a href="${safeURL(t.manage_url)}" target="_blank" rel="noopener noreferrer" class="mono text-sm" title="View on canarytokens.org">${tokenShort}</a>`
+          : DW.html`<span class="mono text-sm text-muted">${tokenShort}</span>`;
+        return DW.html`<tr id="ct-${t.id}"><td><span class="badge badge-blue">${t.token_type}</span></td><td>${manageLink}</td><td class="mono text-sm">~/${t.deploy_path}</td><td class="text-muted text-sm">${t.created_at}</td><td class="text-right"><button class="btn btn-sm btn-danger" data-action="deleteCanaryToken" data-token-id="${t.id}">Delete</button></td></tr>`;
       });
-      html += '</tbody></table>';
-      html += '<div class="mt-1 flex gap-sm">' +
-        '<button class="btn btn-sm" onclick="generateCanaries(\'' + clientId + '\',\'' + clientName + '\')">Regenerate All</button>' +
-        '<button class="btn btn-sm btn-danger" onclick="deleteAllCanaries(\'' + clientId + '\')">Delete All</button>' +
-        '</div>';
-      div.innerHTML = html;
+      DW.setHTML(div, DW.html`<table class="mt-1"><thead><tr><th>Type</th><th>Token ID</th><th>Deploy Path</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table><div class="mt-1 flex gap-sm"><button class="btn btn-sm" data-action="generateCanaries" data-client-id="${clientId}" data-client-name="${clientName}">Regenerate All</button><button class="btn btn-sm btn-danger" data-action="deleteAllCanaries" data-client-id="${clientId}">Delete All</button></div>`);
     });
 }
 
-function deleteCanaryToken(tokenId) {
+// Only http(s) URLs are allowed as link targets (other schemes are rejected).
+function safeURL(u) {
+  return /^https?:\/\//i.test(String(u)) ? u : '#';
+}
+
+DW.actions.deleteCanaryToken = function(el) {
+  var tokenId = el.dataset.tokenId;
   if (!confirm('Delete this canary token? It will also be removed from canarytokens.org.')) return;
   fetch('/api/canary/tokens/' + tokenId, {method:'DELETE',credentials:'same-origin'})
     .then(function(r) { return r.json(); })
@@ -242,9 +232,10 @@ function deleteCanaryToken(tokenId) {
       if (row) row.remove();
       showToast('Token deleted (DB + canarytokens.org)', 'success');
     });
-}
+};
 
-function deleteAllCanaries(clientId) {
+DW.actions.deleteAllCanaries = function(el) {
+  var clientId = el.dataset.clientId;
   if (!confirm('Delete ALL canary tokens for this client? This removes them from canarytokens.org too.')) return;
   fetch('/api/canary/clients/' + clientId, {method:'DELETE',credentials:'same-origin'})
     .then(function(r) { return r.json(); })
@@ -253,7 +244,7 @@ function deleteAllCanaries(clientId) {
       showToast('All tokens deleted', 'success');
       loadClientCanaries();
     });
-}
+};
 
 // Exclude list management
 var allClients = [];
@@ -268,7 +259,11 @@ function addExcludeTag(name) {
   tag.style.cursor = 'pointer';
   tag.style.padding = '0.25rem 0.5rem';
   tag.dataset.name = name;
-  tag.innerHTML = name + ' <span style="margin-left:0.25rem;opacity:0.6">x</span>';
+  tag.appendChild(document.createTextNode(name + ' '));
+  var x = document.createElement('span');
+  x.style.cssText = 'margin-left:0.25rem;opacity:0.6';
+  x.textContent = 'x';
+  tag.appendChild(x);
   tag.onclick = function() {
     excludeSet.delete(name);
     tag.remove();
@@ -280,21 +275,21 @@ function getExcludeList() {
   return Array.from(excludeSet);
 }
 
-function showExcludeDropdown() {
+DW.actions.showExcludeDropdown = function() {
   var dd = document.getElementById('exclude-dropdown');
   dd.style.display = dd.style.display === 'none' ? 'block' : 'none';
   renderExcludeDropdown('');
-}
+};
 
-function filterExcludeList() {
+DW.actions.filterExcludeList = function() {
   var q = document.getElementById('exclude-search').value.toLowerCase();
   renderExcludeDropdown(q);
   document.getElementById('exclude-dropdown').style.display = 'block';
-}
+};
 
 function renderExcludeDropdown(query) {
   var list = document.getElementById('exclude-dropdown-list');
-  list.innerHTML = '';
+  list.replaceChildren();
   allClients.forEach(function(c) {
     if (excludeSet.has(c.name)) return;
     if (query && c.name.toLowerCase().indexOf(query) < 0) return;
@@ -329,7 +324,8 @@ document.addEventListener('click', function(e) {
   }
 });
 
-function generateCanaries(clientId, clientName) {
+DW.actions.generateCanaries = function(el) {
+  var clientId = el.dataset.clientId, clientName = el.dataset.clientName || '';
   showToast('Generating canary tokens... this may take a moment', '');
   fetch('/api/canary/clients/' + clientId + '/generate?name=' + encodeURIComponent(clientName), {
     method: 'POST',
@@ -341,6 +337,6 @@ function generateCanaries(clientId, clientName) {
     showToast('Canary tokens generated', 'success');
     loadClientCanaries();
   });
-}
+};
 </script>
 {{end}}
