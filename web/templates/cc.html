@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="page-header">
   <h1>Control Channels</h1>
-  <button class="btn btn-primary" onclick="openCreate()">New CC</button>
+  <button class="btn btn-primary" data-action="openCreate">New CC</button>
 </div>
 
 <div class="card">
@@ -18,7 +18,7 @@
 </div>
 
 <!-- Create modal -->
-<div id="create-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="create-modal" class="modal-backdrop" style="display:none">
   <div class="modal" style="max-width:560px">
     <h2>New Control Channel</h2>
     <form id="create-form">
@@ -28,12 +28,12 @@
       </div>
       <div class="form-group">
         <label>Client</label>
-        <select id="cc-client" required></select>
+        <select id="cc-client" required data-on-change="onCCClientChange"></select>
         <span class="text-muted text-sm">CC v2: 1:1 client↔CC. Pick a client that doesn't already have a CC.</span>
       </div>
       <div class="form-group">
         <label>Agent type</label>
-        <select id="cc-agent" onchange="renderCreateAgentOptions()">
+        <select id="cc-agent" data-on-change="renderCreateAgentOptions">
           <option value="claude_code">claude_code</option>
           <option value="codex">codex</option>
           <option value="openclaw">openclaw</option>
@@ -43,17 +43,17 @@
       <div id="cc-agent-options"></div>
       <div class="form-group">
         <label>Service</label>
-        <select id="cc-service" required onchange="renderConfigFields()"></select>
+        <select id="cc-service" required data-on-change="renderConfigFields"></select>
         <span class="text-muted text-sm">Only message-channel services are shown. Discord is fully provisioned; Telegram support is message-service scoped.</span>
       </div>
       <div class="form-group">
         <label>Bot Token (API Key)</label>
-        <select id="cc-key" required></select>
+        <select id="cc-key" required data-on-change="onCCKeyChange"></select>
         <span class="text-muted text-sm">Pick an existing API key for the chosen service. Add one in API Keys first if missing.</span>
       </div>
       <div id="config-fields"></div>
       <div class="modal-actions">
-        <button type="button" class="btn" onclick="document.getElementById('create-modal').style.display='none'">Cancel</button>
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
         <button type="submit" class="btn btn-primary">Create</button>
       </div>
     </form>
@@ -61,7 +61,7 @@
 </div>
 
 <!-- Detail modal -->
-<div id="detail-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="detail-modal" class="modal-backdrop" style="display:none">
   <div class="modal" style="max-width:640px">
     <h2 id="d-title">CC Detail</h2>
     <table class="detail-table">
@@ -83,17 +83,17 @@
     </div>
     <div id="d-test-result" class="mt-1"></div>
     <div class="modal-actions mt-1">
-      <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
-      <button type="button" class="btn" onclick="openEditFromDetail()">Edit</button>
-      <button type="button" class="btn" id="d-agent-test-btn" onclick="testAgent()">Test agent (hi)</button>
-      <button type="button" class="btn" id="d-test-btn" onclick="testCC()">Test (create + delete channel)</button>
-      <button type="button" class="btn btn-danger" id="d-delete-btn">Delete CC</button>
+      <button type="button" class="btn" data-action="modal-close">Close</button>
+      <button type="button" class="btn" data-action="openEditFromDetail">Edit</button>
+      <button type="button" class="btn" id="d-agent-test-btn" data-action="testAgent">Test agent (hi)</button>
+      <button type="button" class="btn" id="d-test-btn" data-action="testCC">Test (create + delete channel)</button>
+      <button type="button" class="btn btn-danger" id="d-delete-btn" data-action="deleteCC">Delete CC</button>
     </div>
   </div>
 </div>
 
 <!-- Edit modal -->
-<div id="edit-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="edit-modal" class="modal-backdrop" style="display:none">
   <div class="modal" style="max-width:560px">
     <h2>Edit Control Channel</h2>
     <form id="edit-form">
@@ -112,14 +112,14 @@
       <div id="edit-config-fields"></div>
       <div id="edit-test-result" class="mt-1"></div>
       <div class="modal-actions">
-        <button type="button" class="btn" onclick="document.getElementById('edit-modal').style.display='none'">Cancel</button>
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
         <button type="submit" class="btn btn-primary">Save</button>
       </div>
     </form>
   </div>
 </div>
 
-<script>
+<script nonce="{{.CSPNonce}}">
 var allKeys = [];
 var allServices = [];
 var allClients = [];
@@ -127,11 +127,45 @@ var allCCs = [];
 var currentCC = null;
 var discordSetup = {apiKeyId:'', guilds:[], categories:[]};
 
+DW.actions.openCreate = function() { openCreate(); };
+DW.actions.onCCClientChange = function() { renderDiscordSetup(); };
+DW.actions.onCCKeyChange = function() {
+  discordSetup = {apiKeyId:'', guilds:[], categories:[]};
+  renderDiscordSetup();
+};
+DW.actions.renderCreateAgentOptions = function() { renderCreateAgentOptions(); };
+DW.actions.renderConfigFields = function() { renderConfigFields(); };
+DW.actions.openEditFromDetail = function() { openEditFromDetail(); };
+DW.actions.testAgent = function() { testAgent(); };
+DW.actions.testCC = function() { testCC(); };
+DW.actions.openDetail = function(el) { openDetail(el.dataset.id); };
+DW.actions.openEdit = function(el) { openEdit(el.dataset.id); };
+DW.actions.loadDiscordCategories = function() { loadDiscordCategories(); };
+DW.actions.preflightDiscordCategory = function() { preflightDiscordCategory(); };
+DW.actions.grantDiscordCategoryAccess = function() { grantDiscordCategoryAccess(); };
+DW.actions.createDiscordCategory = function() { createDiscordCategory(); };
+DW.actions.loadDiscordSetup = function() { loadDiscordSetup(); };
+DW.actions.renderEditAgentOptions = function() { renderEditAgentOptions(); };
+DW.actions.preflightEditDiscordCategory = function() { preflightEditDiscordCategory(); };
+DW.actions.grantEditDiscordCategoryAccess = function() { grantEditDiscordCategoryAccess(); };
+DW.actions.deleteCC = function() {
+  var c = currentCC;
+  if (!c) return;
+  if (!confirm('Delete CC "'+c.name+'"? Assigned clients will lose access; channels are archived.')) return;
+  fetch('/api/cc/'+encodeURIComponent(c.id), {method:'DELETE', credentials:'same-origin'})
+    .then(function(r){return r.json();}).then(function(d){
+      if (d.error) { showToast(d.error,'error'); return; }
+      DW.modal.close('#detail-modal');
+      loadCCs();
+      showToast('Deleted','success');
+    });
+};
+
 document.addEventListener('DOMContentLoaded', function() {
   fetch('/api/services', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s){
     allServices = (s || []).filter(isMessageChannelService);
     var sel = document.getElementById('cc-service');
-    sel.innerHTML = '';
+    sel.replaceChildren();
     allServices.forEach(function(svc) {
       var opt = document.createElement('option');
       opt.value = svc.id;
@@ -154,8 +188,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 function repopulateClientPicker() {
   var sel = document.getElementById('cc-client');
-  sel.innerHTML = '';
-  sel.onchange = function() { renderDiscordSetup(); };
+  sel.replaceChildren();
   var assigned = {};
   allCCs.forEach(function(c){ assigned[c.client_id] = c.name; });
   allClients.forEach(function(cl) {
@@ -188,10 +221,10 @@ function loadCCs() {
     repopulateClientPicker();
     var tbody = document.getElementById('cc-list');
     if (allCCs.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="text-muted">No control channels.</td></tr>';
+      DW.setHTML(tbody, DW.raw('<tr><td colspan="6" class="text-muted">No control channels.</td></tr>'));
       return;
     }
-    tbody.innerHTML = '';
+    tbody.replaceChildren();
     allCCs.forEach(function(c) {
       var cfgPreview = '';
       try {
@@ -201,13 +234,10 @@ function loadCCs() {
       } catch(e) { cfgPreview = '(invalid)'; }
       var tr = document.createElement('tr');
       var needsKey = ccNeedsKey(c);
-      tr.innerHTML =
-        '<td><a href="#" onclick="openDetail(\''+c.id+'\');return false"><strong>'+escapeHTML(c.name)+'</strong></a></td>' +
-        '<td>'+escapeHTML(c.client_name||'?')+'  <span class="text-muted text-sm">(' + escapeHTML(agentLabel(c.agent_type)) + ')</span>' + codexSandboxBadge(c) + '</td>' +
-        '<td class="text-sm">'+(needsKey ? '<span class="badge badge-red">reassign key</span> ' : '')+escapeHTML(c.api_key_name)+'</td>' +
-        '<td class="text-sm mono">'+escapeHTML(cfgPreview)+'</td>' +
-        '<td>'+(c.is_active?'<span class="badge badge-green">Active</span>':(needsKey?'<span class="badge badge-red">Disabled: reassign key</span>':'<span class="badge badge-gray">Inactive</span>'))+'</td>' +
-        '<td class="text-right"><button class="btn btn-sm" onclick="openEdit(\''+c.id+'\')">Edit</button> <button class="btn btn-sm" onclick="openDetail(\''+c.id+'\')">Detail</button></td>';
+      var keyBadge = needsKey ? DW.raw('<span class="badge badge-red">reassign key</span> ') : '';
+      var activeBadge = c.is_active ? DW.raw('<span class="badge badge-green">Active</span>')
+        : (needsKey ? DW.raw('<span class="badge badge-red">Disabled: reassign key</span>') : DW.raw('<span class="badge badge-gray">Inactive</span>'));
+      DW.setHTML(tr, DW.html`<td><a href="#" data-action="openDetail" data-id="${c.id}"><strong>${c.name}</strong></a></td><td>${c.client_name||'?'}  <span class="text-muted text-sm">(${agentLabel(c.agent_type)})</span>${codexSandboxBadge(c)}</td><td class="text-sm">${keyBadge}${c.api_key_name}</td><td class="text-sm mono">${cfgPreview}</td><td>${activeBadge}</td><td class="text-right"><button class="btn btn-sm" data-action="openEdit" data-id="${c.id}">Edit</button> <button class="btn btn-sm" data-action="openDetail" data-id="${c.id}">Detail</button></td>`);
       tbody.appendChild(tr);
     });
   });
@@ -217,11 +247,6 @@ function escapeShort(v) {
   v = String(v||'');
   if (v.length > 20) v = v.substring(0,16)+'…';
   return v;
-}
-function escapeHTML(s) {
-  return String(s==null?'':s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 function ccNeedsKey(c) {
   return !c.is_active && /^Deleted (refreshable token|API key):/.test(String(c.api_key_name || ''));
@@ -249,21 +274,17 @@ function codexSandboxBadge(c) {
   var badgeClass = sandbox === 'danger-full-access' ? 'badge-red'
     : (sandbox === 'none' ? 'badge-yellow' : (sandbox === 'read-only' ? 'badge-green' : 'badge-blue'));
   var label = sandbox === 'none' ? 'none (local config)' : sandbox;
-  return '<br><span class="badge '+badgeClass+'">configured sandbox: '+escapeHTML(label)+'</span>';
+  return DW.html`<br><span class="badge ${badgeClass}">configured sandbox: ${label}</span>`;
 }
 
 function renderConfigFields() {
   var svcId = document.getElementById('cc-service').value;
   var svc = allServices.filter(function(s){return s.id === svcId;})[0];
   var div = document.getElementById('config-fields');
-  if (!svc) { div.innerHTML = ''; return; }
+  if (!svc) { div.replaceChildren(); return; }
   // Filter the API key dropdown to keys of this service
   var keySel = document.getElementById('cc-key');
-  keySel.innerHTML = '';
-  keySel.onchange = function() {
-    discordSetup = {apiKeyId:'', guilds:[], categories:[]};
-    renderDiscordSetup();
-  };
+  keySel.replaceChildren();
   var matches = allKeys.filter(function(k){return k.service_id === svcId;});
   if (matches.length === 0) {
     var opt = document.createElement('option');
@@ -277,11 +298,17 @@ function renderConfigFields() {
     });
   }
   if (svc.name === 'discord') {
-    div.innerHTML = '<div id="discord-setup"></div>';
+    DW.setHTML(div, DW.raw('<div id="discord-setup"></div>'));
     renderDiscordSetup();
   } else {
-    div.innerHTML = '<div class="text-muted text-sm">No service-specific config required.</div>';
+    DW.setHTML(div, DW.raw('<div class="text-muted text-sm">No service-specific config required.</div>'));
   }
+}
+
+// Only allow http(s) URLs in server-provided hrefs (blocks script-scheme URLs).
+function safeHref(u) {
+  var v = String(u == null ? '' : u).trim();
+  return /^https?:\/\//i.test(v) ? v : '#';
 }
 
 function renderDiscordSetup() {
@@ -289,61 +316,27 @@ function renderDiscordSetup() {
   if (!box) return;
   var keyID = document.getElementById('cc-key').value;
   if (!keyID) {
-    box.innerHTML = '<div class="text-muted text-sm">Add and select a Discord bot token first.</div>';
+    DW.setHTML(box, DW.raw('<div class="text-muted text-sm">Add and select a Discord bot token first.</div>'));
     return;
   }
   var guildOptions = (discordSetup.guilds || []).map(function(g) {
-    return '<option value="'+escapeHTML(g.id)+'">'+escapeHTML(g.name)+' ('+escapeHTML(g.id)+')</option>';
-  }).join('');
+    return DW.html`<option value="${g.id}">${g.name} (${g.id})</option>`;
+  });
   var catOptions = (discordSetup.categories || []).map(function(c) {
-    return '<option value="'+escapeHTML(c.id)+'">'+escapeHTML(c.name)+' ('+escapeHTML(c.id)+')</option>';
-  }).join('');
+    return DW.html`<option value="${c.id}">${c.name} (${c.id})</option>`;
+  });
   var loaded = discordSetup.apiKeyId === keyID;
   var hasGuilds = loaded && (discordSetup.guilds || []).length > 0;
   var categoryName = selectedClientName() || 'duckway';
+  var disabledAttr = !loaded ? DW.raw('disabled') : '';
+  var guildsErr = discordSetup.guilds_error ? DW.html`<span class="text-muted text-sm">Could not list servers: ${discordSetup.guilds_error}</span>` : '';
   var destinationFields = hasGuilds
-    ? '<div class="form-group"><label>Server</label>' +
-        '<select id="cc-cfg-guild" onchange="loadDiscordCategories()">' +
-          guildOptions +
-        '</select></div>' +
-      '<div class="form-group"><label>Category</label>' +
-        '<select id="cc-cfg-category">' +
-          (catOptions || '<option value="">No categories loaded</option>') +
-        '</select>' +
-        '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-top:0.5rem">' +
-          '<button type="button" class="btn btn-sm" onclick="preflightDiscordCategory()">Check permissions</button>' +
-          '<button type="button" class="btn btn-sm" onclick="grantDiscordCategoryAccess()">Grant bot access</button>' +
-          '<span class="text-muted text-sm">Grant writes a category permission override; check creates and deletes a temporary channel.</span>' +
-        '</div>' +
-        '<div id="cc-preflight-result" class="mt-1"></div>' +
-        '<span class="text-muted text-sm">If Grant fails, use Setup invite to add temporary Manage Roles permission, or add the bot in Discord category Permissions manually.</span></div>' +
-      '<div class="form-group">' +
-        '<label>Create category</label>' +
-        '<div style="display:flex;gap:0.5rem;align-items:center">' +
-          '<input type="text" id="cc-new-category" value="'+escapeHTML(categoryName)+'" placeholder="'+escapeHTML(categoryName)+'">' +
-          '<button type="button" class="btn btn-sm" onclick="createDiscordCategory()">Create</button>' +
-        '</div>' +
-      '</div>'
-    : '<div class="form-group"><label>Server ID</label>' +
-        '<input type="text" id="cc-cfg-guild" placeholder="Load setup, or paste server id as fallback" '+(!loaded?'disabled':'')+'>' +
-        (discordSetup.guilds_error ? '<span class="text-muted text-sm">Could not list servers: '+escapeHTML(discordSetup.guilds_error)+'</span>' : '') +
-      '</div>' +
-      '<div class="form-group"><label>Category ID</label>' +
-        '<input type="text" id="cc-cfg-category" placeholder="Paste category id as fallback" '+(!loaded?'disabled':'')+'>' +
-        '<span class="text-muted text-sm">Fallback only. Prefer inviting the bot, refreshing setup, and creating/selecting a category here.</span>' +
-      '</div>';
-  box.innerHTML =
-    '<div class="form-group">' +
-      '<label>Discord setup</label>' +
-      '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">' +
-        '<button type="button" class="btn btn-sm" onclick="loadDiscordSetup()">'+(loaded?'Refresh servers':'Load Discord setup')+'</button>' +
-        (discordSetup.invite_url ? '<a class="btn btn-sm" target="_blank" rel="noopener" href="'+escapeHTML(discordSetup.invite_url)+'">Invite bot</a>' : '') +
-        (discordSetup.setup_invite_url ? '<a class="btn btn-sm" target="_blank" rel="noopener" href="'+escapeHTML(discordSetup.setup_invite_url)+'">Setup invite</a>' : '') +
-      '</div>' +
-      '<span class="text-muted text-sm">Invite bot uses Duckway runtime permissions. Setup invite additionally grants Manage Roles so Duckway can write category permission overrides.</span>' +
-    '</div>' +
-    (discordSetup.bot ? '<div class="text-sm text-muted mb-1">Bot: <strong>'+escapeHTML(discordSetup.bot.username||discordSetup.bot.id)+'</strong></div>' : '') +
-    destinationFields;
+    ? DW.html`<div class="form-group"><label>Server</label><select id="cc-cfg-guild" data-on-change="loadDiscordCategories">${guildOptions}</select></div><div class="form-group"><label>Category</label><select id="cc-cfg-category">${catOptions.length ? catOptions : DW.raw('<option value="">No categories loaded</option>')}</select><div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-top:0.5rem"><button type="button" class="btn btn-sm" data-action="preflightDiscordCategory">Check permissions</button><button type="button" class="btn btn-sm" data-action="grantDiscordCategoryAccess">Grant bot access</button><span class="text-muted text-sm">Grant writes a category permission override; check creates and deletes a temporary channel.</span></div><div id="cc-preflight-result" class="mt-1"></div><span class="text-muted text-sm">If Grant fails, use Setup invite to add temporary Manage Roles permission, or add the bot in Discord category Permissions manually.</span></div><div class="form-group"><label>Create category</label><div style="display:flex;gap:0.5rem;align-items:center"><input type="text" id="cc-new-category" value="${categoryName}" placeholder="${categoryName}"><button type="button" class="btn btn-sm" data-action="createDiscordCategory">Create</button></div></div>`
+    : DW.html`<div class="form-group"><label>Server ID</label><input type="text" id="cc-cfg-guild" placeholder="Load setup, or paste server id as fallback" ${disabledAttr}>${guildsErr}</div><div class="form-group"><label>Category ID</label><input type="text" id="cc-cfg-category" placeholder="Paste category id as fallback" ${disabledAttr}><span class="text-muted text-sm">Fallback only. Prefer inviting the bot, refreshing setup, and creating/selecting a category here.</span></div>`;
+  var inviteBtn = discordSetup.invite_url ? DW.html`<a class="btn btn-sm" target="_blank" rel="noopener" href="${safeHref(discordSetup.invite_url)}">Invite bot</a>` : '';
+  var setupInviteBtn = discordSetup.setup_invite_url ? DW.html`<a class="btn btn-sm" target="_blank" rel="noopener" href="${safeHref(discordSetup.setup_invite_url)}">Setup invite</a>` : '';
+  var botInfo = discordSetup.bot ? DW.html`<div class="text-sm text-muted mb-1">Bot: <strong>${discordSetup.bot.username||discordSetup.bot.id}</strong></div>` : '';
+  DW.setHTML(box, DW.html`<div class="form-group"><label>Discord setup</label><div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center"><button type="button" class="btn btn-sm" data-action="loadDiscordSetup">${loaded ? 'Refresh servers' : 'Load Discord setup'}</button>${inviteBtn}${setupInviteBtn}</div><span class="text-muted text-sm">Invite bot uses Duckway runtime permissions. Setup invite additionally grants Manage Roles so Duckway can write category permission overrides.</span></div>${botInfo}${destinationFields}`);
 }
 
 function loadDiscordSetup() {
@@ -405,14 +398,14 @@ function grantDiscordCategoryAccess() {
   var catID = document.getElementById('cc-cfg-category').value;
   var panel = document.getElementById('cc-preflight-result');
   if (!keyID || !catID) { showToast('Choose a category first', 'error'); return; }
-  if (panel) panel.innerHTML = '<div class="text-muted text-sm">Granting bot access on the category...</div>';
+  if (panel) DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Granting bot access on the category...</div>'));
   fetch('/api/cc/discord/category-permissions', {
     method:'POST', credentials:'same-origin',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({api_key_id:keyID, category_id:catID})
   }).then(function(r){return r.json();}).then(function(d) {
     if (d.error) {
-      if (panel) panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+escapeHTML(d.error)+'<br>In Discord: Category Settings → Permissions → add the bot → allow Manage Channels, View Channel, Send Messages, Add Reactions, Read Message History.</div>';
+      if (panel) DW.setHTML(panel, DW.html`<div class="text-sm" style="color:#ef4444">${d.error}<br>In Discord: Category Settings → Permissions → add the bot → allow Manage Channels, View Channel, Send Messages, Add Reactions, Read Message History.</div>`);
       return;
     }
     showToast('Bot access granted', 'success');
@@ -426,26 +419,26 @@ function preflightDiscordCategory() {
   var catID = document.getElementById('cc-cfg-category').value;
   var panel = document.getElementById('cc-preflight-result');
   if (!keyID || !guildID || !catID) { showToast('Choose a server and category first', 'error'); return; }
-  if (panel) panel.innerHTML = '<div class="text-muted text-sm">Checking Discord permissions...</div>';
+  if (panel) DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Checking Discord permissions...</div>'));
   fetch('/api/cc/discord/preflight', {
     method:'POST', credentials:'same-origin',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({api_key_id:keyID, guild_id:guildID, category_id:catID})
   }).then(function(r){return r.json();}).then(function(d) {
-    if (d.error) { if (panel) panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+escapeHTML(d.error)+'</div>'; return; }
-    if (panel) panel.innerHTML = renderPreflightResult(d, escapeHTML);
+    if (d.error) { if (panel) DW.setHTML(panel, DW.html`<div class="text-sm" style="color:#ef4444">${d.error}</div>`); return; }
+    if (panel) DW.setHTML(panel, renderPreflightResult(d));
   });
 }
 
-function renderPreflightResult(d, escFn) {
+function renderPreflightResult(d) {
   var ok = !!d.ok;
   var rows = (d.steps || []).map(function(s) {
-    return '<tr><td style="width:1.5rem">'+(s.ok ? '<span style="color:#22c55e">✓</span>' : '<span style="color:#ef4444">✗</span>')+'</td>' +
-      '<td>'+escFn(s.name)+'</td><td class="text-muted text-sm">'+escFn(s.note || '')+'</td></tr>';
-  }).join('');
-  return '<div class="card" style="background:var(--bg-input);border-left:3px solid '+(ok?'#22c55e':'#ef4444')+';padding:0.75rem">' +
-    (ok ? '<strong style="color:#22c55e">Permissions OK</strong>' : '<strong style="color:#ef4444">Permission check failed</strong>') +
-    '<table class="mt-1" style="width:100%">'+rows+'</table></div>';
+    var icon = s.ok ? DW.raw('<span style="color:#22c55e">✓</span>') : DW.raw('<span style="color:#ef4444">✗</span>');
+    return DW.html`<tr><td style="width:1.5rem">${icon}</td><td>${s.name}</td><td class="text-muted text-sm">${s.note || ''}</td></tr>`;
+  });
+  var border = ok ? '#22c55e' : '#ef4444';
+  var head = ok ? DW.raw('<strong style="color:#22c55e">Permissions OK</strong>') : DW.raw('<strong style="color:#ef4444">Permission check failed</strong>');
+  return DW.html`<div class="card" style="background:var(--bg-input);border-left:3px solid ${border};padding:0.75rem">${head}<table class="mt-1" style="width:100%">${rows}</table></div>`;
 }
 
 function openCreate() {
@@ -454,27 +447,23 @@ function openCreate() {
   document.getElementById('create-form').querySelector('button[type="submit"]').disabled = false;
   renderCreateAgentOptions();
   renderConfigFields();
-  document.getElementById('create-modal').style.display = 'flex';
+  DW.modal.open('#create-modal');
 }
 
 function codexSandboxField(id, value) {
   value = value || 'workspace-write';
   var opts = ['workspace-write','read-only','danger-full-access','none'].map(function(v) {
     var label = v === 'none' ? 'none (use client Codex config)' : v;
-    return '<option value="'+v+'" '+(v === value ? 'selected' : '')+'>'+label+'</option>';
-  }).join('');
-  return '<div class="form-group">' +
-    '<label>Codex sandbox</label>' +
-    '<select id="'+escapeHTML(id)+'">'+opts+'</select>' +
-    '<span class="text-muted text-sm">Use danger-full-access only for trusted Discord categories. Changes affect existing channels after <code>duckway cc watch restart</code>; sessions are preserved.</span>' +
-  '</div>';
+    return DW.html`<option value="${v}" ${v === value ? DW.raw('selected') : ''}>${label}</option>`;
+  });
+  return DW.html`<div class="form-group"><label>Codex sandbox</label><select id="${id}">${opts}</select><span class="text-muted text-sm">Use danger-full-access only for trusted Discord categories. Changes affect existing channels after <code>duckway cc watch restart</code>; sessions are preserved.</span></div>`;
 }
 
 function renderCreateAgentOptions() {
   var box = document.getElementById('cc-agent-options');
   if (!box) return;
-  box.innerHTML = document.getElementById('cc-agent').value === 'codex'
-    ? codexSandboxField('cc-codex-sandbox', 'workspace-write') : '';
+  if (document.getElementById('cc-agent').value === 'codex') DW.setHTML(box, codexSandboxField('cc-codex-sandbox', 'workspace-write'));
+  else box.replaceChildren();
 }
 
 function applyAgentOptions(config, agentType, selectID) {
@@ -516,64 +505,49 @@ document.getElementById('create-form').addEventListener('submit', function(e) {
   .then(function(d) {
     if (d.error) { showToast(d.error, 'error'); return; }
     showToast('CC created', 'success');
-    document.getElementById('create-modal').style.display = 'none';
+    DW.modal.close('#create-modal');
     loadCCs();
   });
 });
 
 function openDetail(id) {
-  fetch('/api/cc/'+id, {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(c) {
+  fetch('/api/cc/'+encodeURIComponent(id), {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(c) {
     if (c.error) { showToast(c.error, 'error'); return; }
     currentCC = c;
     document.getElementById('d-title').textContent = c.name;
     document.getElementById('d-id').textContent = c.id;
     document.getElementById('d-name').textContent = c.name;
-    document.getElementById('d-agent').innerHTML = '<span class="badge badge-gray">'+escapeHTML(agentLabel(c.agent_type))+'</span> <span class="text-muted text-sm">('+escapeHTML(c.agent_type)+')</span>' + codexSandboxBadge(c);
-    document.getElementById('d-service').innerHTML = '<span class="badge badge-blue">'+escapeHTML(c.service_name)+'</span>';
+    DW.setHTML(document.getElementById('d-agent'), DW.html`<span class="badge badge-gray">${agentLabel(c.agent_type)}</span> <span class="text-muted text-sm">(${c.agent_type})</span>${codexSandboxBadge(c)}`);
+    DW.setHTML(document.getElementById('d-service'), DW.html`<span class="badge badge-blue">${c.service_name}</span>`);
     var needsKey = ccNeedsKey(c);
-    document.getElementById('d-key').innerHTML = (needsKey ? '<span class="badge badge-red">reassign key</span> ' : '') + escapeHTML(c.api_key_name);
+    DW.setHTML(document.getElementById('d-key'), DW.html`${needsKey ? DW.raw('<span class="badge badge-red">reassign key</span> ') : ''}${c.api_key_name}`);
     var pretty = c.config;
     try { pretty = JSON.stringify(JSON.parse(c.config), null, 2); } catch(e) {}
     document.getElementById('d-config').textContent = pretty;
-    document.getElementById('d-active').innerHTML = c.is_active
-      ? '<span class="badge badge-green">Active</span>'
-      : (needsKey ? '<span class="badge badge-red">Disabled: reassign key</span>' : '<span class="badge badge-gray">Inactive</span>');
+    DW.setHTML(document.getElementById('d-active'), c.is_active
+      ? DW.raw('<span class="badge badge-green">Active</span>')
+      : (needsKey ? DW.raw('<span class="badge badge-red">Disabled: reassign key</span>') : DW.raw('<span class="badge badge-gray">Inactive</span>')));
     document.getElementById('d-created').textContent = c.created_at;
 
     var tbody = document.getElementById('d-channels');
     var chans = c.channels || [];
     if (chans.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No channels yet</td></tr>';
+      DW.setHTML(tbody, DW.raw('<tr><td colspan="4" class="text-muted">No channels yet</td></tr>'));
     } else {
-      tbody.innerHTML = '';
+      tbody.replaceChildren();
       chans.forEach(function(ch) {
         var kindBadge = ch.kind === 'management'
-          ? '<span class="badge badge-blue">management</span>'
-          : '<span class="badge badge-gray">task</span>';
-        var name = escapeHTML(ch.name||'?');
-        if (ch.archived) name += '  <span class="text-muted text-sm">(archived)</span>';
+          ? DW.raw('<span class="badge badge-blue">management</span>')
+          : DW.raw('<span class="badge badge-gray">task</span>');
+        var archived = ch.archived ? DW.raw('  <span class="text-muted text-sm">(archived)</span>') : '';
         var tr = document.createElement('tr');
-        tr.innerHTML =
-          '<td>' + kindBadge + '</td>' +
-          '<td>' + name + '</td>' +
-          '<td class="mono text-sm">' + escapeHTML(ch.handle||'') + '</td>' +
-          '<td class="mono text-sm">' + escapeHTML(ch.session_id||'<none>') + '</td>';
+        DW.setHTML(tr, DW.html`<td>${kindBadge}</td><td>${ch.name||'?'}${archived}</td><td class="mono text-sm">${ch.handle||''}</td><td class="mono text-sm">${ch.session_id||'<none>'}</td>`);
         tbody.appendChild(tr);
       });
     }
 
-    document.getElementById('d-test-result').innerHTML = '';
-    document.getElementById('d-delete-btn').onclick = function() {
-      if (!confirm('Delete CC "'+c.name+'"? Assigned clients will lose access; channels are archived.')) return;
-      fetch('/api/cc/'+c.id, {method:'DELETE', credentials:'same-origin'})
-        .then(function(r){return r.json();}).then(function(d){
-          if (d.error) { showToast(d.error,'error'); return; }
-          document.getElementById('detail-modal').style.display = 'none';
-          loadCCs();
-          showToast('Deleted','success');
-        });
-    };
-    document.getElementById('detail-modal').style.display = 'flex';
+    document.getElementById('d-test-result').replaceChildren();
+    DW.modal.open('#detail-modal');
   });
 }
 
@@ -583,11 +557,11 @@ function openEditFromDetail() {
 }
 
 function openEdit(id) {
-  fetch('/api/cc/'+id, {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(c) {
+  fetch('/api/cc/'+encodeURIComponent(id), {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(c) {
     if (c.error) { showToast(c.error, 'error'); return; }
     currentCC = c;
     populateEdit(c);
-    document.getElementById('edit-modal').style.display = 'flex';
+    DW.modal.open('#edit-modal');
   });
 }
 
@@ -595,65 +569,30 @@ function populateEdit(c) {
   document.getElementById('edit-cc-id').value = c.id;
   document.getElementById('edit-cc-name').value = c.name || '';
   document.getElementById('edit-cc-active').checked = !!c.is_active;
-  document.getElementById('edit-cc-binding').innerHTML =
-    escapeHTML(c.client_name || '?') +
-    ' / ' + escapeHTML(c.service_name || '?') +
-    '<br><span class="text-muted">Client and message service are immutable. Reassign the bot token here when the previous key was deleted.</span>';
-  document.getElementById('edit-test-result').innerHTML = '';
+  DW.setHTML(document.getElementById('edit-cc-binding'), DW.html`${c.client_name || '?'} / ${c.service_name || '?'}<br><span class="text-muted">Client and message service are immutable. Reassign the bot token here when the previous key was deleted.</span>`);
+  document.getElementById('edit-test-result').replaceChildren();
   var cfg = parseCCConfig(c);
   var box = document.getElementById('edit-config-fields');
   var agentOptions = ['claude_code', 'codex', 'openclaw'].map(function(a) {
-    return '<option value="'+escapeHTML(a)+'" '+(a === c.agent_type ? 'selected' : '')+'>'+escapeHTML(agentLabel(a))+' ('+escapeHTML(a)+')</option>';
-  }).join('');
+    return DW.html`<option value="${a}" ${a === c.agent_type ? DW.raw('selected') : ''}>${agentLabel(a)} (${a})</option>`;
+  });
   if (c.agent_type && ['claude_code', 'codex', 'openclaw'].indexOf(c.agent_type) < 0) {
-    agentOptions = '<option value="'+escapeHTML(c.agent_type)+'" selected disabled>'+escapeHTML(c.agent_type)+' (unsupported by cc watch)</option>' + agentOptions;
+    agentOptions.unshift(DW.html`<option value="${c.agent_type}" selected disabled>${c.agent_type} (unsupported by cc watch)</option>`);
   }
-  var agentField =
-    '<div class="form-group">' +
-      '<label>Agent type</label>' +
-      '<select id="edit-cc-agent" required onchange="renderEditAgentOptions()">'+agentOptions+'</select>' +
-      '<span class="text-muted text-sm">Pick the agent installed on the assigned client. Codex should be used with OpenAI/Codex credentials; Claude Code with Anthropic/Claude credentials.</span>' +
-    '</div>';
+  var agentField = DW.html`<div class="form-group"><label>Agent type</label><select id="edit-cc-agent" required data-on-change="renderEditAgentOptions">${agentOptions}</select><span class="text-muted text-sm">Pick the agent installed on the assigned client. Codex should be used with OpenAI/Codex credentials; Claude Code with Anthropic/Claude credentials.</span></div>`;
   var keyOptions = allKeys
     .filter(function(k){ return k.service_id === c.service_id && k.is_active; })
     .map(function(k) {
-      return '<option value="'+escapeHTML(k.id)+'" '+(k.id === c.api_key_id ? 'selected' : '')+'>'+escapeHTML(k.name)+'</option>';
-    }).join('');
-  var keyField =
-    '<div class="form-group">' +
-      '<label>Bot Token</label>' +
-      '<select id="edit-cc-key" required>' + (keyOptions || '<option value="">No active keys for this service</option>') + '</select>' +
-      (ccNeedsKey(c) ? '<span class="text-sm" style="color:var(--danger)">This CC was disabled because its key was deleted. Pick a replacement key and activate it.</span>' : '') +
-    '</div>';
+      return DW.html`<option value="${k.id}" ${k.id === c.api_key_id ? DW.raw('selected') : ''}>${k.name}</option>`;
+    });
+  var needsKeyNote = ccNeedsKey(c) ? DW.raw('<span class="text-sm" style="color:var(--danger)">This CC was disabled because its key was deleted. Pick a replacement key and activate it.</span>') : '';
+  var keyField = DW.html`<div class="form-group"><label>Bot Token</label><select id="edit-cc-key" required>${keyOptions.length ? keyOptions : DW.raw('<option value="">No active keys for this service</option>')}</select>${needsKeyNote}</div>`;
   if (c.service_name === 'discord') {
-    box.innerHTML =
-        agentField +
-        '<div id="edit-agent-options"></div>' +
-        keyField +
-      '<div class="form-group">' +
-        '<label>Server ID</label>' +
-        '<input type="text" id="edit-cfg-guild" value="'+escapeHTML(cfg.guild_id || '')+'" placeholder="Discord server id">' +
-      '</div>' +
-      '<div class="form-group">' +
-        '<label>Category ID</label>' +
-        '<input type="text" id="edit-cfg-category" value="'+escapeHTML(cfg.category_id || '')+'" placeholder="Discord category id">' +
-        '<span class="text-muted text-sm">Changing this affects future test/provision operations. Existing Discord channels are not moved automatically.</span>' +
-      '</div>' +
-      '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">' +
-        '<button type="button" class="btn btn-sm" onclick="preflightEditDiscordCategory()">Check permissions</button>' +
-        '<button type="button" class="btn btn-sm" onclick="grantEditDiscordCategoryAccess()">Grant bot access</button>' +
-      '</div>';
+    DW.setHTML(box, DW.html`${agentField}<div id="edit-agent-options"></div>${keyField}<div class="form-group"><label>Server ID</label><input type="text" id="edit-cfg-guild" value="${cfg.guild_id || ''}" placeholder="Discord server id"></div><div class="form-group"><label>Category ID</label><input type="text" id="edit-cfg-category" value="${cfg.category_id || ''}" placeholder="Discord category id"><span class="text-muted text-sm">Changing this affects future test/provision operations. Existing Discord channels are not moved automatically.</span></div><div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap"><button type="button" class="btn btn-sm" data-action="preflightEditDiscordCategory">Check permissions</button><button type="button" class="btn btn-sm" data-action="grantEditDiscordCategoryAccess">Grant bot access</button></div>`);
     renderEditAgentOptions();
     return;
   }
-  box.innerHTML =
-    agentField +
-    '<div id="edit-agent-options"></div>' +
-    keyField +
-    '<div class="form-group">' +
-      '<label>Config JSON</label>' +
-      '<textarea id="edit-cfg-json" style="min-height:90px;font-family:monospace;font-size:0.75rem">'+escapeHTML(JSON.stringify(cfg, null, 2))+'</textarea>' +
-    '</div>';
+  DW.setHTML(box, DW.html`${agentField}<div id="edit-agent-options"></div>${keyField}<div class="form-group"><label>Config JSON</label><textarea id="edit-cfg-json" style="min-height:90px;font-family:monospace;font-size:0.75rem">${JSON.stringify(cfg, null, 2)}</textarea></div>`);
   renderEditAgentOptions();
 }
 
@@ -663,8 +602,8 @@ function renderEditAgentOptions() {
   var agent = document.getElementById('edit-cc-agent').value;
   var cfg = parseCCConfig(currentCC || {});
   var opts = cfg.agent_options || {};
-  box.innerHTML = agent === 'codex'
-    ? codexSandboxField('edit-codex-sandbox', opts.sandbox || 'workspace-write') : '';
+  if (agent === 'codex') DW.setHTML(box, codexSandboxField('edit-codex-sandbox', opts.sandbox || 'workspace-write'));
+  else box.replaceChildren();
 }
 
 function readEditConfig() {
@@ -691,7 +630,7 @@ document.getElementById('edit-form').addEventListener('submit', function(e) {
     showToast('Invalid config: ' + err.message, 'error');
     return;
   }
-  fetch('/api/cc/' + currentCC.id, {
+  fetch('/api/cc/' + encodeURIComponent(currentCC.id), {
     method: 'PUT', credentials: 'same-origin',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({
@@ -704,7 +643,7 @@ document.getElementById('edit-form').addEventListener('submit', function(e) {
   }).then(function(r){return r.json();}).then(function(d) {
     if (d.error) { showToast(d.error, 'error'); return; }
     showToast('CC updated', 'success');
-    document.getElementById('edit-modal').style.display = 'none';
+    DW.modal.close('#edit-modal');
     loadCCs();
     if (document.getElementById('detail-modal').style.display !== 'none') {
       openDetail(currentCC.id);
@@ -720,14 +659,14 @@ function grantEditDiscordCategoryAccess() {
   var catID = document.getElementById('edit-cfg-category').value.trim();
   var panel = document.getElementById('edit-test-result');
   if (!keyID || !catID) { showToast('Choose a bot token and category first', 'error'); return; }
-  panel.innerHTML = '<div class="text-muted text-sm">Granting bot access on the category...</div>';
+  DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Granting bot access on the category...</div>'));
   fetch('/api/cc/discord/category-permissions', {
     method:'POST', credentials:'same-origin',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({api_key_id:keyID, category_id:catID})
   }).then(function(r){return r.json();}).then(function(d) {
     if (d.error) {
-      panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+escapeHTML(d.error)+'</div>';
+      DW.setHTML(panel, DW.html`<div class="text-sm" style="color:#ef4444">${d.error}</div>`);
       return;
     }
     showToast('Bot access granted', 'success');
@@ -742,14 +681,14 @@ function preflightEditDiscordCategory() {
   var catID = document.getElementById('edit-cfg-category').value.trim();
   var panel = document.getElementById('edit-test-result');
   if (!keyID || !guildID || !catID) { showToast('Choose a bot token, server, and category first', 'error'); return; }
-  panel.innerHTML = '<div class="text-muted text-sm">Checking Discord permissions...</div>';
+  DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Checking Discord permissions...</div>'));
   fetch('/api/cc/discord/preflight', {
     method:'POST', credentials:'same-origin',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({api_key_id:keyID, guild_id:guildID, category_id:catID})
   }).then(function(r){return r.json();}).then(function(d) {
-    if (d.error) { panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+escapeHTML(d.error)+'</div>'; return; }
-    panel.innerHTML = renderPreflightResult(d, escapeHTML);
+    if (d.error) { DW.setHTML(panel, DW.html`<div class="text-sm" style="color:#ef4444">${d.error}</div>`); return; }
+    DW.setHTML(panel, renderPreflightResult(d));
   });
 }
 
@@ -760,9 +699,9 @@ function testAgent() {
   var orig = btn.textContent;
   btn.textContent = 'Sending...';
   btn.disabled = true;
-  panel.innerHTML = '<div class="text-muted text-sm">Publishing <code>hi</code> to the management channel for ' + escapeHTML(agentLabel(currentCC.agent_type)) + '.</div>';
+  DW.setHTML(panel, DW.html`<div class="text-muted text-sm">Publishing <code>hi</code> to the management channel for ${agentLabel(currentCC.agent_type)}.</div>`);
 
-  fetch('/api/cc/' + currentCC.id + '/test-agent', {method:'POST', credentials:'same-origin'})
+  fetch('/api/cc/' + encodeURIComponent(currentCC.id) + '/test-agent', {method:'POST', credentials:'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(d) {
       btn.textContent = orig;
@@ -770,8 +709,7 @@ function testAgent() {
       if (d.error) {
         btn.textContent = orig;
         btn.disabled = false;
-        panel.innerHTML = '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid #ef4444;padding:0.75rem">' +
-          '<strong style="color:#ef4444">Agent test failed</strong><br><span class="text-sm">' + escapeHTML(d.error) + '</span></div>';
+        DW.setHTML(panel, DW.html`<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid #ef4444;padding:0.75rem"><strong style="color:#ef4444">Agent test failed</strong><br><span class="text-sm">${d.error}</span></div>`);
         return;
       }
       if (d.test_id) {
@@ -789,17 +727,14 @@ function testAgent() {
           ? 'Queued in the control channel inbox; the assigned client watcher will pick it up by polling.'
           : 'No connected duckway cc watch daemon was listening for ' + (currentCC.client_name || 'this client') + '.');
       var commands = (delivered || queued) ? '' :
-        '<div class="mt-1 text-sm text-muted">On the assigned client, run:</div>' +
-        '<pre class="mt-1" style="white-space:pre-wrap;margin-bottom:0"><code>duckway sync\n' +
-        'duckway cc watch status\n' +
-        'duckway cc watch restart</code></pre>';
-      panel.innerHTML = '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ' + (delivered ? '#22c55e' : '#f59e0b') + ';padding:0.75rem">' +
-        '<strong>' + title + '</strong><br><span class="text-sm">Sent <code>hi</code> to <code>' + escapeHTML(d.handle || '') + '</code>. ' + escapeHTML(note) + '</span>' + commands + '</div>';
+        DW.raw('<div class="mt-1 text-sm text-muted">On the assigned client, run:</div><pre class="mt-1" style="white-space:pre-wrap;margin-bottom:0"><code>duckway sync\nduckway cc watch status\nduckway cc watch restart</code></pre>');
+      var borderColor = delivered ? '#22c55e' : '#f59e0b';
+      DW.setHTML(panel, DW.html`<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ${borderColor};padding:0.75rem"><strong>${title}</strong><br><span class="text-sm">Sent <code>hi</code> to <code>${d.handle || ''}</code>. ${note}</span>${commands}</div>`);
     })
     .catch(function(err) {
       btn.textContent = orig;
       btn.disabled = false;
-      panel.innerHTML = '<div class="text-muted text-sm" style="color:#ef4444">Agent test request failed: ' + escapeHTML(err.message) + '</div>';
+      DW.setHTML(panel, DW.html`<div class="text-muted text-sm" style="color:#ef4444">Agent test request failed: ${err.message}</div>`);
     });
 }
 
@@ -815,22 +750,21 @@ function renderAgentTestStatus(test, handle) {
   var final = status === 'replied' || status === 'failed';
   var color = status === 'replied' ? '#22c55e' : (status === 'failed' ? '#ef4444' : '#f59e0b');
   var text = labels[status] || status;
-  var extra = status === 'failed' && test.error ? '<br><span class="text-sm" style="color:#ef4444">' + escapeHTML(test.error) + '</span>' : '';
+  var extra = status === 'failed' && test.error ? DW.html`<br><span class="text-sm" style="color:#ef4444">${test.error}</span>` : '';
   var note = final
     ? (status === 'replied' ? 'The watcher ran the agent and posted a reply.' : 'The watcher reported an error.')
     : 'Waiting for the assigned client watcher to finish.';
-  return '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ' + color + ';padding:0.75rem">' +
-    '<strong>' + escapeHTML(text) + '</strong><br><span class="text-sm">Test message <code>hi</code> on <code>' + escapeHTML(handle || test.handle || '') + '</code>. ' + escapeHTML(note) + '</span>' + extra + '</div>';
+  return DW.html`<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ${color};padding:0.75rem"><strong>${text}</strong><br><span class="text-sm">Test message <code>hi</code> on <code>${handle || test.handle || ''}</code>. ${note}</span>${extra}</div>`;
 }
 
 function pollAgentTest(ccID, testID, handle, btn, orig, panel) {
   var started = Date.now();
   function tick() {
-    fetch('/api/cc/' + ccID + '/test-agent/' + testID, {credentials:'same-origin'})
+    fetch('/api/cc/' + encodeURIComponent(ccID) + '/test-agent/' + encodeURIComponent(testID), {credentials:'same-origin'})
       .then(function(r){ return r.json(); })
       .then(function(test) {
         if (test.error) throw new Error(test.error);
-        panel.innerHTML = renderAgentTestStatus(test, handle);
+        DW.setHTML(panel, renderAgentTestStatus(test, handle));
         if (test.status === 'replied' || test.status === 'failed') {
           btn.textContent = orig;
           btn.disabled = false;
@@ -839,7 +773,10 @@ function pollAgentTest(ccID, testID, handle, btn, orig, panel) {
         if (Date.now() - started > 120000) {
           btn.textContent = orig;
           btn.disabled = false;
-          panel.innerHTML += '<div class="mt-1 text-sm text-muted">Still waiting after 120s. Check <code>duckway cc watch status</code> and <code>cc-watch.log</code> on the assigned client.</div>';
+          var waitNote = document.createElement('div');
+          waitNote.className = 'mt-1 text-sm text-muted';
+          DW.setHTML(waitNote, DW.raw('Still waiting after 120s. Check <code>duckway cc watch status</code> and <code>cc-watch.log</code> on the assigned client.'));
+          panel.appendChild(waitNote);
           return;
         }
         setTimeout(tick, 1000);
@@ -847,7 +784,7 @@ function pollAgentTest(ccID, testID, handle, btn, orig, panel) {
       .catch(function(err) {
         btn.textContent = orig;
         btn.disabled = false;
-        panel.innerHTML = '<div class="text-muted text-sm" style="color:#ef4444">Agent test status failed: ' + escapeHTML(err.message) + '</div>';
+        DW.setHTML(panel, DW.html`<div class="text-muted text-sm" style="color:#ef4444">Agent test status failed: ${err.message}</div>`);
       });
   }
   tick();
@@ -860,35 +797,31 @@ function testCC() {
   var orig = btn.textContent;
   btn.textContent = 'Testing…';
   btn.disabled = true;
-  panel.innerHTML = '<div class="text-muted text-sm">Calling Discord — this opens then immediately closes a channel under the configured category.</div>';
+  DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Calling Discord — this opens then immediately closes a channel under the configured category.</div>'));
 
-  fetch('/api/cc/' + currentCC.id + '/test', {method:'POST', credentials:'same-origin'})
+  fetch('/api/cc/' + encodeURIComponent(currentCC.id) + '/test', {method:'POST', credentials:'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(d) {
       btn.textContent = orig;
       btn.disabled = false;
       if (d.error) {
-        panel.innerHTML = '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid var(--red,#ef4444);padding:0.75rem">' +
-          '<strong>Test failed</strong><br><span class="text-sm">' + escapeHTML(d.error) + '</span></div>';
+        DW.setHTML(panel, DW.html`<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid var(--red,#ef4444);padding:0.75rem"><strong>Test failed</strong><br><span class="text-sm">${d.error}</span></div>`);
         return;
       }
       var rows = (d.steps || []).map(function(s) {
-        var icon = s.ok ? '<span style="color:#22c55e">✓</span>' : '<span style="color:#ef4444">✗</span>';
-        return '<tr><td style="width:1.5rem">' + icon + '</td>' +
-               '<td>' + escapeHTML(s.name) + '</td>' +
-               '<td class="text-muted text-sm mono" style="word-break:break-all">' + escapeHTML(s.note || '') + '</td></tr>';
-      }).join('');
+        var icon = s.ok ? DW.raw('<span style="color:#22c55e">✓</span>') : DW.raw('<span style="color:#ef4444">✗</span>');
+        return DW.html`<tr><td style="width:1.5rem">${icon}</td><td>${s.name}</td><td class="text-muted text-sm mono" style="word-break:break-all">${s.note || ''}</td></tr>`;
+      });
       var border = d.ok ? '#22c55e' : '#ef4444';
       var summary = d.ok
-        ? '<strong style="color:#22c55e">All steps passed</strong> — bot token, guild + category access, and create/delete permissions all work.'
-        : '<strong style="color:#ef4444">Test failed</strong> — see the failing step below.';
-      panel.innerHTML = '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ' + border + ';padding:0.75rem">' +
-        summary + '<table class="mt-1" style="width:100%">' + rows + '</table></div>';
+        ? DW.raw('<strong style="color:#22c55e">All steps passed</strong> — bot token, guild + category access, and create/delete permissions all work.')
+        : DW.raw('<strong style="color:#ef4444">Test failed</strong> — see the failing step below.');
+      DW.setHTML(panel, DW.html`<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ${border};padding:0.75rem">${summary}<table class="mt-1" style="width:100%">${rows}</table></div>`);
     })
     .catch(function(err) {
       btn.textContent = orig;
       btn.disabled = false;
-      panel.innerHTML = '<div class="text-muted text-sm" style="color:#ef4444">Test request failed: ' + escapeHTML(err.message) + '</div>';
+      DW.setHTML(panel, DW.html`<div class="text-muted text-sm" style="color:#ef4444">Test request failed: ${err.message}</div>`);
     });
 }
 </script>

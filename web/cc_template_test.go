@@ -15,8 +15,8 @@ func TestCCTemplateShowsCodexSandboxOutsideEdit(t *testing.T) {
 
 	checks := []string{
 		"function codexSandboxBadge(c)",
-		"escapeHTML(agentLabel(c.agent_type)) + ')</span>' + codexSandboxBadge(c)",
-		"escapeHTML(c.agent_type)+')</span>' + codexSandboxBadge(c)",
+		"(${agentLabel(c.agent_type)})</span>${codexSandboxBadge(c)}",
+		"(${c.agent_type})</span>${codexSandboxBadge(c)}",
 	}
 	for _, check := range checks {
 		if !strings.Contains(source, check) {
@@ -35,7 +35,7 @@ func TestCCTemplateCodexSandboxBadgeHighlightsUnsafeModes(t *testing.T) {
 	checks := []string{
 		"sandbox === 'danger-full-access' ? 'badge-red'",
 		"sandbox === 'none' ? 'badge-yellow'",
-		"configured sandbox: '+escapeHTML(label)",
+		"configured sandbox: ${label}",
 		"none (use client Codex config)",
 		"duckway cc watch restart",
 	}

@@ -46,7 +46,7 @@ func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
 	}
 	html := string(body)
 	required := []string{
-		`onclick="rotateClientToken()"`,
+		`data-action="rotateClientToken"`,
 		`/rotate-token`,
 		`function showClientToken(data, rotated)`,
 		`Reconfigure the Duckway client`,
@@ -66,7 +66,7 @@ func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
 		`installation_permissions`,
 		`function githubCapabilityRequirement(capability)`,
 		`GitHub App installation permission is insufficient: requires `,
-		`title="' + escHTML(name) + '"`,
+		`title="${name}"`,
 		`function onGitHubGrantToggle(input)`,
 		`if (el && !(el.disabled && !value)) el.checked=value;`,
 		`repo-grant-controls`,
@@ -122,7 +122,7 @@ func TestClientsTemplateMakesClientReconfigurationDiscoverable(t *testing.T) {
 	}
 	html := string(body)
 	required := []string{
-		`onclick="openClientDetail('{{.ID}}')">Reconfigure connection info</button>`,
+		`data-action="openClientDetail" data-id="{{.ID}}">Reconfigure connection info</button>`,
 		`Reconfiguring connection info revokes the current client token immediately. Existing client and API key assignments remain in place. The new token and setup instructions are shown once.`,
 		`>Reconfigure Connection Info</button>`,
 		`The current token will be revoked immediately. Existing client and API key assignments will remain in place. The new token and setup instructions will be shown once.`,

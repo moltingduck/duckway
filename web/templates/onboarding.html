@@ -72,7 +72,7 @@
       <input type="text" id="client-name" placeholder="e.g. dev-laptop" autofocus>
     </div>
     <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1rem">
-      <button class="btn btn-primary" onclick="createClient()">Create &amp; Continue →</button>
+      <button class="btn btn-primary" data-action="createClient">Create &amp; Continue →</button>
     </div>
   </div>
 </div>
@@ -92,10 +92,10 @@
     </div>
     <div id="suite-entries-preview" style="display:none;margin-top:.5rem;padding:.75rem;background:var(--bg-input);border-radius:var(--radius);font-size:.85rem"></div>
     <div style="display:flex;justify-content:space-between;margin-top:1rem">
-      <button class="btn" onclick="goStep(1)">← Back</button>
+      <button class="btn" data-action="goStep" data-step="1">← Back</button>
       <div style="display:flex;gap:.5rem">
-        <button class="btn" onclick="goStep(3)">Skip</button>
-        <button class="btn btn-primary" onclick="assignSuite()">Assign &amp; Continue →</button>
+        <button class="btn" data-action="goStep" data-step="3">Skip</button>
+        <button class="btn btn-primary" data-action="assignSuite">Assign &amp; Continue →</button>
       </div>
     </div>
   </div>
@@ -114,7 +114,7 @@
     </div>
     <div class="form-group">
       <label>Agent type</label>
-        <select id="cc-agent" onchange="renderOnboardingAgentOptions()">
+        <select id="cc-agent" data-on-change="renderOnboardingAgentOptions">
           <option value="claude_code">claude_code</option>
           <option value="codex">codex</option>
           <option value="openclaw">openclaw</option>
@@ -124,19 +124,19 @@
     <div id="onboarding-agent-options"></div>
     <div class="form-group">
       <label>Message channel</label>
-      <select id="cc-service" onchange="loadCCKeys();renderCCConfig()"></select>
+      <select id="cc-service" data-on-change="onCCServiceChange"></select>
       <span class="text-muted text-sm">Only services that can carry Control Channel messages are shown.</span>
     </div>
     <div class="form-group">
       <label>Bot token (API Key)</label>
-      <select id="cc-key"></select>
+      <select id="cc-key" data-on-change="onCCKeyChange"></select>
     </div>
     <div id="cc-config-fields"></div>
     <div style="display:flex;justify-content:space-between;margin-top:1rem">
-      <button class="btn" onclick="goStep(2)">← Back</button>
+      <button class="btn" data-action="goStep" data-step="2">← Back</button>
       <div style="display:flex;gap:.5rem">
-        <button class="btn" onclick="finishOnboarding()">Skip</button>
-        <button class="btn btn-primary" onclick="createCC()">Create CC &amp; Finish →</button>
+        <button class="btn" data-action="finishOnboarding">Skip</button>
+        <button class="btn btn-primary" data-action="createCC">Create CC &amp; Finish →</button>
       </div>
     </div>
   </div>
@@ -151,19 +151,37 @@
     <div id="setup-commands" style="text-align:left;max-width:760px;margin:0 auto 1.5rem"></div>
     <div style="display:flex;gap:.75rem;justify-content:center">
       <a href="/admin/clients" class="btn btn-primary">View Clients</a>
-      <button class="btn" onclick="resetWizard()">Onboard Another</button>
+      <button class="btn" data-action="resetWizard">Onboard Another</button>
     </div>
   </div>
 </div>
 
-<script>
+<script nonce="{{.CSPNonce}}">
 var state = { clientID: null, clientName: null, clientToken: null, suiteID: null, suiteName: null, suiteEntries: [], ccID: null };
 var allSuites = [];
 var allServices = [];
 var allKeys = [];
-var onboardingDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
+var obDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
 var gatewayURL = window.location.origin;
 var gatewayURLValid = false;
+
+DW.actions.createClient = function() { createClient(); };
+DW.actions.goStep = function(el) { goStep(parseInt(el.dataset.step, 10)); };
+DW.actions.assignSuite = function() { assignSuite(); };
+DW.actions.renderOnboardingAgentOptions = function() { renderOnboardingAgentOptions(); };
+DW.actions.onCCServiceChange = function() { loadCCKeys(); renderCCConfig(); };
+DW.actions.onCCKeyChange = function() {
+  obDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
+  renderCCConfig();
+};
+DW.actions.finishOnboarding = function() { finishOnboarding(); };
+DW.actions.createCC = function() { createCC(); };
+DW.actions.resetWizard = function() { resetWizard(); };
+DW.actions.loadOnboardingDiscordCategories = function() { loadOnboardingDiscordCategories(); };
+DW.actions.preflightOnboardingDiscordCategory = function() { preflightOnboardingDiscordCategory(); };
+DW.actions.grantOnboardingDiscordCategoryAccess = function() { grantOnboardingDiscordCategoryAccess(); };
+DW.actions.createOnboardingDiscordCategory = function() { createOnboardingDiscordCategory(); };
+DW.actions.loadOnboardingDiscordSetup = function() { loadOnboardingDiscordSetup(); };
 
 document.addEventListener('DOMContentLoaded', function() {
   loadGatewayURL();
@@ -244,7 +262,7 @@ function goStep(n) {
 
 function createClient() {
   var name = document.getElementById('client-name').value.trim();
-  if (!name) { showToast('Client name is required', 'error'); return; }
+  if (!name) { DW.toast('Client name is required', 'error'); return; }
   fetch('/api/clients', {
     method: 'POST', credentials: 'same-origin',
     headers: {'Content-Type':'application/json'},
@@ -258,23 +276,20 @@ function createClient() {
     state.clientToken = c.token || '';
     document.getElementById('cc-name').value = name + ' CC';
     goStep(2);
-  }).catch(function(e){ showToast(e.message, 'error'); });
+  }).catch(function(e){ DW.toast(e.message, 'error'); });
 }
 
 function previewSuite() {
   var id = document.getElementById('suite-select').value;
   var preview = document.getElementById('suite-entries-preview');
   if (!id) { preview.style.display = 'none'; return; }
-  fetch('/api/key-suites/'+id, {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s){
+  fetch('/api/key-suites/'+encodeURIComponent(id), {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s){
     if (!s.entries || !s.entries.length) {
       preview.textContent = 'No entries in this suite.';
     } else {
-      preview.innerHTML = '<strong style="display:block;margin-bottom:.35rem">Entries:</strong>' +
-        s.entries.map(function(e){
-          return '<div>· <strong>' + (e.service_name || e.service_id) + '</strong> → <code>' + e.env_name + '</code>' +
-            (e.api_key_name ? ' (' + e.api_key_name + ')' : '') +
-            (e.group_name ? ' [group: ' + e.group_name + ']' : '') + '</div>';
-        }).join('');
+      DW.setHTML(preview, DW.html`<strong style="display:block;margin-bottom:.35rem">Entries:</strong>${s.entries.map(function(e){
+        return DW.html`<div>· <strong>${e.service_name || e.service_id}</strong> → <code>${e.env_name}</code>${e.api_key_name ? ' (' + e.api_key_name + ')' : ''}${e.group_name ? ' [group: ' + e.group_name + ']' : ''}</div>`;
+      })}`);
     }
     preview.style.display = '';
   });
@@ -290,7 +305,7 @@ function assignSuite() {
     goStep(3);
     return;
   }
-  fetch('/api/key-suites/'+id+'/assign', {
+  fetch('/api/key-suites/'+encodeURIComponent(id)+'/assign', {
     method: 'POST', credentials: 'same-origin',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({client_id: state.clientID})
@@ -301,15 +316,15 @@ function assignSuite() {
     var suite = allSuites.find(function(s){ return s.id === id; });
     state.suiteID = id;
     state.suiteName = suite ? suite.name : id;
-    fetch('/api/key-suites/'+id, {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s) {
+    fetch('/api/key-suites/'+encodeURIComponent(id), {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s) {
       state.suiteEntries = s.entries || [];
       updateAgentTypeOptions();
     });
     if (res.skipped && res.skipped.length) {
-      showToast('Assigned with ' + res.skipped.length + ' conflict(s) skipped', '');
+      DW.toast('Assigned with ' + res.skipped.length + ' conflict(s) skipped', '');
     }
     goStep(3);
-  }).catch(function(e){ showToast(e.message, 'error'); });
+  }).catch(function(e){ DW.toast(e.message, 'error'); });
 }
 
 function updateAgentTypeOptions() {
@@ -332,7 +347,7 @@ function updateAgentTypeOptions() {
       {value:'openclaw', label:'OpenClaw (openclaw)'}
     ];
   }
-  sel.innerHTML = '';
+  sel.replaceChildren();
   options.forEach(function(o) {
     var opt = document.createElement('option');
     opt.value = o.value;
@@ -351,20 +366,17 @@ function updateAgentTypeOptions() {
 function codexSandboxField(id, value) {
   value = value || 'workspace-write';
   var opts = ['workspace-write','read-only','danger-full-access','none'].map(function(v) {
-    return '<option value="'+esc(v)+'" '+(v === value ? 'selected' : '')+'>'+esc(v)+'</option>';
-  }).join('');
-  return '<div class="form-group">' +
-    '<label>Codex sandbox</label>' +
-    '<select id="'+esc(id)+'">'+opts+'</select>' +
-    '<span class="text-muted text-sm">Only this enum is sent to the client. Use danger-full-access only for trusted Discord categories.</span>' +
-  '</div>';
+    return DW.html`<option value="${v}" ${v === value ? DW.raw('selected') : ''}>${v}</option>`;
+  });
+  return DW.html`<div class="form-group"><label>Codex sandbox</label><select id="${id}">${opts}</select><span class="text-muted text-sm">Only this enum is sent to the client. Use danger-full-access only for trusted Discord categories.</span></div>`;
 }
 
 function renderOnboardingAgentOptions() {
   var box = document.getElementById('onboarding-agent-options');
   var sel = document.getElementById('cc-agent');
   if (!box || !sel) return;
-  box.innerHTML = sel.value === 'codex' ? codexSandboxField('onboarding-codex-sandbox', 'workspace-write') : '';
+  if (sel.value === 'codex') DW.setHTML(box, codexSandboxField('onboarding-codex-sandbox', 'workspace-write'));
+  else box.replaceChildren();
 }
 
 function applyOnboardingAgentOptions(config, agentType) {
@@ -379,11 +391,11 @@ function applyOnboardingAgentOptions(config, agentType) {
 function loadCCKeys() {
   var serviceID = document.getElementById('cc-service').value;
   var sel = document.getElementById('cc-key');
-  sel.innerHTML = '<option value="">— select —</option>';
-  sel.onchange = function() {
-    onboardingDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
-    renderCCConfig();
-  };
+  sel.replaceChildren();
+  var first = document.createElement('option');
+  first.value = '';
+  first.textContent = '— select —';
+  sel.appendChild(first);
   var matching = allKeys.filter(function(k){ return k.service_id === serviceID && k.is_active; });
   matching.forEach(function(k){
     var o = document.createElement('option');
@@ -395,10 +407,10 @@ function loadCCKeys() {
 function renderCCConfig() {
   var svc = allServices.find(function(s){ return s.id === document.getElementById('cc-service').value; });
   var fields = document.getElementById('cc-config-fields');
-  fields.innerHTML = '';
+  fields.replaceChildren();
   if (!svc) return;
   if (svc.name === 'discord' || (svc.display_name || '').toLowerCase().includes('discord')) {
-    fields.innerHTML = '<div id="onboarding-discord-setup"></div>';
+    DW.setHTML(fields, DW.raw('<div id="onboarding-discord-setup"></div>'));
     renderOnboardingDiscordSetup();
   }
 }
@@ -408,49 +420,43 @@ function renderOnboardingDiscordSetup() {
   if (!box) return;
   var keyID = document.getElementById('cc-key').value;
   if (!keyID) {
-    box.innerHTML = '<div class="text-muted text-sm">Select a Discord bot token first.</div>';
+    DW.setHTML(box, DW.raw('<div class="text-muted text-sm">Select a Discord bot token first.</div>'));
     return;
   }
-  var loaded = onboardingDiscordSetup.apiKeyId === keyID;
-  var guilds = onboardingDiscordSetup.guilds || [];
-  var cats = onboardingDiscordSetup.categories || [];
-  var guildOptions = guilds.map(function(g){ return '<option value="'+esc(g.id)+'">'+esc(g.name)+' ('+esc(g.id)+')</option>'; }).join('');
-  var catOptions = cats.map(function(c){ return '<option value="'+esc(c.id)+'">'+esc(c.name)+' ('+esc(c.id)+')</option>'; }).join('');
+  var loaded = obDiscordSetup.apiKeyId === keyID;
+  var guilds = obDiscordSetup.guilds || [];
+  var cats = obDiscordSetup.categories || [];
+  var guildOptions = guilds.map(function(g){ return DW.html`<option value="${g.id}">${g.name} (${g.id})</option>`; });
+  var catOptions = cats.map(function(c){ return DW.html`<option value="${c.id}">${c.name} (${c.id})</option>`; });
   var categoryName = state.clientName || document.getElementById('client-name').value.trim() || 'duckway';
+  var disabledAttr = !loaded ? DW.raw('disabled') : '';
   var destination = loaded && guilds.length
-    ? '<div class="form-group"><label>Server</label><select id="cfg-guild" onchange="loadOnboardingDiscordCategories()">'+guildOptions+'</select></div>' +
-      '<div class="form-group"><label>Category</label><select id="cfg-category">'+(catOptions || '<option value="">No categories loaded</option>')+'</select>' +
-        '<div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.5rem">' +
-          '<button type="button" class="btn btn-sm" onclick="preflightOnboardingDiscordCategory()">Check permissions</button>' +
-          '<button type="button" class="btn btn-sm" onclick="grantOnboardingDiscordCategoryAccess()">Grant bot access</button>' +
-          '<span class="text-muted text-sm">Grant writes category permissions; check creates and deletes a temporary channel.</span>' +
-        '</div><div id="cfg-preflight-result" style="margin-top:.5rem"></div>' +
-        '<span class="text-muted text-sm">If Grant fails, use Setup invite to add temporary Manage Roles permission, or add the bot in Discord category Permissions manually.</span></div>' +
-      '<div class="form-group"><label>Create category</label><div style="display:flex;gap:.5rem;align-items:center"><input type="text" id="cfg-new-category" value="'+esc(categoryName)+'" placeholder="'+esc(categoryName)+'"><button type="button" class="btn btn-sm" onclick="createOnboardingDiscordCategory()">Create</button></div></div>'
-    : '<div class="form-group"><label>Server ID</label><input type="text" id="cfg-guild" placeholder="Load setup, or paste server id as fallback" '+(!loaded?'disabled':'')+'></div>' +
-      '<div class="form-group"><label>Category ID</label><input type="text" id="cfg-category" placeholder="Paste category id as fallback" '+(!loaded?'disabled':'')+'></div>';
-  box.innerHTML =
-    '<div class="form-group"><label>Discord setup</label><div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">' +
-      '<button type="button" class="btn btn-sm" onclick="loadOnboardingDiscordSetup()">'+(loaded?'Refresh servers':'Load Discord setup')+'</button>' +
-      (onboardingDiscordSetup.invite_url ? '<a class="btn btn-sm" target="_blank" rel="noopener" href="'+esc(onboardingDiscordSetup.invite_url)+'">Invite bot</a>' : '') +
-      (onboardingDiscordSetup.setup_invite_url ? '<a class="btn btn-sm" target="_blank" rel="noopener" href="'+esc(onboardingDiscordSetup.setup_invite_url)+'">Setup invite</a>' : '') +
-    '</div><span class="text-muted text-sm">Invite bot uses Duckway runtime permissions. Setup invite additionally grants Manage Roles so Duckway can write category permission overrides.</span></div>' +
-    (onboardingDiscordSetup.bot ? '<div class="text-muted text-sm" style="margin-bottom:.5rem">Bot: <strong>'+esc(onboardingDiscordSetup.bot.username || onboardingDiscordSetup.bot.id)+'</strong></div>' : '') +
-    (onboardingDiscordSetup.guilds_error ? '<div class="text-muted text-sm" style="margin-bottom:.5rem">Could not list servers: '+esc(onboardingDiscordSetup.guilds_error)+'</div>' : '') +
-    destination;
+    ? DW.html`<div class="form-group"><label>Server</label><select id="cfg-guild" data-on-change="loadOnboardingDiscordCategories">${guildOptions}</select></div><div class="form-group"><label>Category</label><select id="cfg-category">${catOptions.length ? catOptions : DW.raw('<option value="">No categories loaded</option>')}</select><div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.5rem"><button type="button" class="btn btn-sm" data-action="preflightOnboardingDiscordCategory">Check permissions</button><button type="button" class="btn btn-sm" data-action="grantOnboardingDiscordCategoryAccess">Grant bot access</button><span class="text-muted text-sm">Grant writes category permissions; check creates and deletes a temporary channel.</span></div><div id="cfg-preflight-result" style="margin-top:.5rem"></div><span class="text-muted text-sm">If Grant fails, use Setup invite to add temporary Manage Roles permission, or add the bot in Discord category Permissions manually.</span></div><div class="form-group"><label>Create category</label><div style="display:flex;gap:.5rem;align-items:center"><input type="text" id="cfg-new-category" value="${categoryName}" placeholder="${categoryName}"><button type="button" class="btn btn-sm" data-action="createOnboardingDiscordCategory">Create</button></div></div>`
+    : DW.html`<div class="form-group"><label>Server ID</label><input type="text" id="cfg-guild" placeholder="Load setup, or paste server id as fallback" ${disabledAttr}></div><div class="form-group"><label>Category ID</label><input type="text" id="cfg-category" placeholder="Paste category id as fallback" ${disabledAttr}></div>`;
+  var inviteBtn = obDiscordSetup.invite_url ? DW.html`<a class="btn btn-sm" target="_blank" rel="noopener" href="${safeHref(obDiscordSetup.invite_url)}">Invite bot</a>` : '';
+  var setupInviteBtn = obDiscordSetup.setup_invite_url ? DW.html`<a class="btn btn-sm" target="_blank" rel="noopener" href="${safeHref(obDiscordSetup.setup_invite_url)}">Setup invite</a>` : '';
+  var botInfo = obDiscordSetup.bot ? DW.html`<div class="text-muted text-sm" style="margin-bottom:.5rem">Bot: <strong>${obDiscordSetup.bot.username || obDiscordSetup.bot.id}</strong></div>` : '';
+  var guildsErr = obDiscordSetup.guilds_error ? DW.html`<div class="text-muted text-sm" style="margin-bottom:.5rem">Could not list servers: ${obDiscordSetup.guilds_error}</div>` : '';
+  DW.setHTML(box, DW.html`<div class="form-group"><label>Discord setup</label><div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center"><button type="button" class="btn btn-sm" data-action="loadOnboardingDiscordSetup">${loaded ? 'Refresh servers' : 'Load Discord setup'}</button>${inviteBtn}${setupInviteBtn}</div><span class="text-muted text-sm">Invite bot uses Duckway runtime permissions. Setup invite additionally grants Manage Roles so Duckway can write category permission overrides.</span></div>${botInfo}${guildsErr}${destination}`);
+}
+
+// Only allow http(s) URLs in server-provided hrefs (blocks script-scheme URLs).
+function safeHref(u) {
+  var v = String(u == null ? '' : u).trim();
+  return /^https?:\/\//i.test(v) ? v : '#';
 }
 
 function loadOnboardingDiscordSetup() {
   var keyID = document.getElementById('cc-key').value;
-  if (!keyID) { showToast('Select a Discord bot token first', 'error'); return; }
+  if (!keyID) { DW.toast('Select a Discord bot token first', 'error'); return; }
   fetch('/api/cc/discord/setup?api_key_id=' + encodeURIComponent(keyID), {credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
-      if (d.error) { showToast(d.error, 'error'); return; }
-      onboardingDiscordSetup = {apiKeyId:keyID, bot:d.bot, invite_url:d.invite_url, setup_invite_url:d.setup_invite_url, guilds:d.guilds || [], guilds_error:d.guilds_error || '', categories:[]};
+      if (d.error) { DW.toast(d.error, 'error'); return; }
+      obDiscordSetup = {apiKeyId:keyID, bot:d.bot, invite_url:d.invite_url, setup_invite_url:d.setup_invite_url, guilds:d.guilds || [], guilds_error:d.guilds_error || '', categories:[]};
       renderOnboardingDiscordSetup();
-      if ((onboardingDiscordSetup.guilds || []).length) loadOnboardingDiscordCategories();
-      else showToast('Bot loaded. Invite it to a server, then refresh.', 'success');
+      if ((obDiscordSetup.guilds || []).length) loadOnboardingDiscordCategories();
+      else DW.toast('Bot loaded. Invite it to a server, then refresh.', 'success');
     });
 }
 
@@ -462,8 +468,8 @@ function loadOnboardingDiscordCategories() {
   fetch('/api/cc/discord/categories?api_key_id=' + encodeURIComponent(keyID) + '&guild_id=' + encodeURIComponent(guildID), {credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
-      if (d.error) { showToast(d.error, 'error'); return; }
-      onboardingDiscordSetup.categories = d.categories || [];
+      if (d.error) { DW.toast(d.error, 'error'); return; }
+      obDiscordSetup.categories = d.categories || [];
       renderOnboardingDiscordSetup();
       var g = document.getElementById('cfg-guild');
       if (g) g.value = guildID;
@@ -474,15 +480,15 @@ function createOnboardingDiscordCategory() {
   var keyID = document.getElementById('cc-key').value;
   var guildID = document.getElementById('cfg-guild').value;
   var name = document.getElementById('cfg-new-category').value.trim() || state.clientName || 'duckway';
-  if (!keyID || !guildID) { showToast('Load setup and choose a server first', 'error'); return; }
+  if (!keyID || !guildID) { DW.toast('Load setup and choose a server first', 'error'); return; }
   fetch('/api/cc/discord/categories', {
     method:'POST', credentials:'same-origin',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({api_key_id:keyID, guild_id:guildID, name:name})
   }).then(function(r){return r.json();}).then(function(d){
-    if (d.error) { showToast(d.error, 'error'); return; }
-    showToast(d.permission_warning || 'Category created and bot access granted', d.permission_warning ? 'error' : 'success');
-    onboardingDiscordSetup.categories = (onboardingDiscordSetup.categories || []).concat([d]);
+    if (d.error) { DW.toast(d.error, 'error'); return; }
+    DW.toast(d.permission_warning || 'Category created and bot access granted', d.permission_warning ? 'error' : 'success');
+    obDiscordSetup.categories = (obDiscordSetup.categories || []).concat([d]);
     renderOnboardingDiscordSetup();
     var g = document.getElementById('cfg-guild');
     var c = document.getElementById('cfg-category');
@@ -498,18 +504,18 @@ function grantOnboardingDiscordCategoryAccess() {
   var keyID = document.getElementById('cc-key').value;
   var catID = document.getElementById('cfg-category').value;
   var panel = document.getElementById('cfg-preflight-result');
-  if (!keyID || !catID) { showToast('Choose a category first', 'error'); return; }
-  if (panel) panel.innerHTML = '<div class="text-muted text-sm">Granting bot access on the category...</div>';
+  if (!keyID || !catID) { DW.toast('Choose a category first', 'error'); return; }
+  if (panel) DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Granting bot access on the category...</div>'));
   fetch('/api/cc/discord/category-permissions', {
     method:'POST', credentials:'same-origin',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({api_key_id:keyID, category_id:catID})
   }).then(function(r){return r.json();}).then(function(d){
     if (d.error) {
-      if (panel) panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+esc(d.error)+'<br>In Discord: Category Settings → Permissions → add the bot → allow Manage Channels, View Channel, Send Messages, Add Reactions, Read Message History.</div>';
+      if (panel) DW.setHTML(panel, DW.html`<div class="text-sm" style="color:#ef4444">${d.error}<br>In Discord: Category Settings → Permissions → add the bot → allow Manage Channels, View Channel, Send Messages, Add Reactions, Read Message History.</div>`);
       return;
     }
-    showToast('Bot access granted', 'success');
+    DW.toast('Bot access granted', 'success');
     preflightOnboardingDiscordCategory();
   });
 }
@@ -519,25 +525,25 @@ function preflightOnboardingDiscordCategory() {
   var guildID = document.getElementById('cfg-guild').value;
   var catID = document.getElementById('cfg-category').value;
   var panel = document.getElementById('cfg-preflight-result');
-  if (!keyID || !guildID || !catID) { showToast('Choose a server and category first', 'error'); return; }
-  if (panel) panel.innerHTML = '<div class="text-muted text-sm">Checking Discord permissions...</div>';
+  if (!keyID || !guildID || !catID) { DW.toast('Choose a server and category first', 'error'); return; }
+  if (panel) DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Checking Discord permissions...</div>'));
   fetch('/api/cc/discord/preflight', {
     method:'POST', credentials:'same-origin',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({api_key_id:keyID, guild_id:guildID, category_id:catID})
   }).then(function(r){return r.json();}).then(function(d){
-    if (d.error) { if (panel) panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+esc(d.error)+'</div>'; return; }
-    if (panel) panel.innerHTML = renderOnboardingPreflightResult(d);
+    if (d.error) { if (panel) DW.setHTML(panel, DW.html`<div class="text-sm" style="color:#ef4444">${d.error}</div>`); return; }
+    if (panel) DW.setHTML(panel, renderOnboardingPreflightResult(d));
   });
 }
 
 function renderOnboardingPreflightResult(d) {
   var rows = (d.steps || []).map(function(s) {
-    return '<tr><td style="width:1.5rem">'+(s.ok ? '<span style="color:#22c55e">✓</span>' : '<span style="color:#ef4444">✗</span>')+'</td><td>'+esc(s.name)+'</td><td class="text-muted text-sm">'+esc(s.note || '')+'</td></tr>';
-  }).join('');
-  return '<div style="background:var(--bg-input);border-left:3px solid '+(d.ok?'#22c55e':'#ef4444')+';padding:.75rem;border-radius:var(--radius)">' +
-    (d.ok ? '<strong style="color:#22c55e">Permissions OK</strong>' : '<strong style="color:#ef4444">Permission check failed</strong>') +
-    '<table style="width:100%;margin-top:.5rem">'+rows+'</table></div>';
+    return DW.html`<tr><td style="width:1.5rem">${s.ok ? DW.raw('<span style="color:#22c55e">✓</span>') : DW.raw('<span style="color:#ef4444">✗</span>')}</td><td>${s.name}</td><td class="text-muted text-sm">${s.note || ''}</td></tr>`;
+  });
+  var color = d.ok ? '#22c55e' : '#ef4444';
+  var head = d.ok ? DW.raw('<strong style="color:#22c55e">Permissions OK</strong>') : DW.raw('<strong style="color:#ef4444">Permission check failed</strong>');
+  return DW.html`<div style="background:var(--bg-input);border-left:3px solid ${color};padding:.75rem;border-radius:var(--radius)">${head}<table style="width:100%;margin-top:.5rem">${rows}</table></div>`;
 }
 
 function createCC() {
@@ -545,7 +551,7 @@ function createCC() {
   var serviceID = document.getElementById('cc-service').value;
   var keyID = document.getElementById('cc-key').value;
   var agentType = document.getElementById('cc-agent').value;
-  if (!name || !serviceID || !keyID) { showToast('Name, service, and bot token are required', 'error'); return; }
+  if (!name || !serviceID || !keyID) { DW.toast('Name, service, and bot token are required', 'error'); return; }
 
   var cfg = {};
   var guildEl = document.getElementById('cfg-guild');
@@ -569,7 +575,7 @@ function createCC() {
     state.ccID = cc.id;
     state.ccName = cc.name;
     finishOnboarding();
-  }).catch(function(e){ showToast(e.message, 'error'); });
+  }).catch(function(e){ DW.toast(e.message, 'error'); });
 }
 
 function finishOnboarding() {
@@ -578,20 +584,13 @@ function finishOnboarding() {
 }
 
 function renderSummary() {
-  var html = '<table class="detail-table" style="width:100%">';
-  html += '<tr><td class="text-muted">Client</td><td><strong>' + esc(state.clientName) + '</strong> <code class="text-sm">' + esc(state.clientID) + '</code></td></tr>';
-  if (state.suiteID) {
-    html += '<tr><td class="text-muted">Key Suite</td><td>' + esc(state.suiteName) + ' assigned</td></tr>';
-  } else {
-    html += '<tr><td class="text-muted">Key Suite</td><td class="text-muted">Skipped</td></tr>';
-  }
-  if (state.ccID) {
-    html += '<tr><td class="text-muted">Control Channel</td><td>' + esc(state.ccName) + ' created</td></tr>';
-  } else {
-    html += '<tr><td class="text-muted">Control Channel</td><td class="text-muted">Skipped</td></tr>';
-  }
-  html += '</table>';
-  document.getElementById('summary').innerHTML = html;
+  var suiteRow = state.suiteID
+    ? DW.html`<tr><td class="text-muted">Key Suite</td><td>${state.suiteName} assigned</td></tr>`
+    : DW.raw('<tr><td class="text-muted">Key Suite</td><td class="text-muted">Skipped</td></tr>');
+  var ccRow = state.ccID
+    ? DW.html`<tr><td class="text-muted">Control Channel</td><td>${state.ccName} created</td></tr>`
+    : DW.raw('<tr><td class="text-muted">Control Channel</td><td class="text-muted">Skipped</td></tr>');
+  DW.setHTML(document.getElementById('summary'), DW.html`<table class="detail-table" style="width:100%"><tr><td class="text-muted">Client</td><td><strong>${state.clientName}</strong> <code class="text-sm">${state.clientID}</code></td></tr>${suiteRow}${ccRow}</table>`);
   renderSetupCommands();
 }
 
@@ -602,14 +601,14 @@ function shellEscape(s) {
 function renderSetupCommands() {
   var el = document.getElementById('setup-commands');
   if (!state.clientToken) {
-    el.innerHTML = '';
+    el.replaceChildren();
     return;
   }
   if (!gatewayURLValid) {
-    el.innerHTML =
+    DW.setHTML(el, DW.raw(
       '<div style="background:var(--bg-input);border-left:3px solid var(--danger);padding:.75rem;border-radius:var(--radius)">' +
       '<strong style="color:var(--danger)">Gateway URL is not configured.</strong><br>' +
-      '<span class="text-sm text-muted">Set Gateway URL in Settings first. In split mode the admin panel does not serve <code>/install.sh</code>.</span></div>';
+      '<span class="text-sm text-muted">Set Gateway URL in Settings first. In split mode the admin panel does not serve <code>/install.sh</code>.</span></div>'));
     return;
   }
   var initCmd = 'printf "' + shellEscape(gatewayURL) + '\\n' + shellEscape(state.clientName) + '\\n1\\n' + shellEscape(state.clientToken) + '\\n" | duckway init';
@@ -641,10 +640,7 @@ function renderSetupCommands() {
       '# duckway sync && duckway cc watch -d'
     ]);
   }
-  el.innerHTML =
-    '<label class="text-sm" style="font-weight:600;display:block;margin-bottom:.35rem">Client setup commands</label>' +
-    '<pre style="background:var(--bg-input);padding:.75rem;border-radius:var(--radius);overflow:auto;font-size:.82rem"><code>' + esc(lines.join('\n')) + '</code></pre>' +
-    renderAutoStartDetails();
+  DW.setHTML(el, DW.html`<label class="text-sm" style="font-weight:600;display:block;margin-bottom:.35rem">Client setup commands</label><pre style="background:var(--bg-input);padding:.75rem;border-radius:var(--radius);overflow:auto;font-size:.82rem"><code>${lines.join('\n')}</code></pre>${renderAutoStartDetails()}`);
 }
 
 function renderAutoStartDetails() {
@@ -697,37 +693,19 @@ function renderAutoStartDetails() {
     '# Optional: keep user services running after boot before login.',
     'sudo loginctl enable-linger "$USER"'
   ];
-  return '<details class="setup-details" style="margin-top:.75rem">' +
-    '<summary>Auto-start Duckway on Linux with systemd</summary>' +
-    '<div class="setup-details-body">' +
-    '<p class="text-sm text-muted">Run this on the client after the setup commands above. It starts the local proxy at login; enable linger if it should run after boot before you log in.</p>' +
-    '<pre><code>' + esc(lines.join('\n')) + '</code></pre>' +
-    '<p class="text-sm text-muted mt-1">If Duckway was installed somewhere other than <code>/usr/local/bin/duckway</code>, replace that path in both service files. Logs: <code>journalctl --user -u duckway-proxy -f</code> and <code>journalctl --user -u duckway-cc-watch -f</code>.</p>' +
-    '</div></details>';
+  return DW.html`<details class="setup-details" style="margin-top:.75rem"><summary>Auto-start Duckway on Linux with systemd</summary><div class="setup-details-body"><p class="text-sm text-muted">Run this on the client after the setup commands above. It starts the local proxy at login; enable linger if it should run after boot before you log in.</p><pre><code>${lines.join('\n')}</code></pre><p class="text-sm text-muted mt-1">If Duckway was installed somewhere other than <code>/usr/local/bin/duckway</code>, replace that path in both service files. Logs: <code>journalctl --user -u duckway-proxy -f</code> and <code>journalctl --user -u duckway-cc-watch -f</code>.</p></div></details>`;
 }
 
 function resetWizard() {
   state = { clientID: null, clientName: null, clientToken: null, suiteID: null, suiteName: null, suiteEntries: [], ccID: null };
-  onboardingDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
+  obDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
   document.getElementById('client-name').value = '';
   document.getElementById('suite-select').value = '';
   document.getElementById('suite-entries-preview').style.display = 'none';
   document.getElementById('cc-name').value = '';
-  document.getElementById('setup-commands').innerHTML = '';
+  document.getElementById('setup-commands').replaceChildren();
   goStep(1);
 }
 
-function esc(s) {
-  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-function showToast(msg, type) {
-  var t = document.getElementById('toast');
-  var el = document.createElement('div');
-  el.className = 'toast-msg ' + (type || '');
-  el.textContent = msg;
-  t.appendChild(el);
-  setTimeout(function(){ el.remove(); }, 4000);
-}
 </script>
 {{end}}
