@@ -22,7 +22,7 @@
 </div>
 
 <div class="cc-scrim" id="cc-scrim" data-action="closeDrawer" hidden></div>
-<aside class="cc-drawer" id="cc-drawer" aria-labelledby="cc-h" aria-hidden="true" tabindex="-1">
+<aside class="cc-drawer" id="cc-drawer" role="dialog" aria-modal="true" aria-labelledby="cc-h" aria-hidden="true" tabindex="-1">
   <div class="cc-drawer-head">
     <h2 id="cc-h" tabindex="-1">Control channel</h2>
     <span id="cc-head-status"></span>
@@ -167,7 +167,8 @@ function closeDrawer(restore) {
 DW.actions.closeDrawer = function() { closeDrawer(true); };
 
 document.addEventListener('keydown', function(e) {
-  if (!drawerOpen() || (DW.live && DW.live.modalOpen && DW.live.modalOpen())) return;
+  if (!drawerOpen() || e.defaultPrevented || (DW.live && DW.live.modalOpen && DW.live.modalOpen())) return;
+  if (e.target && e.target.closest && e.target.closest('.modal-backdrop')) return;
   if (e.key === 'Escape') { e.preventDefault(); closeDrawer(true); return; }
   if (e.key === 'Tab') {
     var panel = $('cc-drawer');

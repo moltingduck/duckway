@@ -30,7 +30,7 @@ type clientDetailGroup struct {
 func (h *AdminHandler) ClientDetailPage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	client, err := h.clients.GetByID(id)
-	if err != nil || client == nil {
+	if err != nil || client == nil || h.clients.IsDraft(id) {
 		w.WriteHeader(http.StatusNotFound)
 		h.render(w, r, "client_detail", pageData{
 			Title:  "Client not found",

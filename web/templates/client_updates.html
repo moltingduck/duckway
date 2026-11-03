@@ -245,6 +245,17 @@ function renderDrawer() {
     return DW.html`<li><button type="button" class="ro-hist-row" data-action="showRollout" data-id="${r.id}"><span class="mono ro-hist-ver">${r.target_version}</span>${pill(r.status)}<span class="text-sm text-muted ro-hist-meta">${c.healthy}/${c.total} updated${c.failed ? ' · ' + c.failed + ' failed' : ''} · ${r.created_at}</span></button></li>`;
   })}</ul>`);
 }
+function setBackgroundInert(on) {
+  var main = $('main') || $('ro-drawer').parentElement;
+  var keep = [$('ro-drawer'), $('ro-scrim')];
+  [main.parentElement, main].forEach(function (host) {
+    if (!host) return;
+    Array.prototype.forEach.call(host.children, function (c) {
+      if (keep.indexOf(c) >= 0 || c === main) return;
+      if (on) c.setAttribute('inert', ''); else c.removeAttribute('inert');
+    });
+  });
+}
 function isDrawerOpen() { return !$('ro-drawer').hidden; }
 function openHistory(opener) {
   drawerOpener = opener || document.activeElement;
@@ -252,12 +263,14 @@ function openHistory(opener) {
   renderDrawer();
   $('ro-scrim').hidden = false;
   $('ro-drawer').hidden = false;
+  setBackgroundInert(true);
   $('ro-drawer-h').focus();
 }
 function closeHistory(restore) {
   if (!isDrawerOpen()) return;
   $('ro-drawer').hidden = true;
   $('ro-scrim').hidden = true;
+  setBackgroundInert(false);
   var o = drawerOpener; drawerOpener = null;
   if (restore !== false && o && o.isConnected && o.focus) o.focus();
 }

@@ -47,7 +47,7 @@ func (h *ClientImpactHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	out := ClientImpact{ClientID: id, Bundles: []clientImpactBundle{}}
 
-	err := h.db.QueryRow("SELECT name, is_active FROM clients WHERE id = ?", id).Scan(&out.Name, &out.IsActive)
+	err := h.db.QueryRow("SELECT name, is_active FROM clients WHERE id = ? AND id NOT IN (SELECT client_id FROM client_drafts)", id).Scan(&out.Name, &out.IsActive)
 	if err == sql.ErrNoRows {
 		jsonError(w, "client not found", http.StatusNotFound)
 		return

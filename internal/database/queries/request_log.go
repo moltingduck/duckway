@@ -440,7 +440,7 @@ type LogFacets struct {
 
 func (q *RequestLogQueries) Facets() (*LogFacets, error) {
 	out := &LogFacets{Clients: []LogFacetClient{}, Services: []string{}, Credentials: []string{}}
-	rows, err := q.db.Query(`SELECT id, name FROM clients ORDER BY name LIMIT 1000`)
+	rows, err := q.db.Query(`SELECT id, name FROM clients WHERE id NOT IN (SELECT client_id FROM client_drafts) ORDER BY name LIMIT 1000`)
 	if err != nil {
 		return nil, err
 	}

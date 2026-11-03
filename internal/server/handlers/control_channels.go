@@ -582,10 +582,14 @@ func (h *ControlChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if len(req.Config) > 0 {
 		configStr = restoreCCMaskedConfig(string(req.Config), cur.Config)
 	}
-	configStr, err = normalizeCCConfigForAgent(agentType, configStr)
-	if err != nil {
-		jsonError(w, err.Error(), http.StatusBadRequest)
-		return
+	// A stored config that no longer parses is kept verbatim unless the request
+	// explicitly supplies a new config; it is never silently replaced by {}.
+	if len(req.Config) > 0 || json.Valid([]byte(cur.Config)) {
+		configStr, err = normalizeCCConfigForAgent(agentType, configStr)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	active := cur.IsActive
 	if req.IsActive != nil {

@@ -2,7 +2,9 @@ package queries
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/hackerduck/duckway/internal/models"
 )
@@ -90,19 +92,26 @@ func (q *ClientQueries) Update(c *models.Client) error {
 		return err
 	}
 	if policy == "manual" {
-		if _, err := tx.Exec(`UPDATE client_update_jobs SET status='skipped_manual', finished_at=datetime('now')
-			WHERE client_id=? AND status='queued'`, c.ID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`UPDATE client_update_rollouts SET status=CASE WHEN EXISTS
-			(SELECT 1 FROM client_update_jobs WHERE rollout_id=client_update_rollouts.id AND status='failed')
-			THEN 'completed_with_failures' ELSE 'completed' END,updated_at=datetime('now') WHERE status='active'
-			AND NOT EXISTS (SELECT 1 FROM client_update_jobs WHERE rollout_id=client_update_rollouts.id
-				AND status NOT IN ('healthy','failed','skipped_manual','skipped_inactive','ineligible','manual_required','up_to_date','cancelled'))`); err != nil {
+		if err := skipManualJobsTx(tx, c.ID); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+func skipManualJobsTx(tx *sql.Tx, id string) error {
+	if _, err := tx.Exec(`UPDATE client_update_jobs SET status='skipped_manual', finished_at=datetime('now')
+		WHERE client_id=? AND status='queued'`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE client_update_rollouts SET status=CASE WHEN EXISTS
+		(SELECT 1 FROM client_update_jobs WHERE rollout_id=client_update_rollouts.id AND status='failed')
+		THEN 'completed_with_failures' ELSE 'completed' END,updated_at=datetime('now') WHERE status='active'
+		AND NOT EXISTS (SELECT 1 FROM client_update_jobs WHERE rollout_id=client_update_rollouts.id
+			AND status NOT IN ('healthy','failed','skipped_manual','skipped_inactive','ineligible','manual_required','up_to_date','cancelled'))`); err != nil {
+		return err
+	}
+	return nil
 }
 
 func defaultUpdatePolicy(policy string) string {
@@ -140,7 +149,73 @@ func (q *ClientQueries) Delete(id string) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := deleteClientTx(tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
+// IsDraft reports whether the client is an unfinished Add-client draft.
+func (q *ClientQueries) IsDraft(id string) bool {
+	var n int
+	return q.db.QueryRow("SELECT COUNT(*) FROM client_drafts WHERE client_id = ?", id).Scan(&n) == nil && n > 0
+}
+
+// IsUniqueViolation reports a UNIQUE/duplicate-key failure from SQLite or
+// PostgreSQL (pgx or lib/pq), without importing either driver.
+func IsUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	var coded interface{ SQLState() string }
+	if errors.As(err, &coded) && coded.SQLState() == "23505" {
+		return true
+	}
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "unique constraint failed") || strings.Contains(m, "duplicate key value violates unique constraint") || strings.Contains(m, "sqlstate 23505")
+}
+
+// Patch applies only the supplied fields, one statement per field, so that
+// concurrent edits of different fields (for example Disable and rename)
+// cannot revert each other. It returns sql.ErrNoRows if the client is gone.
+func (q *ClientQueries) Patch(id string, name *string, active *bool, policy *string) error {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM clients WHERE id = ?", id).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	if name != nil {
+		if _, err := tx.Exec("UPDATE clients SET name = ? WHERE id = ?", *name, id); err != nil {
+			return err
+		}
+	}
+	if active != nil {
+		if _, err := tx.Exec("UPDATE clients SET is_active = ? WHERE id = ?", *active, id); err != nil {
+			return err
+		}
+	}
+	if policy != nil {
+		p := defaultUpdatePolicy(*policy)
+		if _, err := tx.Exec("UPDATE clients SET update_policy = ? WHERE id = ?", p, id); err != nil {
+			return err
+		}
+		if p == "manual" {
+			if err := skipManualJobsTx(tx, id); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+func deleteClientTx(tx *sql.Tx, id string) error {
 	// request_log keeps historical rows after a client is removed. Its
 	// client_id and placeholder_id FKs are nullable but do not cascade, so
 	// detach them before deleting the client and its placeholders.
@@ -188,5 +263,5 @@ func (q *ClientQueries) Delete(id string) error {
 	if _, err := tx.Exec("DELETE FROM clients WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete client: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }

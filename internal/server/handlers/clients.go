@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -120,22 +122,22 @@ func (h *ClientHandler) Create(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Admin: get single client
+// Admin: get single client. Unfinished drafts are not clients.
 func (h *ClientHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	client, err := h.clients.GetByID(id)
-	if err != nil {
+	if err != nil || h.clients.IsDraft(id) {
 		jsonError(w, "client not found", http.StatusNotFound)
 		return
 	}
 	jsonResponse(w, client)
 }
 
-// Admin: update client
+// Admin: update client. Only the supplied fields are written, so a concurrent
+// Disable and Edit cannot revert each other.
 func (h *ClientHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	client, err := h.clients.GetByID(id)
-	if err != nil {
+	if _, err := h.clients.GetByID(id); err != nil || h.clients.IsDraft(id) {
 		jsonError(w, "client not found", http.StatusNotFound)
 		return
 	}
@@ -149,23 +151,26 @@ func (h *ClientHandler) Update(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
+	if req.UpdatePolicy != nil && *req.UpdatePolicy != "managed" && *req.UpdatePolicy != "manual" {
+		jsonError(w, "update_policy must be managed or manual", http.StatusBadRequest)
+		return
+	}
 
-	if req.Name != nil {
-		client.Name = *req.Name
-	}
-	if req.IsActive != nil {
-		client.IsActive = *req.IsActive
-	}
-	if req.UpdatePolicy != nil {
-		if *req.UpdatePolicy != "managed" && *req.UpdatePolicy != "manual" {
-			jsonError(w, "update_policy must be managed or manual", http.StatusBadRequest)
+	if err := h.clients.Patch(id, req.Name, req.IsActive, req.UpdatePolicy); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			jsonError(w, "client not found", http.StatusNotFound)
 			return
 		}
-		client.UpdatePolicy = *req.UpdatePolicy
-	}
-
-	if err := h.clients.Update(client); err != nil {
+		if queries.IsUniqueViolation(err) {
+			jsonError(w, "client name already exists", http.StatusConflict)
+			return
+		}
 		jsonError(w, "failed to update client", http.StatusInternalServerError)
+		return
+	}
+	client, err := h.clients.GetByID(id)
+	if err != nil {
+		jsonError(w, "client not found", http.StatusNotFound)
 		return
 	}
 	jsonResponse(w, client)
@@ -180,7 +185,7 @@ func (h *ClientHandler) RotateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	client, err := h.clients.GetByID(id)
-	if err != nil {
+	if err != nil || h.clients.IsDraft(id) {
 		jsonError(w, "client not found", http.StatusNotFound)
 		return
 	}

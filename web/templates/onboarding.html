@@ -300,13 +300,17 @@ function nextStep2(skip) {
   setBusy(true);
   var p = Promise.resolve();
   if (target !== current) {
-    if (current) p = p.then(function () { return api('DELETE', '/api/key-suites/' + encodeURIComponent(current) + '/assignments/' + encodeURIComponent(S.draft.id)); });
+    if (current) p = p.then(function () { return api('DELETE', '/api/key-suites/' + encodeURIComponent(current) + '/assignments/' + encodeURIComponent(S.draft.id)).catch(function (e) { if (e.status !== 404) throw e; }); });
     if (target) p = p.then(function () { return api('POST', '/api/key-suites/' + encodeURIComponent(target) + '/assign', {client_id: S.draft.id}); })
       .then(function (res) { if (res && res.skipped && res.skipped.length) DW.toast('Assigned with ' + plural(res.skipped.length, 'conflict', 'conflicts') + ' skipped'); });
   }
   return p.then(function () { S.suiteID = target; return saveStep({step: 3, suite_id: target}); })
     .then(function () { setBusy(false); goto_(3); })
     .catch(function (e) { setBusy(false); setErr(e.message); });
+}
+function renderCC() {
+  if (S.step !== 3 || !$('wz-cc-fields')) return;
+  keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); });
 }
 function maybeLoadSetup() {
   var f = S.ccf;
@@ -317,17 +321,17 @@ function maybeLoadSetup() {
 function loadSetup() {
   var f = S.ccf, keyID = f.keyID;
   f.loading = 'setup'; f.setup = null; f.categories = []; f.guildID = ''; f.categoryID = '__new__'; f.check = null;
-  keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); });
+  renderCC();
   return api('GET', '/api/cc/discord/setup?api_key_id=' + encodeURIComponent(keyID)).then(function (d) {
     if (f.keyID !== keyID) return;
     f.setup = {keyID: keyID, bot: d.bot, invite_url: d.invite_url, guilds: d.guilds || [], guilds_error: d.guilds_error || ''};
     f.loading = '';
     if (f.setup.guilds.length) { f.guildID = f.setup.guilds[0].id; return loadCategories(); }
-    keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); });
+    renderCC();
   }).catch(function (e) {
     if (f.keyID !== keyID) return;
     f.loading = ''; f.setup = {keyID: keyID, guilds: [], guilds_error: e.message};
-    keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); });
+    renderCC();
   });
 }
 function loadCategories() {
@@ -336,17 +340,20 @@ function loadCategories() {
     if (f.keyID !== keyID || f.guildID !== guildID) return;
     f.categories = d.categories || []; f.categoryID = '__new__'; f.check = null;
   }).catch(function (e) { f.categories = []; DW.toast(e.message, 'error'); })
-    .then(function () { var el = $('wz-cc-fields'); if (el) keepFocus(function () { DW.setHTML(el, ccFields()); }); });
+    .then(function () { renderCC(); });
 }
 function runCheck() {
   var f = S.ccf;
   if (!f.keyID || !f.guildID || !f.categoryID || f.categoryID === '__new__') return Promise.resolve();
+  var k = f.keyID, g = f.guildID, c = f.categoryID;
+  var stale = function () { return f.keyID !== k || f.guildID !== g || f.categoryID !== c; };
   f.check = {busy: true};
-  keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); });
-  return api('POST', '/api/cc/discord/preflight', {api_key_id: f.keyID, guild_id: f.guildID, category_id: f.categoryID}).then(function (d) {
+  renderCC();
+  return api('POST', '/api/cc/discord/preflight', {api_key_id: k, guild_id: g, category_id: c}).then(function (d) {
+    if (stale()) return;
     f.check = {ok: !!d.ok, steps: d.steps || []};
-  }).catch(function (e) { f.check = {ok: false, error: e.message}; })
-    .then(function () { keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); }); });
+  }).catch(function (e) { if (stale()) return; f.check = {ok: false, error: e.message}; })
+    .then(function () { renderCC(); });
 }
 function nextStep3(skip) {
   if (skip || S.cc) return issue();
@@ -355,10 +362,13 @@ function nextStep3(skip) {
   var svc = discordService();
   setBusy(true);
   var catP = f.categoryID === '__new__'
-    ? api('POST', '/api/cc/discord/categories', {api_key_id: f.keyID, guild_id: f.guildID, name: S.name}).then(function (d) {
+    ? (f.created && f.created.key === f.keyID && f.created.guild === f.guildID && f.created.name === S.name
+      ? Promise.resolve(f.created.id)
+      : api('POST', '/api/cc/discord/categories', {api_key_id: f.keyID, guild_id: f.guildID, name: S.name}).then(function (d) {
         if (d.permission_warning) DW.toast(d.permission_warning, 'error');
+        f.created = {key: f.keyID, guild: f.guildID, name: S.name, id: d.id};
         return d.id;
-      })
+      }))
     : Promise.resolve(f.categoryID);
   return catP.then(function (catID) {
     var cfg = {guild_id: f.guildID, category_id: catID};
@@ -426,14 +436,14 @@ function renderDraftList() {
 DW.actions.onName = function (el) { S.name = el.value; };
 DW.actions.onPolicy = function (el) { S.policy = el.value; };
 DW.actions.onSuite = function (el) { S.suiteID = el.value; setErr(''); DW.setHTML($('wz-preview'), bundlePreview()); DW.setHTML($('wz-foot'), footer()); ensureSuiteDetail(); };
-DW.actions.onBot = function (el) { S.ccf.keyID = el.value; S.ccf.setup = null; S.ccf.check = null; S.ccf.guildID = ''; S.ccf.categoryID = ''; S.ccf.categories = []; if (el.value) return loadSetup(); keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); }); };
+DW.actions.onBot = function (el) { S.ccf.keyID = el.value; S.ccf.setup = null; S.ccf.check = null; S.ccf.guildID = ''; S.ccf.categoryID = ''; S.ccf.categories = []; if (el.value) return loadSetup(); renderCC(); };
 DW.actions.onGuild = function (el) { S.ccf.guildID = el.value; S.ccf.check = null; return loadCategories(); };
 DW.actions.onCCField = function (el) {
   var f = S.ccf;
   if (el.id === 'wz-agent') f.agent = el.value;
   else if (el.id === 'wz-sandbox') f.sandbox = el.value;
   else if (el.id === 'wz-category') { f.categoryID = el.value; f.check = null; }
-  keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); });
+  renderCC();
 };
 DW.actions.reloadSetup = function () { S.ccf.setup = null; return loadSetup(); };
 DW.actions.checkCC = function () { return runCheck(); };

@@ -95,6 +95,10 @@ func (h *ClientDraftHandler) Create(w http.ResponseWriter, r *http.Request) {
 		TokenHash: svc.HashToken(secret), CanaryEnabled: true, UpdatePolicy: req.UpdatePolicy,
 	}
 	if err := h.drafts.Create(c); err != nil {
+		if queries.IsUniqueViolation(err) {
+			jsonError(w, "client name '"+name+"' already exists", http.StatusConflict)
+			return
+		}
 		jsonError(w, "failed to create draft", http.StatusInternalServerError)
 		return
 	}
@@ -152,6 +156,10 @@ func (h *ClientDraftHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if err := h.drafts.Update(id, req.Name, req.UpdatePolicy, req.Step, req.SuiteID); err != nil {
 		if errors.Is(err, queries.ErrNotDraft) {
 			jsonError(w, "draft not found", http.StatusNotFound)
+			return
+		}
+		if queries.IsUniqueViolation(err) {
+			jsonError(w, "client name already exists", http.StatusConflict)
 			return
 		}
 		jsonError(w, "failed to save draft", http.StatusInternalServerError)
@@ -217,11 +225,11 @@ func (h *ClientDraftHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if !h.drafts.IsDraft(id) {
-		jsonError(w, "draft not found", http.StatusNotFound)
-		return
-	}
-	if err := h.base.clients.Delete(id); err != nil {
+	if err := h.drafts.Discard(id); err != nil {
+		if errors.Is(err, queries.ErrNotDraft) {
+			jsonError(w, "draft not found", http.StatusNotFound)
+			return
+		}
 		jsonError(w, "failed to discard draft", http.StatusInternalServerError)
 		return
 	}

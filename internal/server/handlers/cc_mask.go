@@ -74,6 +74,11 @@ func maskCC(c *models.ControlChannel) {
 	}
 }
 
+// restoreCCMasked puts stored secrets back in place of mask placeholders.
+// Limitation: objects are matched by key, but arrays are matched by index, so
+// if a client reorders or removes array elements that contain masked secrets
+// the restored values follow the new positions (a mask with no stored value at
+// that index is dropped, never sent through as a literal secret).
 func restoreCCMasked(incoming, stored interface{}) interface{} {
 	switch in := incoming.(type) {
 	case map[string]interface{}:

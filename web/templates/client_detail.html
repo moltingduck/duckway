@@ -398,7 +398,10 @@ function mapPh(p) {
     requiresApproval: !!p.requires_approval, approvalTTL: p.approval_ttl_minutes || 0, usageCount: p.usage_count || 0,
     approvalStatus: p.approval_status || '', approvedAt: p.approved_at || '', expiresAt: p.expires_at || ''};
 }
+var loadSeq = 0;
+var STALE = {stale: true};
 function loadAll() {
+  var seq = ++loadSeq;
   return Promise.all([
     fetchJSON('/api/clients/' + enc(CID)),
     soft(fetchJSON('/api/client-updates'), {}),
@@ -409,6 +412,7 @@ function loadAll() {
     soft(fetchJSON('/api/canary/clients/' + enc(CID)), []),
     soft(fetchJSON('/api/canary/settings'), {})
   ]).then(function(r) {
+    if (seq !== loadSeq) throw STALE;
     var snap = JSON.stringify(r);
     var changed = snap !== lastSnapshot;
     lastSnapshot = snap;
@@ -432,6 +436,7 @@ function refresh(quiet) {
   return loadAll().then(function(changed) {
     if (!quiet || changed) renderAll();
   }).catch(function(err) {
+    if (err === STALE) return;
     if (err && err.notFound) { showGone(); return; }
     if (!quiet) showToast('Could not refresh: ' + (err && err.message ? err.message : 'request failed'), 'error');
   });
@@ -1491,6 +1496,7 @@ function submitAssign() {
 /* ---------- boot ---------- */
 setTab((location.hash || '').replace('#', '') || 'overview', false);
 loadAll().then(function() { renderAll(); }).catch(function(err) {
+  if (err === STALE) return;
   if (err && err.notFound) { showGone(); return; }
   DW.setHTML(el('cd-overview'), DW.html`<div class="card cd-card"><strong>Could not load client</strong><p class="text-muted text-sm">${err && err.message ? err.message : 'request failed'}</p><button type="button" class="btn" data-action="reloadPage">Retry</button></div>`);
 });

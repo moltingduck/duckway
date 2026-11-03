@@ -215,3 +215,109 @@ func TestClientDraftExcludedFromRollout(t *testing.T) {
 		t.Fatalf("draft client got %d rollout jobs", len(jobs))
 	}
 }
+
+func createDraftID(t *testing.T, e *draftEnv, name string) string {
+	t.Helper()
+	rec := e.do(http.MethodPost, "/api/client-drafts", `{"name":"`+name+`"}`, true, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create draft: %d %s", rec.Code, rec.Body.String())
+	}
+	var raw map[string]interface{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &raw)
+	return raw["id"].(string)
+}
+
+func TestClientDraftDiscardAfterIssueKeepsClient(t *testing.T) {
+	e := newDraftEnv(t)
+	id := createDraftID(t, e, "issued-first")
+	if rec := e.do(http.MethodPost, "/api/client-drafts/"+id+"/issue-token", "", true, nil); rec.Code != http.StatusOK {
+		t.Fatalf("issue: %d", rec.Code)
+	}
+	if rec := e.do(http.MethodDelete, "/api/client-drafts/"+id, "", true, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("discard after issue: %d, want 404", rec.Code)
+	}
+	var n int
+	_ = e.s.db.QueryRow(`SELECT COUNT(*) FROM clients WHERE id=?`, id).Scan(&n)
+	if n != 1 {
+		t.Fatal("issued client was deleted by draft discard")
+	}
+	// Queries-level: Discard requires exactly one marker row.
+	if err := queries.NewClientDraftQueries(e.s.db).Discard(id); err != queries.ErrNotDraft {
+		t.Fatalf("Discard of finished client: %v, want ErrNotDraft", err)
+	}
+}
+
+func TestClientDraftRejectedByClientEndpointsAndFacets(t *testing.T) {
+	e := newDraftEnv(t)
+	id := createDraftID(t, e, "hidden-draft")
+	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodPut, "/api/clients/" + id, `{"is_active":true}`},
+		{http.MethodGet, "/api/clients/" + id, ""},
+		{http.MethodPost, "/api/clients/" + id + "/rotate-token", ""},
+		{http.MethodGet, "/admin/clients/" + id, ""},
+		{http.MethodGet, "/api/clients/" + id + "/impact", ""},
+	} {
+		if rec := e.do(tc.method, tc.path, tc.body, true, nil); rec.Code != http.StatusNotFound {
+			t.Errorf("%s %s: %d, want 404", tc.method, tc.path, rec.Code)
+		}
+	}
+	var active int
+	_ = e.s.db.QueryRow(`SELECT is_active FROM clients WHERE id=?`, id).Scan(&active)
+	if active != 0 {
+		t.Fatal("PUT activated a draft")
+	}
+	rec := e.do(http.MethodGet, "/api/logs/facets", "", true, nil)
+	if strings.Contains(rec.Body.String(), "hidden-draft") {
+		t.Fatalf("draft leaked into log facets: %s", rec.Body.String())
+	}
+}
+
+func TestClientDraftNameUniqueMapsTo409(t *testing.T) {
+	e := newDraftEnv(t)
+	createDraftID(t, e, "first-one")
+	id2 := createDraftID(t, e, "second-one")
+	if rec := e.do(http.MethodPatch, "/api/client-drafts/"+id2, `{"name":"first-one"}`, true, nil); rec.Code != http.StatusConflict {
+		t.Fatalf("rename to taken name: %d, want 409", rec.Code)
+	}
+	_, err := e.s.db.Exec(`UPDATE clients SET name='first-one' WHERE id=?`, id2)
+	if !queries.IsUniqueViolation(err) {
+		t.Fatalf("IsUniqueViolation(%v) = false", err)
+	}
+}
+
+func TestClientPutIsPatchStyle(t *testing.T) {
+	e := newDraftEnv(t)
+	if _, err := e.s.db.Exec(`INSERT INTO clients (id, short_id, name, token_hash) VALUES ('pc','p1','patchy','h')`); err != nil {
+		t.Fatal(err)
+	}
+	if rec := e.do(http.MethodPut, "/api/clients/pc", `{"is_active":false}`, true, nil); rec.Code != http.StatusOK {
+		t.Fatalf("disable: %d", rec.Code)
+	}
+	// A rename that does not mention is_active must not re-enable the client.
+	if rec := e.do(http.MethodPut, "/api/clients/pc", `{"name":"patchy-2"}`, true, nil); rec.Code != http.StatusOK {
+		t.Fatalf("rename: %d", rec.Code)
+	}
+	var name string
+	var active, policyManual int
+	_ = e.s.db.QueryRow(`SELECT name, is_active, update_policy='manual' FROM clients WHERE id='pc'`).Scan(&name, &active, &policyManual)
+	if name != "patchy-2" || active != 0 {
+		t.Fatalf("name=%q active=%d; rename reverted disable", name, active)
+	}
+	// Stale-read simulation: a handler that read before the disable must not undo it.
+	cq := queries.NewClientQueries(e.s.db)
+	n := "patchy-3"
+	if err := cq.Patch("pc", &n, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = e.s.db.QueryRow(`SELECT is_active FROM clients WHERE id='pc'`).Scan(&active)
+	if active != 0 {
+		t.Fatal("Patch of name touched is_active")
+	}
+	if rec := e.do(http.MethodPut, "/api/clients/pc", `{"is_active":true}`, true, nil); rec.Code != http.StatusOK {
+		t.Fatalf("enable: %d", rec.Code)
+	}
+	_ = e.s.db.QueryRow(`SELECT name FROM clients WHERE id='pc'`).Scan(&name)
+	if name != "patchy-3" {
+		t.Fatalf("enable reverted name: %q", name)
+	}
+}

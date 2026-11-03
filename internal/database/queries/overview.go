@@ -70,10 +70,10 @@ type OverviewNames struct {
 func (q *OverviewQueries) StaleClients(cutoff time.Time, limit int) (OverviewNames, error) {
 	var out OverviewNames
 	c := ovCutoff(cutoff)
-	if err := q.db.QueryRow(`SELECT COUNT(*) FROM clients WHERE is_active = 1 AND COALESCE(last_seen_at, created_at) < ?`, c).Scan(&out.Count); err != nil {
+	if err := q.db.QueryRow(`SELECT COUNT(*) FROM clients WHERE is_active = 1 AND id NOT IN (SELECT client_id FROM client_drafts) AND COALESCE(last_seen_at, created_at) < ?`, c).Scan(&out.Count); err != nil {
 		return out, err
 	}
-	rows, err := q.db.Query(`SELECT name FROM clients WHERE is_active = 1 AND COALESCE(last_seen_at, created_at) < ?
+	rows, err := q.db.Query(`SELECT name FROM clients WHERE is_active = 1 AND id NOT IN (SELECT client_id FROM client_drafts) AND COALESCE(last_seen_at, created_at) < ?
 		ORDER BY COALESCE(last_seen_at, created_at) ASC, name ASC LIMIT ?`, c, limit)
 	if err != nil {
 		return out, err
@@ -202,7 +202,7 @@ type OverviewStats struct {
 func (q *OverviewQueries) Stats(now time.Time, online time.Duration) (OverviewStats, error) {
 	var s OverviewStats
 	if err := q.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(CASE WHEN last_seen_at >= ? THEN 1 ELSE 0 END), 0)
-		FROM clients WHERE is_active = 1`, ovCutoff(now.Add(-online))).Scan(&s.ClientsTotal, &s.ClientsOnline); err != nil {
+		FROM clients WHERE is_active = 1 AND id NOT IN (SELECT client_id FROM client_drafts)`, ovCutoff(now.Add(-online))).Scan(&s.ClientsTotal, &s.ClientsOnline); err != nil {
 		return s, err
 	}
 	if err := q.db.QueryRow(`SELECT COUNT(*) FROM placeholder_keys`).Scan(&s.PhantomTokens); err != nil {

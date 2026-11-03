@@ -152,3 +152,27 @@ func (q *ClientDraftQueries) IssueToken(id, tokenHash string) error {
 	}
 	return tx.Commit()
 }
+
+// Discard removes an unfinished draft and its client row atomically. The
+// marker delete must affect exactly one row, so a draft that was issued (or
+// discarded) concurrently is never deleted as a live client: ErrNotDraft.
+func (q *ClientDraftQueries) Discard(id string) error {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec("DELETE FROM client_drafts WHERE client_id = ?", id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return ErrNotDraft
+	}
+	if err := deleteClientTx(tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

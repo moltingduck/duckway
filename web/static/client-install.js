@@ -15,16 +15,22 @@
 
   function gateway() {
     if (cached) return cached;
-    cached = fetch('/api/settings', {credentials: 'same-origin'})
-      .then(function (r) { return r.json(); })
+    var p = fetch('/api/settings', {credentials: 'same-origin'})
+      .then(function (r) { if (!r.ok) throw new Error('settings ' + r.status); return r.json(); })
       .then(function (s) {
         if (s && s.gateway_url) return {url: s.gateway_url, valid: true};
         return fetch('/install.sh', {method: 'HEAD'})
           .then(function (r) { return {url: window.location.origin, valid: r.ok}; })
           .catch(function () { return {url: window.location.origin, valid: false}; });
       })
-      .catch(function () { return {url: window.location.origin, valid: false}; });
-    return cached;
+      .catch(function () { return {url: window.location.origin, valid: false}; })
+      .then(function (g) {
+        // Do not memoise a failed lookup: a later call retries.
+        if (!g.valid && cached === p) cached = null;
+        return g;
+      });
+    cached = p;
+    return p;
   }
 
   function shellQuote(value) {
