@@ -288,3 +288,23 @@ func TestWhatsNewMovesMatchRealPages(t *testing.T) {
 		}
 	}
 }
+
+func TestShellSearchRowAndTourEntryPoints(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	body := whatsNewGet(t, s, shared).Body.String()
+	for _, want := range []string{
+		`id="nav-search"`, `data-action="openPalette" aria-label="Search"`,
+		`data-action="whatsNewTour">Show me around</button>`,
+		`data-action="tourStart">Take the tour</button>`,
+		`/static/tour.js`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page missing %s", want)
+		}
+	}
+	// Show me around sits between Release notes and Got it.
+	n, tour, got := strings.Index(body, `data-action="whatsNewNotes"`), strings.Index(body, `data-action="whatsNewTour"`), strings.Index(body, `data-action="whatsNewClose"`)
+	if n < 0 || n >= tour || tour >= got {
+		t.Errorf("button order wrong: notes=%d tour=%d close=%d", n, tour, got)
+	}
+}

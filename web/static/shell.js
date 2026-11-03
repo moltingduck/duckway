@@ -82,6 +82,10 @@
   DW.actions.whatsNewNotes = async function (el) {
     if (await whatsNewFinish()) window.location.href = el.getAttribute('href');
   };
+  DW.actions.whatsNewTour = async function () {
+    if (!(await whatsNewFinish())) return;
+    if (DW.tour) DW.tour.start();
+  };
   if (wn && wn.dataset.autoopen === '1') {
     var openWn = function () { DW.modal.open(wn); };
     if (document.readyState === 'complete') openWn(); else window.addEventListener('load', openWn);
