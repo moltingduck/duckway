@@ -365,7 +365,7 @@
       <span class="dp-handle" draggable="true" data-drag-key="${m.keyId}" title="Drag to reorder" aria-hidden="true">⠿</span>
       <button type="button" class="btn btn-sm kp-ico" data-action="moveMember" data-dir="-1" data-key="${m.keyId}" aria-label="Move ${m.name} up"${up ? DW.raw(' disabled') : ''}>↑</button>
       <button type="button" class="btn btn-sm kp-ico" data-action="moveMember" data-dir="1" data-key="${m.keyId}" aria-label="Move ${m.name} down"${down ? DW.raw(' disabled') : ''}>↓</button>
-      <details class="more-menu"><summary class="btn btn-sm" aria-label="More actions for ${m.name}">More</summary><div class="more-menu-list" role="menu"><button type="button" role="menuitem" class="dp-menu-dz" data-action="askRemove" data-key="${m.keyId}" data-name="${m.name}">Remove from pool</button></div></details></div>`;
+      <button type="button" class="btn btn-sm dp-menu-dz" data-action="askRemove" data-key="${m.keyId}" data-name="${m.name}" aria-label="${'Remove ' + m.name + ' from pool'}">Remove</button></div>`;
     if (p.kind === 'rotation') {
       return DW.html`<li class="kp-m"><span class="kp-m-ord" aria-label="Position">${i + 1}</span>
         <div class="kp-m-main"><div class="kp-m-title"><strong>${m.name}</strong>${m.refreshable ? DW.html` <span class="badge badge-gray">refreshable</span>` : ''}</div>
@@ -544,13 +544,18 @@
   function announceOrder(msg) { var st = $('kp-order-status'); if (st) st.textContent = msg; }
   // Persist a new member order (shared by the buttons and drag-and-drop) and
   // announce the new position through the page status region.
-  function saveOrder(p, ids, movedKey, onDone) {
+  function saveOrder(p, ids, movedKey, onDone, isUndo) {
     var movedName = '';
     p.members.forEach(function (m) { if (m.keyId === movedKey) movedName = m.name; });
     var pos = ids.indexOf(movedKey) + 1;
+    var before = p.members.map(function (m) { return m.keyId; });
     return mutate(reorder(p, ids)).then(function (ok) {
       if (!ok) DW.toast('Could not save the new order', 'error');
-      else announceOrder(movedName + ' moved to position ' + pos + ' of ' + ids.length);
+      else {
+        announceOrder(movedName + (isUndo ? ' order restored' : ' moved to position ' + pos + ' of ' + ids.length));
+        // Undo (button or Ctrl/Cmd+Z) puts the previous order back.
+        if (!isUndo) DW.toast('Order saved', {undo: function () { var cp = curPool(); if (cp) return saveOrder(cp, before, movedKey, null, true); }});
+      }
       return loadAll();
     }).then(function () { if (onDone) onDone(); });
   }

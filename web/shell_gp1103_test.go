@@ -98,10 +98,14 @@ func TestLoginShowPasswordToggle(t *testing.T) {
 		}
 	}
 	js := readWeb(t, "static/login.js")
-	for _, want := range []string{"Hide password", "Show password", "aria-pressed", "input.type"} {
+	for _, want := range []string{"aria-pressed", "input.type"} {
 		if !strings.Contains(js, want) {
 			t.Errorf("login.js missing %q", want)
 		}
+	}
+	// The label is fixed ("Show password" in the markup); only aria-pressed changes.
+	if strings.Contains(js, "Hide password") || strings.Contains(js, "textContent") {
+		t.Error("login.js must not relabel the toggle")
 	}
 }
 

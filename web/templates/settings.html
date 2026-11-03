@@ -37,6 +37,12 @@
           <p class="text-sm text-muted" id="s-proxy-port-hint">Suggested port for <code>duckway proxy</code> on client machines (1024 to 65535). Default: 18080.</p>
           <p class="st-err" id="s-proxy-port-err" role="status" hidden></p>
         </div>
+        <div class="form-group">
+          <label for="s-log-retention">Request log retention (days)</label>
+          <input type="number" id="s-log-retention" data-sec="gateway" data-on-input="stInput" data-on-change="stInput" placeholder="90" min="1" max="3650" inputmode="numeric" aria-describedby="s-log-retention-hint s-log-retention-err">
+          <p class="text-sm text-muted" id="s-log-retention-hint">Request log rows older than this are deleted automatically (1 to 3650 days). Default: 90.</p>
+          <p class="st-err" id="s-log-retention-err" role="status" hidden></p>
+        </div>
         <div class="st-bar">
           <span class="st-dirty text-sm" data-sec="gateway" role="status" aria-live="polite"></span>
           <button type="button" class="btn" data-action="stDiscard" data-sec="gateway" disabled>Discard</button>
@@ -129,7 +135,7 @@
   var MAXSCRIPT = 64 * 1024;
   var SAMPLE = { workspace: { current_dir: '/home/agent/projects/api' }, model: { display_name: 'Claude' }, rate_limits: { five_hour: { used_percentage: 42, resets_at: 1767225600 }, seven_day: { used_percentage: 18, resets_at: 1767571200 } } };
   var SECS = {
-    gateway: { fields: { 's-gateway-url': 'gateway_url', 's-proxy-port': 'proxy_port' }, defaults: { proxy_port: '18080' }, done: 'Gateway settings saved. Clients pick them up on their next sync.' },
+    gateway: { fields: { 's-gateway-url': 'gateway_url', 's-proxy-port': 'proxy_port', 's-log-retention': 'request_log_retention_days' }, defaults: { proxy_port: '18080', request_log_retention_days: '90' }, done: 'Gateway settings saved. Clients pick them up on their next sync.' },
     approvals: { fields: { 's-approval-ttl': 'approval_request_ttl_minutes' }, defaults: { approval_request_ttl_minutes: '60' }, done: 'Approval timeout saved.' },
     statusline: { fields: { 's-statusline-script': 'agent_statusline_script' }, defaults: {}, done: 'Statusline saved. Agents pick it up on their next `duckway sync`.' },
     password: { fields: { 'cp-current': null, 'cp-new': null, 'cp-new2': null }, defaults: {} }
@@ -158,6 +164,11 @@
     's-proxy-port': function (v) {
       v = v.trim(); if (!v) return 'Enter a port, for example 18080.';
       if (!/^\d+$/.test(v) || +v < 1024 || +v > 65535) return 'Port must be a number from 1024 to 65535.';
+      return '';
+    },
+    's-log-retention': function (v) {
+      v = v.trim(); if (!v) return 'Enter a number of days, for example 90.';
+      if (!/^\d+$/.test(v) || +v < 1 || +v > 3650) return 'Use a whole number of days from 1 to 3650.';
       return '';
     },
     's-approval-ttl': function (v) {

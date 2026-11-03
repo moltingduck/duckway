@@ -175,10 +175,10 @@
 
   DW.actions.ntReload = function () { load(); };
 
-  DW.actions.ntToggle = function (el) {
-    var id = el.dataset.id, ch = find(id);
+  function setActive(id, next, isUndo) {
+    var ch = find(id);
     if (!ch || state.busy[id]) return;
-    var next = !ch.is_active;
+    var prev = !!ch.is_active;
     state.busy[id] = true;
     setStatus(id, 'Saving…');
     return api('POST', '/api/notifications/' + encodeURIComponent(id) + '/active', { active: next }).then(function (res) {
@@ -186,9 +186,15 @@
       state.status[id] = (next ? 'Enabled. Alerts will be sent here.' : 'Disabled. No alerts will be sent here.') +
         (res && res.restart_required ? RESTART_NOTE : '');
       render();
+      // Undo (button or Ctrl/Cmd+Z) flips the switch back.
+      if (!isUndo) DW.toast((next ? 'Enabled ' : 'Disabled ') + ch.name, {undo: function () { return setActive(id, prev, true); }});
     }).catch(function (e) {
       setStatus(id, 'Could not change: ' + e.message);
     }).then(function () { delete state.busy[id]; });
+  }
+  DW.actions.ntToggle = function (el) {
+    var ch = find(el.dataset.id);
+    if (ch) return setActive(el.dataset.id, !ch.is_active, false);
   };
 
   DW.actions.ntTest = function (el) {

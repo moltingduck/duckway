@@ -111,18 +111,15 @@
   }
   DW.actions.scRetry = function() { load(); };
 
-  DW.actions.scToggle = function(btn) {
-    if (btn.disabled) return;
-    var id = btn.dataset.id, want = btn.getAttribute('aria-checked') !== 'true';
-    var name = btn.getAttribute('aria-label');
-    btn.disabled = true;
+  function setMitigation(id, name, want, btn, isUndo) {
+    if (btn) btn.disabled = true;
     $('sc-status').textContent = 'Saving ' + name + '…';
-    api('POST', '/api/supply-chain/' + encodeURIComponent(id), {enabled: want}).then(function() {
+    return api('POST', '/api/supply-chain/' + encodeURIComponent(id), {enabled: want}).then(function() {
       return load().then(function(ok) {
         var again = document.querySelector('.sc-switch[data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
         if (!ok || !again) {
           // The list did not refresh: do not claim the new state, and keep the control usable.
-          btn.disabled = false;
+          if (btn) btn.disabled = false;
           $('sc-status').textContent = name + ' was saved, but the list could not be refreshed. Retry to confirm its state.';
           DW.toast('Saved, but the list could not be refreshed', 'error');
           return;
@@ -132,16 +129,23 @@
           $('sc-status').textContent = name + ' is still ' + (actual ? 'on' : 'off') + ' on the server. The change was not applied.';
           DW.toast(name + ' did not change', 'error');
         } else {
-          DW.toast(name + (want ? ' on' : ' off') + '. Applies on next sync.', 'success');
           $('sc-status').textContent = name + ' is now ' + (want ? 'on' : 'off') + '. Applies on next sync.';
+          // Undo (button or Ctrl/Cmd+Z) flips the mitigation back.
+          if (isUndo) DW.toast(name + (want ? ' on' : ' off') + '. Applies on next sync.', 'success');
+          else DW.toast(name + (want ? ' on' : ' off') + '. Applies on next sync.', {kind: 'success', undo: function() { return setMitigation(id, name, !want, null, true); }});
         }
         again.focus();
       });
     }).catch(function(e) {
-      btn.disabled = false;
+      if (btn) btn.disabled = false;
       $('sc-status').textContent = 'Could not change ' + name + ': ' + e.message;
       DW.toast('Toggle failed: ' + e.message, 'error');
     });
+  }
+  DW.actions.scToggle = function(btn) {
+    if (btn.disabled) return;
+    var id = btn.dataset.id, want = btn.getAttribute('aria-checked') !== 'true';
+    setMitigation(id, btn.getAttribute('aria-label'), want, btn, false);
   };
 
   function ageProblem() {

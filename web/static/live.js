@@ -55,7 +55,7 @@
     if (!outage) outage = { el: null, tick: null, at: 0, dismissed: false };
     outage.at = Date.now() + delay;
     if (!outage.el && !outage.dismissed) {
-      outage.el = DW.toast(outageText(Math.ceil(delay / 1000)), { kind: 'error', duration: 0 });
+      outage.el = DW.toast(outageText(Math.ceil(delay / 1000)), { kind: 'error', duration: 0, dismiss: true });
       // The countdown changes every second: announce the outage once, not each tick.
       outage.el.setAttribute('aria-live', 'off');
       outage.el.setAttribute('data-live-outage', '');

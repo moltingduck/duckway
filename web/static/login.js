@@ -9,7 +9,7 @@
     var show = btn.getAttribute('aria-pressed') !== 'true';
     input.type = show ? 'text' : 'password';
     btn.setAttribute('aria-pressed', show ? 'true' : 'false');
-    btn.textContent = show ? 'Hide password' : 'Show password';
+    // Fixed label: the pressed state alone says whether the password is shown.
     input.focus();
   });
 })();

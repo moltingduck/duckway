@@ -33,9 +33,9 @@
     <span class="ov-stat-sub" id="ov-s-phantoms-sub" title="Tokens with token-wide approval or an approve rule in their own permissions">&nbsp;</span>
   </a>
   <a class="ov-stat" href="/admin/logs">
-    <span class="ov-stat-label">Requests &middot; 24h</span>
+    <span class="ov-stat-label" title="Handled requests only: held and ACL-denied requests are excluded (see the Request log)">Requests &middot; 24h</span>
     <span class="ov-stat-value" id="ov-s-reqs">&mdash;</span>
-    <span class="ov-stat-sub" id="ov-s-reqs-sub" title="Share of the last 24 hours of requests that ended in an HTTP 5xx">&nbsp;</span>
+    <span class="ov-stat-sub" id="ov-s-reqs-sub" title="Share of the last 24 hours of handled requests that ended in an HTTP 5xx. Held and ACL-denied requests and client cancels are not counted.">&nbsp;</span>
     <span class="ov2-spark-wrap" id="ov-spark" hidden></span>
   </a>
 </section>
@@ -162,7 +162,7 @@
     var line = 'M' + pts.map(function(p) { return p[0] + ' ' + p[1]; }).join(' L');
     var area = line + ' L' + pts[n - 1][0] + ' ' + (H - P) + ' L' + pts[0][0] + ' ' + (H - P) + ' Z';
     var label = 'Requests per hour over the last 24 hours: ' + fmt.format(total) + ' total, peak ' + fmt.format(counts[peakIdx]) + ' per hour, ' + fmt.format(counts[n - 1]) + ' in the current hour.';
-    DW.setHTML(box, DW.html`<svg class="ov2-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${label}" focusable="false"><path class="ov2-spark-area" d="${area}"></path><path class="ov2-spark-line" d="${line}" fill="none" vector-effect="non-scaling-stroke"></path></svg><span class="ov2-spark-cap">per hour &middot; 24h</span>`);
+    DW.setHTML(box, DW.html`<svg class="ov2-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${label}" focusable="false"><path class="ov2-spark-area" d="${area}"></path><path class="ov2-spark-line" d="${line}" fill="none" vector-effect="non-scaling-stroke"></path></svg><span class="ov2-spark-cap">per hour &middot; 24h &middot; excludes held/denied</span>`);
     box.hidden = false;
   }
 
@@ -173,7 +173,9 @@
     if (!updatedAt) return;
     var s = Math.max(0, Math.floor((Date.now() - updatedAt) / 1000));
     var age = s < 60 ? s + 's' : Math.floor(s / 60) + 'm';
-    t.textContent = 'Live \u00b7 updated ' + age + ' ago';
+    // "Live" only while the SSE stream is connected; polling just says "Updated".
+    var live = window.DW && DW.live && DW.live.state && DW.live.state() === 'live';
+    t.textContent = (live ? 'Live \u00b7 updated ' : 'Updated ') + age + ' ago';
     byId('ov-live').classList.toggle('ov2-live-stale', s > 30);
   }
   setInterval(tickLive, 1000);

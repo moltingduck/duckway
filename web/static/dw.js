@@ -117,6 +117,19 @@
   //   duration: ms before auto-dismiss (default 4000, 8000 with undo, 0 = until dismissed).
   //   The timer pauses while the pointer or keyboard focus is inside the toast.
   // Returns the toast element; el.dismiss() removes it, el.setText(s) replaces the text.
+  const isMacPlatform = () => /mac|iphone|ipad/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || '');
+  // Ctrl/Cmd+Z runs the newest visible Undo, unless focus is in a field where
+  // the key means "undo typing".
+  document.addEventListener('keydown', (e) => {
+    if (!((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z'))) return;
+    const a = document.activeElement;
+    if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return;
+    const btns = document.querySelectorAll('#toast .toast-undo');
+    if (!btns.length) return;
+    e.preventDefault();
+    btns[btns.length - 1].click();
+  });
+
   function toast(msg, opts) {
     let box = document.getElementById('toast');
     if (!box) {
@@ -153,7 +166,7 @@
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'btn btn-sm toast-undo';
-      b.textContent = o.undoLabel || 'Undo';
+      b.textContent = o.undoLabel || ('Undo (' + (isMacPlatform() ? '\u2318Z' : 'Ctrl Z') + ')');
       b.addEventListener('click', () => {
         const fn = o.undo;
         dismiss();
@@ -163,6 +176,14 @@
         } catch (err) { console.error('DW toast undo:', err); }
       });
       el.appendChild(b);
+    }
+    if (o.dismiss) {
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'btn btn-sm toast-dismiss';
+      x.textContent = 'Dismiss';
+      x.addEventListener('click', () => dismiss());
+      el.appendChild(x);
     }
     el.addEventListener('mouseenter', hold);
     el.addEventListener('mouseleave', arm);
@@ -368,8 +389,23 @@
     box.style.left = left + 'px';
     box.style.top = top + 'px';
   }
+  // The popover is not focusable, so its definition is also announced through a
+  // visually hidden status region (no reliance on aria-describedby alone).
+  function termAnnounce(text) {
+    let r = document.getElementById('dw-term-status');
+    if (!r) {
+      r = document.createElement('div');
+      r.id = 'dw-term-status';
+      r.className = 'sr-only';
+      r.setAttribute('role', 'status');
+      document.body.appendChild(r);
+    }
+    r.textContent = '';
+    if (text) setTimeout(() => { r.textContent = text; }, 30);
+  }
   function closeTerm(returnFocus) {
     if (!termPop) return;
+    termAnnounce('');
     const b = termBtn;
     termPop.remove();
     termPop = null; termBtn = null;
@@ -396,6 +432,7 @@
     pop.appendChild(h); pop.appendChild(p);
     document.body.appendChild(pop);
     termPop = pop; termBtn = btn;
+    termAnnounce(t.term + ': ' + t.def);
     btn.setAttribute('aria-expanded', 'true');
     btn.setAttribute('aria-describedby', pop.id);
     placeFixed(pop, btn, 6);
@@ -440,6 +477,20 @@
   function closeMenus(except) {
     document.querySelectorAll('details.more-menu[open]').forEach((d) => { if (d !== except) closeMenu(d, false); });
   }
+  // Every More menu announces itself as a popup from first paint, not only after it was opened.
+  function initMenus(root) {
+    (root || document).querySelectorAll('details.more-menu').forEach((d) => {
+      const sum = d.querySelector('summary');
+      if (sum && !sum.hasAttribute('aria-haspopup')) { sum.setAttribute('aria-haspopup', 'menu'); sum.setAttribute('aria-expanded', d.open ? 'true' : 'false'); }
+      const list = d.querySelector('.more-menu-list');
+      if (list && !list.hasAttribute('role')) list.setAttribute('role', 'menu');
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => initMenus());
+  else initMenus();
+  new MutationObserver((muts) => {
+    for (const m of muts) if (m.addedNodes.length) { initMenus(); break; }
+  }).observe(document.documentElement, { childList: true, subtree: true });
   document.addEventListener('toggle', (e) => {
     const d = e.target;
     if (!(d instanceof HTMLDetailsElement) || !d.classList.contains('more-menu')) return;
@@ -490,7 +541,7 @@
     else if (e.key === 'ArrowUp') n = (i - 1 + items.length) % items.length;
     else if (e.key === 'Home') n = 0;
     else if (e.key === 'End') n = items.length - 1;
-    else if (e.key === 'Tab') { closeMenu(d, false); return; }
+    else if (e.key === 'Tab') { if (sum) sum.focus(); closeMenu(d, false); return; }
     if (n >= 0 && items[n]) { e.preventDefault(); items[n].focus({ preventScroll: true }); }
   }, true);
   window.addEventListener('resize', repositionMenus);

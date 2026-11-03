@@ -1,3 +1,7 @@
+# gp1103 note: More menu scope
+
+Row actions collapse into a More menu only when a row has more than two actions. Phantom token list rows and Credentials list rows have two or fewer actions, so they intentionally have no More menu. A menu with a single item is never used (key pool member rows show Remove directly).
+
 # Current batch: duckway-plugin-publish-20261029
 
 Canonical `git pull --rebase` succeeded on 2026-10-29; `main` and `origin/main` were synchronized at `557fc8e`, advanced from `ba63497`. The synchronized remote had no plugin management implementation, and installed client v0.1.0-711-g557fc8e exposed no plugin command. The reviewed feature commit `6e66c0e65901869a1202a3f40bc1cc149e70a676` was fast-forwarded to canonical `main` and pushed normally to `origin/main`; fetch confirmed the same SHA. No force push, release, image publication, or server deployment was run.
