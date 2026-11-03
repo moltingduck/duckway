@@ -154,18 +154,30 @@
   function refresh() {
     var dirty = isDirty(), probs = ruleProblems();
     $('pt-dirty').hidden = !dirty;
-    var canSave = dirty && !S.jsonErr && !probs && !S.saving && !approvalProblem();
+    var canSave = dirty && !S.jsonErr && !probs && !S.saving && !approvalProblem() && !ghProblem();
     Array.prototype.forEach.call(document.querySelectorAll('[data-pt-save]'), function (b) { b.disabled = !canSave; });
     Array.prototype.forEach.call(document.querySelectorAll('[data-pt-discard]'), function (b) { b.disabled = !dirty || S.saving; });
     var note = '';
     if (dirty && S.jsonErr) note = 'Fix the JSON error to save.';
     else if (dirty && probs) note = 'Complete ' + probs + (probs === 1 ? ' rule' : ' rules') + ' to save.';
     else if (dirty && approvalProblem()) note = approvalProblem();
+    else if (dirty && ghProblem()) note = ghProblem();
     Array.prototype.forEach.call(document.querySelectorAll('[data-pt-note]'), function (n) { n.textContent = note; });
     $('pt-test-go').disabled = !!S.jsonErr || S.testing > 0;
     $('pt-test-blocked').hidden = !S.jsonErr;
     renderLayers();
     renderGitHub();
+  }
+  // A repository row with every capability set to None grants nothing: block
+  // saving until it is given access or removed (it would silently deny all).
+  function ghProblem() {
+    if (!D.is_github || S.jsonErr || S.v2) return '';
+    var caps = ghCaps(), bad = Object.keys(caps).filter(function (r) {
+      var row = caps[r] || {};
+      return ['contents', 'pull_requests', 'issues', 'actions'].every(function (k) { return !row[k] || row[k] === 'none'; });
+    });
+    if (!bad.length) return '';
+    return (bad.length === 1 ? bad[0] + ' has' : bad.length + ' repositories have') + ' no access. Give ' + (bad.length === 1 ? 'it' : 'them') + ' a capability or remove ' + (bad.length === 1 ? 'it' : 'them') + ' to save.';
   }
   function approvalProblem() {
     if (S.approval && !(parseInt(S.ttlVal, 10) >= 1)) return 'Enter how long an approval stays valid.';
@@ -243,9 +255,10 @@
   DW.actions.ptPreset = function (el) {
     var p = PTACL.PRESETS[el.dataset.preset];
     if (!p) return;
-    if (!S.rules.length && !S.v2) { applyPreset(el.dataset.preset); return; }
+    if (!S.rules.length && !S.v2 && !S.jsonErr) { applyPreset(el.dataset.preset); return; }
     S.pendingPreset = el.dataset.preset;
     var n = S.v2 ? Object.keys(S.v2.repositories).length : S.rules.length;
+    if (S.jsonErr) { $('pt-preset-msg').textContent = 'Applying "' + p.label + '" replaces the JSON you are editing, which currently has an error. ' + p.help; DW.modal.open('#pt-preset-modal'); return; }
     $('pt-preset-msg').textContent = 'Applying "' + p.label + '" replaces ' + (S.v2 ? 'the ' + n + (n === 1 ? ' repository grant' : ' repository grants') : 'your ' + n + (n === 1 ? ' rule' : ' rules')) + ' on this token. ' + p.help;
     DW.modal.open('#pt-preset-modal');
   };
@@ -438,7 +451,8 @@
   DW.actions.ptGhAdd = function () {
     var input = $('pt-gh-new'), raw = input.value.trim();
     ghError(''); ghStatus('');
-    if (S.jsonErr || S.v2) return;
+    if (S.jsonErr) { ghError('Fix the JSON error in Advanced JSON before adding repositories.'); return; }
+    if (S.v2) { ghError('Convert the older repository grants to capability rows first (button above).'); return; }
     var repo = raw ? PT.normalizeGitRepo(raw) : '';
     if (!repo || repo === 'ORG/REPO' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) { ghError('Enter a repository as OWNER/REPO.'); input.focus(); return; }
     var caps = ghCaps();
@@ -488,6 +502,7 @@
     S.rules = [g];
     edited(); renderRules();
     ghStatus('Converted to capability rows. Review them, then save.');
+    var firstCap = document.querySelector('#pt-gh-rows select'); if (firstCap) firstCap.focus();
   };
 
   /* ---------- approval card ---------- */

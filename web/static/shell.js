@@ -46,23 +46,36 @@
 
   /* ---- What's-new dialog ---- */
   var wn = document.getElementById('wn-dialog');
-  async function whatsNewFinish() {
+  var wnSaved = false;
+  // Persist "Don't show again" if the box is ticked. Returns false on failure.
+  async function whatsNewSave() {
     var box = document.getElementById('wn-dismiss');
-    if (box && box.checked) {
-      try {
-        var res = await fetch('/api/whats-new/dismiss', {
-          method: 'POST', credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ version: wn.dataset.version })
-        });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-      } catch (err) {
-        DW.toast('Could not save your choice. Try again.', 'error');
-        return false;
-      }
+    if (!box || !box.checked || wnSaved) return true;
+    try {
+      var res = await fetch('/api/whats-new/dismiss', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: wn.dataset.version })
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      wnSaved = true;
+    } catch (err) {
+      DW.toast('Could not save your choice. Try again.', 'error');
+      return false;
     }
+    return true;
+  }
+  async function whatsNewFinish() {
+    if (!(await whatsNewSave())) return false;
     DW.modal.close(wn);
     return true;
+  }
+  // Escape and a backdrop click close the dialog without going through the
+  // buttons: a ticked "Don't show again" must still be saved.
+  if (wn) {
+    new MutationObserver(function () {
+      if (wn.hidden || wn.style.display === 'none') whatsNewSave();
+    }).observe(wn, { attributes: true, attributeFilter: ['style', 'hidden'] });
   }
   DW.actions.whatsNewOpen = function () { if (wn) DW.modal.open(wn); };
   DW.actions.whatsNewClose = function () { return whatsNewFinish(); };

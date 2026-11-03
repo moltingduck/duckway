@@ -304,7 +304,7 @@
         });
         refresh(sec);
         // Keep the "Unsaved changes" marker when text typed during the save is still pending.
-        if (!isDirty(sec)) say(sec, sec === 'password' ? 'Password changed. Other signed-in sessions stay valid until they expire.' : SECS[sec].done);
+        if (!isDirty(sec)) say(sec, sec === 'password' ? 'Password changed. Every other signed-in session was signed out; this one stays signed in.' : SECS[sec].done);
       }).catch(function (e) { busy[sec] = false; refresh(sec); say(sec, 'Not saved: ' + e.message); });
   };
 

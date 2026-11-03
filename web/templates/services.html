@@ -105,7 +105,7 @@
             <div class="form-group"><label for="p-model">Model</label><input id="p-model" type="text" placeholder="gpt-5.2 or *" required></div>
             <div class="form-group"><label for="p-version">Version</label><input id="p-version" type="text" placeholder="2026-08" required></div>
           </div>
-          <p class="text-sm text-muted" id="p-locked" role="status" hidden></p>
+          <p class="text-sm text-muted" id="p-locked" role="status"></p>
           <div class="sv-row">
             <div class="form-group"><label for="p-input">Input USD / 1M</label><input id="p-input" type="number" min="0" step="0.000001" value="0" required></div>
             <div class="form-group"><label for="p-output">Output USD / 1M</label><input id="p-output" type="number" min="0" step="0.000001" value="0" required></div>
@@ -433,7 +433,7 @@ function resetPriceForm() {
   el('sv-price-form-h').textContent = 'Add price version';
   el('p-save').textContent = 'Add price version';
   el('p-model').disabled = false; el('p-version').disabled = false;
-  el('p-locked').hidden = true;
+  DW.setHTML(el('p-locked'), DW.raw(''));
   el('p-cancel').hidden = true;
   setState('p-state', '');
 }
@@ -456,7 +456,6 @@ DW.actions.svPriceEdit = function(b) {
   // Model and version are frozen once usage was priced with them (the server answers 409 otherwise).
   var locked = (p.usage_references || 0) > 0;
   el('p-model').disabled = locked; el('p-version').disabled = locked;
-  el('p-locked').hidden = !locked;
   DW.setHTML(el('p-locked'), locked ? DW.html`Model and version are locked: ${p.usage_references} usage ${p.usage_references === 1 ? 'record was' : 'records were'} priced with this version. Add a new version to change them.` : DW.raw(''));
   el('sv-price-form-h').textContent = 'Edit price version';
   el('p-save').textContent = 'Save price';

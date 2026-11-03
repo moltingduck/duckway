@@ -513,11 +513,6 @@ code, .mono {
   color: var(--text-muted);
 }
 
-/* HTMX loading indicator */
-.htmx-indicator { display: none; }
-.htmx-request .htmx-indicator { display: inline-block; }
-.htmx-request.htmx-indicator { display: inline-block; }
-
 /* Login page */
 .login-page {
   display: flex;
@@ -2050,3 +2045,11 @@ textarea.st-mono { white-space: pre; overflow-x: auto; width: 100%; }
 .acl-deny-badge { font-size: 0.6rem; }
 .acl-rule-table { margin: 0.25rem 0; font-size: 0.75rem; }
 .acl-ep-deny { opacity: 0.6; }
+
+/* Display rules on classes (.btn, .cd-banner, .pt-gh-add ...) would otherwise
+   defeat the hidden attribute: it must always win. */
+[hidden] { display: none !important; }
+
+/* services: the locked-version status stays mounted (live region); empty = no gap */
+#p-locked:empty { margin: 0; min-height: 0; }
+.pl-import-h { font-size: 1rem; margin-bottom: 0.75rem; }

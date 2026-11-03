@@ -258,11 +258,13 @@
     },
     approvewrites: {
       label: 'Approve writes',
-      help: 'Allows GET and HEAD. POST, PUT, PATCH and DELETE wait for an admin to approve.',
+      help: 'Allows GET and HEAD. POST, PUT, PATCH, DELETE and any other method wait for an admin to approve.',
       rules: function () {
         return [
           { t: 's', name: '', hasName: false, auto: true, methods: ['GET', 'HEAD'], path: '/*', effect: 'allow' },
-          { t: 's', name: '', hasName: false, auto: true, methods: ['POST', 'PUT', 'PATCH', 'DELETE'], path: '/*', effect: 'approve' }
+          { t: 's', name: '', hasName: false, auto: true, methods: ['POST', 'PUT', 'PATCH', 'DELETE'], path: '/*', effect: 'approve' },
+          // Catch-all so an exotic method (PROPFIND, PURGE, ...) cannot slip through unreviewed.
+          { t: 's', name: '', hasName: false, auto: true, methods: ['*'], path: '/*', effect: 'approve' }
         ];
       }
     },

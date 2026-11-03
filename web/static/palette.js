@@ -72,12 +72,15 @@
         if (scroll !== false && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
       }
     } else {
-      input.setAttribute('aria-activedescendant', '');
+      input.removeAttribute('aria-activedescendant'); // never an empty reference
     }
   }
 
-  function render() {
+  // keepActive: results of the SAME query arrived (entities), so the highlighted
+  // item stays highlighted if it is still listed; a new query starts at the top.
+  function render(keepActive) {
     var q = input.value;
+    var prevKey = keepActive && active >= 0 && items[active] ? items[active].kind + '|' + items[active].url : '';
     var pages = matchPages(q);
     items = pages.concat(entities);
     DW.setHTML(list, DW.html`${items.map(function (it, i) {
@@ -86,7 +89,9 @@
     })}`);
     emptyEl.hidden = items.length > 0 || entityState === 'loading';
     input.setAttribute('aria-expanded', items.length > 0 ? 'true' : 'false');
-    setActive(items.length ? 0 : -1, false);
+    var keepIdx = -1;
+    if (prevKey) items.forEach(function (it, i) { if (keepIdx < 0 && it.kind + '|' + it.url === prevKey) keepIdx = i; });
+    setActive(items.length ? (keepIdx >= 0 ? keepIdx : 0) : -1, false);
     var msg;
     if (entityState === 'error') msg = items.length + ' results. Item search is unavailable.';
     else if (entityState === 'loading') msg = 'Searching';
@@ -114,13 +119,13 @@
           if (mine !== seq) return; // stale: a newer query is in flight or the palette closed
           entities = (data.results || []).filter(function (r) { return r && safeURL(r.url) && typeof r.name === 'string'; });
           entityState = '';
-          render();
+          render(true);
         })
         .catch(function (err) {
           if (mine !== seq || (err && err.name === 'AbortError')) return;
           entities = [];
           entityState = 'error';
-          render();
+          render(true);
         });
     }, DEBOUNCE_MS);
   }
