@@ -317,3 +317,26 @@ func TestApprovalShowsQueryAndShortBodyHash(t *testing.T) {
 		t.Fatal("different bodies must show different hashes")
 	}
 }
+
+// Secret query values never reach request_info or the notification, but the
+// approval still binds to the real query.
+func TestApprovalQueryIsRedactedButScopeUsesRealQuery(t *testing.T) {
+	rig := newPathRig(t, approvePostsACL)
+	_, a := rig.doBody("POST", "/v1/messages?mode=live&api_key=SECRET-ONE&sig=s1", `{}`)
+	_, b := rig.doBody("POST", "/v1/messages?mode=live&api_key=SECRET-TWO&sig=s1", `{}`)
+	if a["approval_id"] == "" || a["approval_id"] == b["approval_id"] {
+		t.Fatalf("different real secrets must be different approvals: %v %v", a, b)
+	}
+	rec, err := rig.f.approvalQ.GetByID(a["approval_id"])
+	if err != nil || rec.RequestInfo == nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(*rec.RequestInfo, "SECRET-ONE") || !strings.Contains(*rec.RequestInfo, "api_key=[redacted]") || !strings.Contains(*rec.RequestInfo, "mode=live") {
+		t.Fatalf("request_info=%s", *rec.RequestInfo)
+	}
+	for _, n := range rig.notif.all() {
+		if strings.Contains(n.Query, "SECRET") || strings.Contains(n.Query, "sig=s1") || !strings.Contains(n.Query, "mode=live") {
+			t.Fatalf("notification query=%q", n.Query)
+		}
+	}
+}

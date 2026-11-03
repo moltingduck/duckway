@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 	"unicode"
 
@@ -196,4 +197,50 @@ func sanitizeAPIKeyForAdmin(k *models.APIKey) {
 	k.KeyEncrypted = ""
 	k.RefreshToken = ""
 	k.SubscriptionInfo = redactSubscriptionInfo(k.SubscriptionInfo)
+}
+
+// extraSecretQueryWords are query-parameter words that name credentials or
+// signatures beyond the field-name rules above (presigned URLs, passcodes).
+var extraSecretQueryWords = map[string]bool{
+	"sig": true, "signature": true, "sign": true, "signed": true, "pwd": true, "pin": true, "passcode": true,
+	"apikey": true, "accesskey": true, "key": true, "keys": true, "token": true, "tokens": true,
+}
+
+func isSecretQueryName(name string) bool {
+	if isSecretFieldName(name) {
+		return true
+	}
+	for _, w := range nameWords(name) {
+		if extraSecretQueryWords[w] {
+			return true
+		}
+	}
+	return false
+}
+
+// redactApprovalQuery replaces the value of every secret-looking query
+// parameter with [redacted] (api_key, access_token, sig, signature, code,
+// password, X-Amz-Signature ...) and leaves everything else, including order,
+// untouched. It is applied before a query string is stored in request_info or
+// sent to a notification channel; the approval scope is still computed over the
+// real query so the approval binds exactly.
+func redactApprovalQuery(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Split(raw, "&")
+	for i, p := range parts {
+		eq := strings.IndexByte(p, '=')
+		if eq < 0 {
+			continue
+		}
+		name := p[:eq]
+		if dec, err := url.QueryUnescape(name); err == nil {
+			name = dec
+		}
+		if isSecretQueryName(name) {
+			parts[i] = p[:eq] + "=[redacted]"
+		}
+	}
+	return strings.Join(parts, "&")
 }

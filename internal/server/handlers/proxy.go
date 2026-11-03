@@ -580,7 +580,9 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			sum := sha256.Sum256(bodyBytes)
-			query := r.URL.RawQuery
+			// Secret-looking parameter values never reach request_info or the
+			// notification channels; the scope above used the real query.
+			query := redactApprovalQuery(r.URL.RawQuery)
 			if len(query) > 300 {
 				query = query[:300] + "..."
 			}
