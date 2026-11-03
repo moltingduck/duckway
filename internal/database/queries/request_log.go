@@ -419,7 +419,9 @@ func (q *RequestLogQueries) Search(f RequestLogFilter) (*RequestLogPage, error) 
 			page.Offset = n
 			page.HasNewer = n > 0
 		} else {
-			page.HasNewer = true
+			// Past the newest end an after_id page is simply empty; only a
+			// before_id page that ran off the end has newer rows to go back to.
+			page.HasNewer = f.AfterID == 0
 		}
 	}
 	return page, nil
@@ -456,7 +458,7 @@ func (q *RequestLogQueries) Facets() (*LogFacets, error) {
 		dst *[]string
 	}{
 		{`SELECT DISTINCT name FROM services ORDER BY name LIMIT 1000`, &out.Services},
-		{`SELECT DISTINCT name FROM api_keys ORDER BY name LIMIT 1000`, &out.Credentials},
+		{`SELECT DISTINCT name FROM api_keys WHERE key_encrypted <> '' ORDER BY name LIMIT 1000`, &out.Credentials},
 	} {
 		r, err := q.db.Query(spec.sql)
 		if err != nil {

@@ -811,3 +811,14 @@ pre code, pre kbd, pre samp { overflow-wrap: normal; word-break: normal; }
 .lg-ms { font-family: var(--mono); font-size: 0.8125rem; }
 .lg-nocap { font-size: 0.875rem; }
 .lg-nocap strong { display: block; margin-bottom: 0.25rem; }
+/* po1103 fix round 1: mobile targets, approvals top bar/notice, logs empty state */
+.appr-topbar { display: none; }
+.appr-notice { min-height: 1.1rem; color: var(--text-muted); padding: 0 0.25rem; }
+.lg-empty { padding: 1.5rem 1rem; text-align: left; }
+@media (max-width: 900px) {
+  .appr-tab { min-height: 44px; }
+  .appr-filters select { min-height: 44px; }
+  .appr-topbar { display: flex; justify-content: space-between; gap: 0.75rem; font-size: 0.8125rem; color: var(--text-muted); margin-bottom: 0.5rem; }
+  .ov-link, .ov-pos-label a { display: inline-flex; align-items: center; min-height: 44px; }
+  .lg-switch { min-height: 44px; }
+}

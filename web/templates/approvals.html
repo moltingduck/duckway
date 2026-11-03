@@ -36,6 +36,7 @@
 <div class="appr-layout" id="appr-layout" data-view="list">
   <section class="card appr-list" aria-label="Requests">
     <div class="appr-count text-muted text-sm" id="approval-count" role="status"></div>
+    <div class="appr-notice text-sm" id="appr-notice" role="status" aria-live="polite"></div>
     <div id="approval-list" class="appr-rows"></div>
   </section>
   <section class="card appr-detail" id="appr-detail" aria-live="off">
@@ -116,8 +117,10 @@ function fetchList(statuses, extra) {
   });
 }
 
+var badgePending = null; // from the 'badge' SSE topic payload
 function loadPendingTotal(listData) {
   if (listData) { pendingTotal = listData.length; renderCount(); return; }
+  if (badgePending !== null) { pendingTotal = badgePending; renderCount(); return; }
   fetchList('pending', '&limit=5000').then(function(d) {
     if (!d) return;
     pendingTotal = d.length;
@@ -196,12 +199,14 @@ function pill(a) {
     default:         return DW.html`<span class="badge badge-gray appr-pill">${a.status}</span>`;
   }
 }
+function fmtLeft(ms) { return ms <= 0 ? 'Expired' : fmtCountdown(ms) + ' left'; }
 function indexOfSelected() {
   for (var i = 0; i < allApprovals.length; i++) if (allApprovals[i].id === selectedId) return i;
   return -1;
 }
 
 function render() {
+  var prevSel = selectedId;
   var counter = el('approval-count');
   var list = el('approval-list');
   list.replaceChildren();
@@ -212,6 +217,7 @@ function render() {
     DW.setHTML(list, DW.html`<div class="appr-empty"><strong>${currentTab === 'pending' ? 'No requests waiting' : 'No history yet'}</strong><span class="text-muted text-sm">${currentTab === 'pending' ? 'Held requests appear here as soon as a client sends one.' : 'Decided requests appear here.'}</span></div>`);
     renderDetail(null);
     setView('list');
+    pendingFocus = false;
     return;
   }
   counter.textContent = allApprovals.length + (currentTab === 'pending' ? ' waiting' : ' decided');
@@ -221,10 +227,17 @@ function render() {
   var rows = allApprovals.map(function(a) {
     var info = infoOf(a);
     var cur = a.id === selectedId;
-    return DW.html`<button type="button" class="appr-row${cur ? ' is-selected' : ''}" id="approval-${a.id}" data-action="selectApproval" data-id="${a.id}" aria-current="${cur ? 'true' : 'false'}"><span class="appr-row-top"><span class="appr-client">${a.client_name || dash}</span><span class="text-muted appr-arrow">→ ${a.service_name || '?'}</span>${pill(a)}</span><span class="appr-row-sub"><span class="appr-tag">${info.method || '—'}</span><span class="mono appr-path">${info.path || '—'}</span></span></button>`;
+    return DW.html`<button type="button" class="appr-row${cur ? ' is-selected' : ''}" id="approval-${a.id}" data-action="selectApproval" data-id="${a.id}" ${cur ? DW.raw('aria-current="true"') : ''}><span class="appr-row-top"><span class="appr-client">${a.client_name || dash}</span><span class="text-muted appr-arrow">→ ${a.service_name || '?'}</span>${pill(a)}</span><span class="appr-row-sub"><span class="appr-tag">${info.method || '—'}</span><span class="mono appr-path">${info.path || '—'}</span></span></button>`;
   });
   DW.setHTML(list, DW.html`${rows}`);
   renderDetail(allApprovals[indexOfSelected()]);
+  if (pendingFocus) {
+    pendingFocus = false;
+    focusSelectedRow();
+  } else if (prevSel && prevSel !== selectedId) {
+    ignoreKeysUntil = Date.now() + 600;
+    notice('Selection changed');
+  }
 }
 
 function renderDetail(a) {
@@ -241,7 +254,9 @@ function renderDetail(a) {
   var seen = a.client_last_seen_at ? DW.html`last seen ${fmtAgo(parseTime(a.client_last_seen_at))}` : DW.raw('never seen');
   var ver = a.client_version ? a.client_version : DW.raw('<span class="text-muted">version not reported</span>');
   var decided = a.status === 'pending' ? DW.raw('') : DW.html`<dt>Decision</dt><dd>${a.status.charAt(0).toUpperCase() + a.status.slice(1)}${a.approved_at ? DW.html` at ${fmtLocal(a.approved_at)}` : ''}${a.expires_at && a.status === 'approved' ? DW.html` · grant until ${fmtLocal(a.expires_at)}` : ''}</dd>`;
-  DW.setHTML(box, DW.html`<div class="appr-detail-head"><div class="appr-detail-title"><h2 id="appr-title">${a.client_name || 'Unknown client'} wants to call ${a.service_name || 'an unknown service'}</h2><div class="appr-reqline"><span class="appr-tag">${info.method || '—'}</span><span class="mono appr-path-full">${info.path || '—'}</span></div></div>${pill(a)}</div>${actions}<dl class="appr-dl"><dt>Phantom token</dt><dd><span class="mono">${a.env_name || '—'}</span>${a.credential_name ? DW.html` · ${a.credential_name}` : ''}</dd><dt>Why it was held</dt><dd>${a.requires_approval ? 'This phantom token requires admin approval before requests are forwarded.' : 'Phantom token approval requirement has since been turned off.'}</dd><dt>ACL check</dt><dd>Not recorded. ACLs are checked when a request is forwarded after approval.</dd><dt>Client</dt><dd>${a.client_name || dash} · ${seen} · ${ver}</dd><dt>Received</dt><dd>${fmtLocal(a.created_at)} <span class="text-muted">(${fmtAgo(parseTime(a.created_at))})</span></dd>${decided}</dl><div class="appr-body"><div class="text-muted text-sm">Request body</div><p class="appr-body-note text-sm">Not captured. Duckway stores only the method and path of a held request.</p></div>${bar}`);
+  var pos = indexOfSelected();
+  var topbar = DW.html`<div class="appr-topbar"><span>${pos + 1} of ${allApprovals.length} ${a.status === 'pending' ? 'pending' : 'decided'}</span>${a.status === 'pending' ? DW.html`<span class="appr-left" data-left="${String(expiryOf(a))}">${fmtLeft(expiryOf(a) - Date.now())}</span>` : ''}</div>`;
+  DW.setHTML(box, DW.html`${topbar}<div class="appr-detail-head"><div class="appr-detail-title"><h2 id="appr-title" tabindex="-1">${a.client_name || 'Unknown client'} wants to call ${a.service_name || 'an unknown service'}</h2><div class="appr-reqline"><span class="appr-tag">${info.method || '—'}</span><span class="mono appr-path-full">${info.path || '—'}</span></div></div>${pill(a)}</div>${actions}<dl class="appr-dl"><dt>Phantom token</dt><dd><span class="mono">${a.env_name || '—'}</span>${a.credential_name ? DW.html` · ${a.credential_name}` : ''}</dd><dt>Why it was held</dt><dd>${a.requires_approval ? 'This phantom token requires admin approval before requests are forwarded.' : 'Phantom token approval requirement has since been turned off.'}</dd><dt>ACL check</dt><dd>Not recorded. ACLs are checked when a request is forwarded after approval.</dd><dt>Client</dt><dd>${a.client_name || dash} · ${seen} · ${ver}</dd><dt>Received</dt><dd>${fmtLocal(a.created_at)} <span class="text-muted">(${fmtAgo(parseTime(a.created_at))})</span></dd>${decided}</dl><div class="appr-body"><div class="text-muted text-sm">Request body</div><p class="appr-body-note text-sm">Not captured. Duckway stores only the method and path of a held request.</p></div>${bar}`);
 }
 
 function selectById(id, scroll) {
@@ -250,7 +265,7 @@ function selectById(id, scroll) {
   list.querySelectorAll('.appr-row').forEach(function(b) {
     var cur = b.getAttribute('data-id') === id;
     b.classList.toggle('is-selected', cur);
-    b.setAttribute('aria-current', cur ? 'true' : 'false');
+    if (cur) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current');
     if (cur && scroll) b.scrollIntoView({block: 'nearest'});
   });
   var i = indexOfSelected();
@@ -264,9 +279,24 @@ function moveSelection(delta) {
 }
 
 var acting = false;
+var pendingFocus = false;   // focus the selected row after the next render (post-decision)
+var ignoreKeysUntil = 0;     // a/r ignored until then after a live re-render moved the selection
+var noticeTimer = null;
+function focusSelectedRow() {
+  var r = selectedId ? el('approval-' + selectedId) : null;
+  if (r) r.focus({preventScroll: false});
+}
+function notice(text) {
+  var n = el('appr-notice');
+  n.textContent = text;
+  clearTimeout(noticeTimer);
+  if (text) noticeTimer = setTimeout(function() { n.textContent = ''; }, 2500);
+}
 function decide(id, verb) {
   if (acting) return;
   acting = true;
+  clearQueue();
+  showNudge(false);
   // Choose the neighbour to select next before the row disappears.
   var i = -1;
   for (var k = 0; k < allApprovals.length; k++) if (allApprovals[k].id === id) i = k;
@@ -281,6 +311,7 @@ function decide(id, verb) {
       showToast(verb === 'approve' ? 'Approved' : 'Rejected', 'success');
       if (selectedId === id) selectedId = next ? next.id : '';
       if (isNarrow()) setView('list');
+      pendingFocus = true;
       loadApprovals();
     })
     .catch(function() { acting = false; showToast('Request failed', 'error'); });
@@ -293,12 +324,21 @@ DW.actions.loadApprovals = function() { loadApprovals(); };
 DW.actions.onFilterChange = function() { onFilterChange(); };
 DW.actions.approveOne = function(e) { approveOne(e.dataset.id); };
 DW.actions.rejectOne = function(e) { rejectOne(e.dataset.id); };
-DW.actions.selectApproval = function(e) { selectById(e.dataset.id, false); setView('detail'); window.scrollTo(0, 0); };
-DW.actions.backToList = function() { setView('list'); };
+DW.actions.selectApproval = function(e) {
+  selectById(e.dataset.id, false); setView('detail'); window.scrollTo(0, 0);
+  if (isNarrow()) { var t = el('appr-title'); if (t) t.focus(); }
+};
+DW.actions.backToList = function() { setView('list'); focusSelectedRow(); };
 DW.actions.flushApprovals = function() { flushQueued(); };
 
 // Live: refetch on approval changes. Deferred while a modal/confirm is open
 // or the tab is hidden, then runs once.
+DW.live.on('badge', function(d) {
+  if (d && typeof d.pending === 'number') {
+    badgePending = d.pending;
+    if (currentTab !== 'pending' || hasFilters()) { pendingTotal = badgePending; renderCount(); }
+  }
+});
 DW.live.on('approvals', function() { loadApprovals(true); }, {defer: true});
 
 (function() {
@@ -323,11 +363,17 @@ DW.live.on('approvals', function() { loadApprovals(true); }, {defer: true});
     if (t && t.closest && t.closest('input,select,textarea,[contenteditable="true"]')) return;
     if (DW.live.modalOpen()) return;
     var k = e.key;
-    if (k === 'j' || k === 'ArrowDown') { e.preventDefault(); moveSelection(1); }
-    else if (k === 'k' || k === 'ArrowUp') { e.preventDefault(); moveSelection(-1); }
+    var inLayout = !!(t && t.closest && t.closest('#appr-layout')) && !(t.closest && t.closest('a,input,select,textarea'));
+    if (k === 'j') { e.preventDefault(); moveSelection(1); }
+    else if (k === 'k') { e.preventDefault(); moveSelection(-1); }
+    else if (k === 'ArrowDown' || k === 'ArrowUp') {
+      if (!inLayout) return;
+      e.preventDefault(); moveSelection(k === 'ArrowDown' ? 1 : -1);
+    }
     else if ((k === 'a' || k === 'A' || k === 'r' || k === 'R') && !e.repeat) {
       var i = indexOfSelected();
       if (i < 0 || allApprovals[i].status !== 'pending') return;
+      if (Date.now() < ignoreKeysUntil) { e.preventDefault(); return; }
       if (isNarrow() && box.getAttribute('data-view') !== 'detail') return;
       e.preventDefault();
       decide(allApprovals[i].id, (k === 'a' || k === 'A') ? 'approve' : 'reject');
@@ -341,6 +387,9 @@ DW.live.on('approvals', function() { loadApprovals(true); }, {defer: true});
       p.textContent = ms <= 0 ? 'Expired' : 'Pending · ' + fmtCountdown(ms);
       p.classList.toggle('badge-red', ms <= 60000);
       p.classList.toggle('badge-yellow', ms > 60000);
+    });
+    document.querySelectorAll('[data-left]').forEach(function(p) {
+      p.textContent = fmtLeft(parseInt(p.getAttribute('data-left'), 10) - Date.now());
     });
   }, 1000);
 })();

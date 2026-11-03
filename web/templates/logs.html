@@ -1,5 +1,5 @@
 {{define "content"}}
-<div class="page-header">
+<div class="page-header" id="lg-header">
   <div>
     <h1>Request log</h1>
     <p class="text-muted text-sm">Every proxied request. Filters run on the server, so results are not limited to the latest 500.</p>
@@ -7,7 +7,7 @@
   <button type="button" class="btn" id="live-tail" aria-pressed="true" data-action="toggleLive"><span class="lg-dot" aria-hidden="true"></span><span id="live-label">Live tail on</span></button>
 </div>
 
-<div class="card lg-filters">
+<div class="card lg-filters" id="lg-filters">
   <div class="lg-row">
     <div class="lg-seg" role="group" aria-label="Time range">
       <button type="button" data-action="pickRange" data-range="15m" aria-pressed="false">15m</button>
@@ -64,13 +64,14 @@
 </section>
 
 <div class="lg-split">
-  <section class="card lg-list" aria-label="Requests">
+  <section class="card lg-list" id="lg-list" aria-label="Requests">
     <div class="lg-listhead">
       <span id="log-count" class="text-muted text-sm" role="status" aria-live="polite"></span>
       <span class="sr-only" id="live-new-announce" role="status" aria-live="polite"></span>
       <span id="live-new" class="live-new text-sm" hidden><span id="live-new-text"></span> <button type="button" class="btn btn-sm" data-action="applyLiveNew">Show</button></span>
     </div>
-    <div class="table-wrap">
+    <div id="log-empty" class="lg-empty" role="status" hidden></div>
+    <div class="table-wrap" id="log-tablewrap">
       <table class="lg-table">
         <thead>
           <tr><th>Time</th><th>Client</th><th>Service · credential</th><th>Request</th><th>Status</th><th class="text-right">Latency</th></tr>
@@ -125,7 +126,6 @@ var data = null;          // last page response
 var selectedId = 0;
 var opener = null;
 var loadSeq = 0, detailSeq = 0;
-var loading = false;
 var newUnknown = false;
 var liveOn = true;
 var searchTimer = null;
@@ -243,9 +243,10 @@ DW.actions.toggleLive = function() {
   b.setAttribute('aria-pressed', String(liveOn));
   $('live-label').textContent = liveOn ? 'Live tail on' : 'Live tail off';
   b.classList.toggle('is-off', !liveOn);
-  if (liveOn && newUnknown && canAutoApply()) load(true);
+  if (liveOn && newUnknown && canAutoApply()) liveLoad();
 };
 DW.actions.pickRange = function(el) {
+  clearTimeout(searchTimer);
   var r = el.dataset.range;
   if (r === 'custom') {
     S.range = 'custom';
@@ -254,19 +255,19 @@ DW.actions.pickRange = function(el) {
     S.until = S.until || '';
   } else { S.range = r; S.since = ''; S.until = ''; }
   resetCursor();
-  syncControls(); writeURL(false); load(false);
+  syncControls(); writeURL(false); load();
 };
 DW.actions.onCustomChange = function() {
   S.since = fromLocalInput($('f-since').value);
   S.until = fromLocalInput($('f-until').value);
   if (!S.since && !S.until) { S.range = DEFAULT_RANGE; syncControls(); }
   if (S.since && S.until && S.since >= S.until) { DW.toast('"From" must be before "To"', 'error'); return; }
-  resetCursor(); writeURL(false); load(false);
+  resetCursor(); writeURL(false); load();
 };
-DW.actions.onFilterChange = function() { readControls(); resetCursor(); writeURL(false); load(false); };
+DW.actions.onFilterChange = function() { clearTimeout(searchTimer); readControls(); resetCursor(); writeURL(false); load(); };
 DW.actions.onSearchInput = function() {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(function() { readControls(); resetCursor(); writeURL(true); load(false); }, 300);
+  searchTimer = setTimeout(function() { readControls(); resetCursor(); writeURL(true); load(); }, 300);
 };
 DW.actions.toggleStatus = function(el) {
   var c = el.dataset.status;
@@ -275,36 +276,51 @@ DW.actions.toggleStatus = function(el) {
   if (i >= 0) cur.splice(i, 1); else cur.push(c);
   cur = STATUSES.filter(function(x) { return cur.indexOf(x) >= 0; });
   S.status = (cur.length === 0 || cur.length === 4) ? [] : cur;
-  resetCursor(); syncControls(); writeURL(false); load(false);
+  resetCursor(); syncControls(); writeURL(false); load();
 };
 DW.actions.toggleFlag = function(el) {
   if (el.dataset.flag === 'held') S.held = !S.held; else S.acl = !S.acl;
-  resetCursor(); syncControls(); writeURL(false); load(false);
+  resetCursor(); syncControls(); writeURL(false); load();
 };
 DW.actions.pageOlder = function() {
+  clearTimeout(searchTimer);
   if (!data || data.next_before_id == null) return;
   S.before = data.next_before_id; S.after = 0;
-  writeURL(false); load(false); scrollTop();
+  writeURL(false); load(); scrollTop();
 };
 DW.actions.pageNewer = function() {
+  clearTimeout(searchTimer);
   if (!data || !data.items.length) return;
   S.after = data.items[0].id; S.before = 0;
-  writeURL(false); load(false); scrollTop();
+  writeURL(false); load(); scrollTop();
 };
 function scrollTop() { $('log-body').scrollIntoView({block: 'nearest'}); }
-DW.actions.applyLiveNew = function() { if (isNewest()) load(true); else { resetCursor(); writeURL(false); load(false); } };
+DW.actions.applyLiveNew = function() { if (isNewest()) liveLoad(); else { resetCursor(); writeURL(false); load(); } };
 DW.actions.openCapture = function() {
   var p = $('capture-panel');
   p.hidden = !p.hidden;
   if (!p.hidden) { p.scrollIntoView({block: 'nearest'}); var t = $('capture-toggle'); if (t) t.focus(); }
 };
 window.addEventListener('popstate', function() {
-  S = readURL(); syncControls(); load(false);
+  clearTimeout(searchTimer);
+  S = readURL(); syncControls(); load();
 });
 
 /* ---------- loading ---------- */
 function isNewest() { return !S.before && !S.after; }
 function canAutoApply() { return liveOn && isNewest() && !panelOpen() && !DW.live.modalOpen() && !document.hidden; }
+var liveTimer = null, lastLiveAt = 0;
+// Live reloads run at most once per second, with a trailing run so the last
+// event in a burst is never dropped.
+function liveLoad() {
+  var wait = 1000 - (Date.now() - lastLiveAt);
+  if (wait <= 0) { lastLiveAt = Date.now(); load(); return; }
+  if (liveTimer) return;
+  liveTimer = setTimeout(function() {
+    liveTimer = null;
+    if (canAutoApply()) { lastLiveAt = Date.now(); load(); } else { newUnknown = true; updateNewIndicator(); }
+  }, wait);
+}
 function updateNewIndicator() {
   var box = $('live-new');
   var any = newUnknown;
@@ -313,9 +329,8 @@ function updateNewIndicator() {
   box.hidden = !any;
   $('live-new-text').textContent = 'New entries';
 }
-function load(live) {
+function load() {
   var seq = ++loadSeq;
-  loading = true;
   var url = '/api/logs?' + toParams(S, true).toString();
   return fetch(url, {credentials: 'same-origin'})
     .then(function(r) {
@@ -326,26 +341,25 @@ function load(live) {
     })
     .then(function(d) {
       if (!d || seq !== loadSeq) return;
-      loading = false;
       data = d;
       newUnknown = false; updateNewIndicator();
       render();
     })
     .catch(function(err) {
       if (seq !== loadSeq) return;
-      loading = false;
-      DW.setHTML($('log-body'), DW.html`<tr><td colspan="6" class="text-muted">Could not load requests (${err.message}). <button type="button" class="btn btn-sm" data-action="retryLoad">Retry</button></td></tr>`);
+      DW.setHTML($('log-body'), DW.raw(''));
+      showEmpty(DW.html`<strong>Could not load requests</strong><div class="text-muted text-sm">${err.message}</div><button type="button" class="btn btn-sm" data-action="retryLoad">Retry</button>`);
       $('log-count').textContent = '';
     });
 }
-DW.actions.retryLoad = function() { load(false); };
+DW.actions.retryLoad = function() { load(); };
 
 DW.live.on('logs', function() {
-  if (canAutoApply()) { load(true); return; }
+  if (canAutoApply()) { liveLoad(); return; }
   newUnknown = true; updateNewIndicator();
 });
 document.addEventListener('visibilitychange', function() {
-  if (!document.hidden && newUnknown && canAutoApply()) load(true);
+  if (!document.hidden && newUnknown && canAutoApply()) liveLoad();
 });
 
 /* ---------- rendering ---------- */
@@ -373,19 +387,29 @@ function fmtTime(ts) {
 }
 function rangeLabel() {
   if (S.range === 'custom') return 'the selected range';
+  if (S.range === 'all' && data && data.window === '7d') return 'the last 7d (searches without a time range are limited to 7 days)';
   return RANGE_LABEL[S.range] || '';
+}
+// The empty/error message lives outside the horizontally scrolling table so it
+// is fully visible on narrow screens.
+function showEmpty(html) {
+  var box = $('log-empty');
+  if (html) DW.setHTML(box, html); else DW.setHTML(box, DW.raw(''));
+  box.hidden = !html;
+  $('log-tablewrap').hidden = !!html;
 }
 function render() {
   var items = data.items;
   var tbody = $('log-body');
+  showEmpty(!items.length ? DW.html`<strong>No matching requests</strong><div class="text-muted text-sm">Nothing was logged for these filters in ${rangeLabel()}.</div><button type="button" class="btn btn-sm" data-action="clearFilters">Clear filters</button>` : null);
   if (!items.length) {
-    DW.setHTML(tbody, DW.html`<tr><td colspan="6" class="lg-empty"><strong>No matching requests</strong><div class="text-muted text-sm">Nothing was logged for these filters in ${rangeLabel()}.</div><button type="button" class="btn btn-sm" data-action="clearFilters">Clear filters</button></td></tr>`);
+    DW.setHTML(tbody, DW.raw(''));
   } else {
     DW.setHTML(tbody, DW.html`${items.map(function(l) {
       var dash = DW.raw('<span class="text-muted">—</span>');
       var cred = l.credential ? DW.html` <span class="text-muted">· ${l.credential}</span>` : '';
       var sel = l.id === selectedId;
-      return DW.html`<tr class="lg-tr${sel ? ' is-selected' : ''}" data-action="openRow" data-id="${l.id}"><td class="lg-t"><button type="button" class="lg-rowbtn" data-action="openRow" data-id="${l.id}" aria-current="${sel ? 'true' : 'false'}" title="${l.created_at} UTC">${fmtTime(l.created_at)}</button></td><td>${l.client_name || dash}</td><td><span class="lg-svc">${l.service_name}</span>${cred}</td><td><span class="lg-tag">${l.method}</span> <span class="mono lg-path">${l.path}</span></td><td>${pill(l)}</td><td class="text-right lg-ms">${fmtMs(l.duration_ms)}</td></tr>`;
+      return DW.html`<tr class="lg-tr${sel ? ' is-selected' : ''}" data-action="openRow" data-id="${l.id}"><td class="lg-t"><button type="button" class="lg-rowbtn" data-action="openRow" data-id="${l.id}"${sel ? DW.raw(' aria-current="true"') : ''} title="${l.created_at} UTC">${fmtTime(l.created_at)}</button></td><td>${l.client_name || dash}</td><td><span class="lg-svc">${l.service_name}</span>${cred}</td><td><span class="lg-tag">${l.method}</span> <span class="mono lg-path">${l.path}</span></td><td>${pill(l)}</td><td class="text-right lg-ms">${fmtMs(l.duration_ms)}</td></tr>`;
     })}`);
   }
   var a = data.offset + 1, b = data.offset + items.length;
@@ -399,7 +423,8 @@ function render() {
   $('pg-older').disabled = data.next_before_id == null;
 }
 DW.actions.clearFilters = function() {
-  S = newState(); syncControls(); writeURL(false); load(false);
+  clearTimeout(searchTimer);
+  S = newState(); syncControls(); writeURL(false); load();
 };
 
 /* ---------- detail panel ---------- */
@@ -411,6 +436,18 @@ function findItem(id) {
 }
 var lastItem = null;
 function isDrawer() { return window.matchMedia('(max-width: 900px)').matches; }
+// In drawer mode the detail is a modal dialog: the page behind it is inert.
+function applyDrawerA11y() {
+  var panel = $('log-detail');
+  var modal = panelOpen() && isDrawer();
+  if (modal) { panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true'); }
+  else { panel.removeAttribute('role'); panel.removeAttribute('aria-modal'); }
+  ['lg-header', 'lg-filters', 'capture-panel', 'lg-list'].forEach(function(id) {
+    var el = $(id);
+    if (el) el.inert = modal;
+  });
+}
+window.matchMedia('(max-width: 900px)').addEventListener('change', applyDrawerA11y);
 DW.actions.openRow = function(el) {
   var id = parseInt(el.dataset.id, 10);
   var l = findItem(id);
@@ -422,8 +459,9 @@ DW.actions.openRow = function(el) {
   var panel = $('log-detail');
   panel.classList.add('open');
   if (isDrawer()) $('lg-scrim').hidden = false;
+  applyDrawerA11y();
   renderDetail(l, undefined);
-  $('det-h').focus();
+  if (isDrawer()) $('det-h').focus();
   if (l.has_detail) {
     var seq = ++detailSeq;
     fetch('/api/logs/' + id + '/detail', {credentials: 'same-origin'})
@@ -440,7 +478,7 @@ function markSelected() {
     var on = parseInt(tr.dataset.id, 10) === selectedId;
     tr.classList.toggle('is-selected', on);
     var b = tr.querySelector('.lg-rowbtn');
-    if (b) b.setAttribute('aria-current', on ? 'true' : 'false');
+    if (b) { if (on) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current'); }
   });
 }
 DW.actions.closeDetail = function() { closePanel(true); };
@@ -452,9 +490,10 @@ function closePanel(restore) {
   DW.setHTML($('det-body'), DW.raw('<p class="text-muted text-sm">Select a request to inspect it.</p>'));
   DW.setHTML($('det-status'), DW.raw(''));
   markSelected();
+  applyDrawerA11y();
   if (restore && opener && opener.isConnected && opener.focus) opener.focus();
   opener = null;
-  if (newUnknown && canAutoApply()) load(true);
+  if (newUnknown && canAutoApply()) liveLoad();
 }
 document.addEventListener('keydown', function(e) {
   if (!panelOpen() || DW.live.modalOpen()) return;
@@ -544,6 +583,7 @@ function openPhantomDetail(phId) {
 var allClients = [];
 var captureClientIds = [];
 var captureEnabled = false;
+var capturePending = false;
 
 function loadCaptureSettings() {
   Promise.all([
@@ -568,45 +608,59 @@ function paintCapture() {
   $('capture-clients-row').hidden = !captureEnabled;
   var txt = captureEnabled ? (captureClientIds.length ? 'on for ' + captureClientIds.length + ' client' + (captureClientIds.length === 1 ? '' : 's') : 'on for all clients') : 'off';
   $('capture-state').textContent = txt;
+  $('capture-toggle').disabled = capturePending;
   DW.setHTML($('capture-clients-list'), DW.html`${allClients.map(function(c) {
     var on = captureClientIds.indexOf(c.id) >= 0;
-    return DW.html`<button type="button" class="lg-chip" aria-pressed="${on ? 'true' : 'false'}" data-action="toggleCaptureClient" data-id="${c.id}">${c.name}</button>`;
+    return DW.html`<button type="button" class="lg-chip" ${capturePending ? DW.raw('disabled') : ''} aria-pressed="${on ? 'true' : 'false'}" data-action="toggleCaptureClient" data-id="${c.id}">${c.name}</button>`;
   })}`);
 }
 DW.actions.toggleCaptureClient = function(el) {
+  if (capturePending) return;
   var id = el.dataset.id;
+  var prev = captureClientIds.slice();
   var i = captureClientIds.indexOf(id);
   if (i >= 0) captureClientIds.splice(i, 1); else captureClientIds.push(id);
-  saveCapture(captureEnabled).then(paintCapture);
+  saveCapture(captureEnabled).then(function(ok) { if (!ok) captureClientIds = prev; paintCapture(); });
 };
 // POST the atomic /api/logs/capture endpoint: toggle + client filter + (when
-// disabling) drop of stored details in one transaction.
+// disabling) drop of stored details in one transaction. Resolves true on
+// success and false on failure (after toasting and re-reading the settings).
 function saveCapture(enabled) {
+  capturePending = true; paintCapture();
   return fetch('/api/logs/capture', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, credentials: 'same-origin',
     body: JSON.stringify({enabled: enabled, clients: captureClientIds})
   }).then(function(r) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     captureEnabled = enabled;
-  }).catch(function() { DW.toast('Could not update capture settings', 'error'); loadCaptureSettings(); });
+    return true;
+  }).catch(function() {
+    DW.toast('Could not update capture settings', 'error'); loadCaptureSettings();
+    return false;
+  }).then(function(ok) { capturePending = false; paintCapture(); return ok; });
 }
 DW.actions.onCaptureToggle = function() {
+  if (capturePending) { $('capture-toggle').checked = captureEnabled; return; }
   var want = $('capture-toggle').checked;
   if (!want) {
     $('capture-toggle').checked = true;
     DW.modal.open('#capture-off-modal');
     return;
   }
-  saveCapture(true).then(function() { paintCapture(); DW.toast('Detail recording enabled', 'success'); });
+  saveCapture(true).then(function(ok) {
+    $('capture-toggle').checked = captureEnabled;
+    if (ok) DW.toast('Detail recording enabled', 'success');
+  });
 };
 DW.actions.captureOffCancel = function() { DW.modal.close('#capture-off-modal'); };
 DW.actions.captureOffConfirm = function() {
   DW.modal.close('#capture-off-modal');
   $('capture-toggle').checked = false;
-  saveCapture(false).then(function() {
-    paintCapture();
+  saveCapture(false).then(function(ok) {
+    $('capture-toggle').checked = captureEnabled;
+    if (!ok) return;
     DW.toast('Detail recording disabled, stored bodies dropped', 'success');
-    load(true);
+    load();
   });
 };
 
@@ -621,7 +675,7 @@ document.addEventListener('DOMContentLoaded', function() {
   S = readURL();
   syncControls();
   writeURL(true);
-  load(false);
+  load();
   loadFacets();
   loadCaptureSettings();
 });

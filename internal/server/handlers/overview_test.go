@@ -161,3 +161,33 @@ func TestOverviewHealthyRolloutAndSQLInjectionShapedNames(t *testing.T) {
 		t.Fatalf("healthy active rollout should not alert: %+v", r.Attention)
 	}
 }
+
+func TestOverviewTombstoneExcludedAndCached(t *testing.T) {
+	db := overviewDB(t)
+	ovExec(t, db, `INSERT INTO services (id, name, display_name, upstream_url, host_pattern) VALUES ('s1', 'svc', 'S', 'https://e.com', 'e.com')`)
+	ovExec(t, db, `INSERT INTO api_keys (id, service_id, name, key_encrypted) VALUES ('k1', 's1', 'live', 'x')`)
+	ovExec(t, db, `INSERT INTO api_keys (id, service_id, name, key_encrypted, is_active) VALUES ('k2', 's1', 'Deleted API key: old', '', 0)`)
+	ovExec(t, db, `INSERT INTO api_keys (id, service_id, name, key_encrypted, refresh_token, is_active) VALUES ('k3', 's1', 'off', 'x', 'r', 0)`)
+	h := handlers.NewOverviewHandler(queries.NewOverviewQueries(db), queries.NewSettingsQueries(db))
+	get := func() handlers.OverviewResponse {
+		w := httptest.NewRecorder()
+		h.Get(w, httptest.NewRequest(http.MethodGet, "/api/overview", nil))
+		var r handlers.OverviewResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	r := get()
+	if r.Stats.Credentials.Total != 2 {
+		t.Fatalf("total=%d want 2 (tombstone excluded)", r.Stats.Credentials.Total)
+	}
+	cs := kinds(r)["credentials"]
+	if len(cs) != 1 || cs[0].Severity != "warn" || strings.Contains(cs[0].Title, "failure") {
+		t.Fatalf("disabled item %+v", cs)
+	}
+	ovExec(t, db, `INSERT INTO api_keys (id, service_id, name, key_encrypted) VALUES ('k4', 's1', 'new', 'x')`)
+	if r2 := get(); r2.Stats.Credentials.Total != 2 {
+		t.Fatalf("expected cached response, total=%d", r2.Stats.Credentials.Total)
+	}
+}

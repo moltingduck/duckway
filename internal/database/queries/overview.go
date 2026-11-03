@@ -134,8 +134,9 @@ type OverviewCredentials struct {
 	// RefreshOverdue: active refreshable keys whose access token expired more
 	// than the grace period ago (the refresher is not renewing them).
 	RefreshOverdue OverviewNames
-	// Deactivated: refreshable keys the refresher disabled after a permanent
-	// refresh failure (inactive but still holding a refresh token).
+	// Deactivated: refreshable keys that are disabled (inactive but still
+	// holding a refresh token). No failure marker is stored, so this may be an
+	// admin action or a refresher failure.
 	Deactivated OverviewNames
 }
 
@@ -158,7 +159,7 @@ func (q *OverviewQueries) names(query string, args ...interface{}) (OverviewName
 
 func (q *OverviewQueries) Credentials(now time.Time, horizon, grace time.Duration, limit int) (OverviewCredentials, error) {
 	var out OverviewCredentials
-	if err := q.db.QueryRow(`SELECT COUNT(*) FROM api_keys`).Scan(&out.Total); err != nil {
+	if err := q.db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE key_encrypted <> ''`).Scan(&out.Total); err != nil {
 		return out, err
 	}
 	hz := now.Add(horizon).UnixMilli()

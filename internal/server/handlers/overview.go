@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -18,10 +20,15 @@ type OverviewHandler struct {
 	q        *queries.OverviewQueries
 	settings *queries.SettingsQueries
 	now      func() time.Time
+
+	mu       sync.Mutex
+	cached   *OverviewResponse
+	cachedAt time.Time
+	cacheTTL time.Duration
 }
 
 func NewOverviewHandler(q *queries.OverviewQueries, settings *queries.SettingsQueries) *OverviewHandler {
-	return &OverviewHandler{q: q, settings: settings, now: time.Now}
+	return &OverviewHandler{q: q, settings: settings, now: time.Now, cacheTTL: 3 * time.Second}
 }
 
 const (
@@ -117,19 +124,37 @@ func (h *OverviewHandler) approvalTTL() time.Duration {
 	return time.Duration(n) * time.Minute
 }
 
+// Get serves the overview, reusing a computed response for overviewCacheTTL so
+// many open dashboards (or SSE-triggered refreshes) do not repeat the queries.
 func (h *OverviewHandler) Get(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	wall := time.Now()
+	if h.cached != nil && h.cacheTTL > 0 && wall.Sub(h.cachedAt) < h.cacheTTL {
+		w.Header().Set("Cache-Control", "no-store")
+		jsonResponse(w, h.cached)
+		return
+	}
+	resp, err := h.build()
+	if err != nil {
+		log.Printf("[overview] %v", err)
+		jsonError(w, "failed to load overview", http.StatusInternalServerError)
+		return
+	}
+	h.cached, h.cachedAt = &resp, wall
+	w.Header().Set("Cache-Control", "no-store")
+	jsonResponse(w, resp)
+}
+
+func (h *OverviewHandler) build() (OverviewResponse, error) {
 	now := h.now().UTC()
 	var resp OverviewResponse
 	resp.GeneratedAt = now.Format(time.RFC3339)
 	items := []OverviewItem{}
-	fail := func(err error) {
-		jsonError(w, "failed to load overview", http.StatusInternalServerError)
-	}
 
 	pend, err := h.q.Pending()
 	if err != nil {
-		fail(err)
-		return
+		return resp, err
 	}
 	if pend.Count > 0 {
 		it := OverviewItem{Kind: "approvals", Label: "Approval", Severity: "critical", Count: pend.Count,
@@ -153,8 +178,7 @@ func (h *OverviewHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	creds, err := h.q.Credentials(now, overviewExpiryHorizon, overviewRefreshGrace, overviewMaxNames)
 	if err != nil {
-		fail(err)
-		return
+		return resp, err
 	}
 	addCred := func(n queries.OverviewNames, sev, title, meta, href, cta string) {
 		if n.Count == 0 {
@@ -164,14 +188,13 @@ func (h *OverviewHandler) Get(w http.ResponseWriter, r *http.Request) {
 			Title: fmt.Sprintf(title, n.Count, plural(n.Count, "credential", "credentials")),
 			Meta:  meta + joinNames(n.Names, n.Count), Names: n.Names, Href: href, CTA: cta})
 	}
-	addCred(creds.Deactivated, "critical", "%d refreshable %s disabled after a refresh failure", "", "/admin/oauth", "Open tokens")
+	addCred(creds.Deactivated, "warn", "%d refreshable %s disabled", "Not refreshing: ", "/admin/oauth", "Open tokens")
 	addCred(creds.RefreshOverdue, "warn", "%d refreshable %s not renewing", "Access token expired: ", "/admin/oauth", "Open tokens")
 	addCred(creds.Expiring, "warn", "%d %s expiring within 7 days or expired", "", "/admin/keys", "Open keys")
 
 	stale, err := h.q.StaleClients(now.Add(-overviewStaleAfter), overviewMaxNames)
 	if err != nil {
-		fail(err)
-		return
+		return resp, err
 	}
 	if stale.Count > 0 {
 		items = append(items, OverviewItem{Kind: "clients", Label: "Client", Severity: "warn", Count: stale.Count,
@@ -181,8 +204,7 @@ func (h *OverviewHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	rolls, err := h.q.AttentionRollouts()
 	if err != nil {
-		fail(err)
-		return
+		return resp, err
 	}
 	for _, ro := range rolls {
 		var parts []string
@@ -203,8 +225,7 @@ func (h *OverviewHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := h.q.Stats(now, overviewOnlineWindow)
 	if err != nil {
-		fail(err)
-		return
+		return resp, err
 	}
 	if stats.CanaryTokens > 0 && strings.TrimSpace(stats.CanaryAlertTo) == "" {
 		items = append(items, OverviewItem{Kind: "canary", Label: "Canary", Severity: "warn", Count: stats.CanaryTokens,
@@ -243,6 +264,5 @@ func (h *OverviewHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.Posture = posture
 
-	w.Header().Set("Cache-Control", "no-store")
-	jsonResponse(w, resp)
+	return resp, nil
 }

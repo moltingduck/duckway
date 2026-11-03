@@ -10,9 +10,9 @@
 <section class="card ov-attention" aria-labelledby="ov-att-h">
   <div class="ov-card-head">
     <h2 id="ov-att-h">Needs attention</h2>
-    <span class="ov-pill ov-pill-mute" id="ov-att-count">&hellip;</span>
+    <span class="ov-pill ov-pill-mute" id="ov-att-count" role="status" aria-live="polite">&hellip;</span>
   </div>
-  <div id="ov-att-list" aria-live="polite"><p class="ov-empty text-muted">Checking&hellip;</p></div>
+  <div id="ov-att-list"><p class="ov-empty text-muted">Checking&hellip;</p></div>
 </section>
 
 <section class="ov-stats" aria-label="Key numbers">
@@ -100,11 +100,15 @@
   var SEV = {critical: 'ov-pill-bad', warn: 'ov-pill-warn', info: 'ov-pill-info'};
   var SEVTXT = {critical: 'Urgent', warn: 'Soon', info: 'Info'};
   function safeHref(h) { return typeof h === 'string' && h.charAt(0) === '/' && h.charAt(1) !== '/' ? h : '/admin/'; }
+  var lastAttSig = null;
   function renderAttention(a) {
     var cnt = byId('ov-att-count');
     var items = (a && a.items) || [];
     cnt.textContent = items.length ? String(items.length) + (items.length === 1 ? ' item' : ' items') : 'All clear';
     cnt.className = 'ov-pill ' + (items.length ? 'ov-pill-warn' : 'ov-pill-ok');
+    var sig = JSON.stringify(items);
+    if (sig === lastAttSig) return; // unchanged: keep focus and scroll position
+    lastAttSig = sig;
     var list = byId('ov-att-list');
     if (!items.length) {
       DW.setHTML(list, DW.raw('<p class="ov-empty"><strong>Nothing needs you right now</strong><span class="text-muted"> Approvals, credentials, clients and rollouts are all in order.</span></p>'));
@@ -141,19 +145,29 @@
     seqs[key] = n;
     getJSON(url).then(function(d) { if (seqs[key] === n && valid(d)) apply(d); });
   }
-  function refreshRecent() { latest('recent', '/api/logs', Array.isArray, renderRecent); }
-  var lastOverview = 0, ovTimer = null;
-  function refreshOverview(force) {
-    var wait = (force ? 0 : 1500) - (Date.now() - lastOverview);
-    if (wait > 0) { // coalesce bursts of topic events
-      if (!ovTimer) ovTimer = setTimeout(function() { ovTimer = null; refreshOverview(true); }, wait);
-      return;
-    }
-    lastOverview = Date.now();
+  // Coalesce bursts of topic events: at most one run per window, with a
+  // trailing run so the last event is never dropped.
+  function throttled(fn, ms) {
+    var last = 0, timer = null;
+    return function run(force) {
+      var wait = (force ? 0 : ms) - (Date.now() - last);
+      if (wait > 0) {
+        if (!timer) timer = setTimeout(function() { timer = null; run(true); }, wait);
+        return;
+      }
+      last = Date.now();
+      fn();
+    };
+  }
+  // limit=10 returns a small page object instead of the legacy 500-row array.
+  var refreshRecent = throttled(function() {
+    latest('recent', '/api/logs?limit=10', function(d) { return d && Array.isArray(d.items); }, function(d) { renderRecent(d.items); });
+  }, 1500);
+  var refreshOverview = throttled(function() {
     latest('overview', '/api/overview', function(d) { return d && d.attention && d.stats; }, function(d) {
       renderAttention(d.attention); renderStats(d.stats); renderPosture(d.posture);
     });
-  }
+  }, 1500);
   refreshOverview(true);
   DW.live.on('logs', function() { refreshRecent(); refreshOverview(false); }, {defer: true});
   ['approvals', 'rollouts', 'badge'].forEach(function(t) {

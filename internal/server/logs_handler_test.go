@@ -21,6 +21,7 @@ type logsPage struct {
 	TotalCapped  bool   `json:"total_capped"`
 	Offset       int    `json:"offset"`
 	HasNewer     bool   `json:"has_newer"`
+	Window       string `json:"window"`
 }
 
 func seedLogs(t *testing.T, s *Server) {
@@ -305,5 +306,35 @@ func TestLogsFacetsAndDuration(t *testing.T) {
 		if it.ID != 3 && it.DurationMs != nil {
 			t.Fatalf("unexpected duration on %d", it.ID)
 		}
+	}
+}
+
+func TestLogsDefaultWindowAndEmptyAfterPage(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	seedLogs(t, s)
+	// id 30 is 48h old but within 7d: bare q search is windowed to 7d.
+	_, p := getLogs(t, s, shared, "?q=item30", false)
+	if p.Window != "7d" || p.Total != 1 {
+		t.Fatalf("window=%q total=%d", p.Window, p.Total)
+	}
+	if _, p = getLogs(t, s, shared, "?limit=5", false); p.Window != "all" {
+		t.Fatalf("plain window=%q", p.Window)
+	}
+	if _, p = getLogs(t, s, shared, "?range=1h&q=item", false); p.Window != "1h" {
+		t.Fatalf("range window=%q", p.Window)
+	}
+	// Old rows beyond 7d are excluded from a bare q search.
+	if _, err := s.db.Exec(`UPDATE request_log SET created_at = datetime('now','-9 days') WHERE id = 30`); err != nil {
+		t.Fatal(err)
+	}
+	if _, p = getLogs(t, s, shared, "?q=item30", false); p.Total != 0 {
+		t.Fatalf("expected windowed out, total=%d", p.Total)
+	}
+	// after_id past the newest row: empty page, no newer rows.
+	if _, p = getLogs(t, s, shared, "?after_id=999999", false); len(p.Items) != 0 || p.HasNewer {
+		t.Fatalf("after past end: items=%d newer=%v", len(p.Items), p.HasNewer)
+	}
+	if _, p = getLogs(t, s, shared, "?before_id=1", false); len(p.Items) != 0 || !p.HasNewer {
+		t.Fatalf("before past end: newer=%v", p.HasNewer)
 	}
 }

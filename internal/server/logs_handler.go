@@ -39,19 +39,38 @@ type logsListResponse struct {
 	Offset       int                       `json:"offset"`
 	HasNewer     bool                      `json:"has_newer"`
 	Limit        int                       `json:"limit"`
+	// Window names the time window applied: "15m".."7d" for range, "custom"
+	// for since/until, "7d" when a text/held/credential search had no bound
+	// and was defaulted to 7 days, or "all" for no time bound.
+	Window string `json:"window"`
 }
 
 // parseLogsFilter validates the query string strictly. The returned message is
 // non-empty when the request must be rejected with 400.
-func parseLogsFilter(r *http.Request, now time.Time) (queries.RequestLogFilter, string) {
+func parseLogsFilterWindow(r *http.Request, now time.Time) (queries.RequestLogFilter, string, string) {
+	f, window, msg := parseLogsFilterRaw(r, now)
+	if msg != "" {
+		return f, window, msg
+	}
+	// Text, held and credential searches scan joined rows; without an explicit
+	// time bound limit them to the last 7 days so they cannot walk the table.
+	if f.Since == "" && f.Until == "" && (f.Q != "" || f.Held || f.Credential != "") {
+		f.Since = now.Add(-logsRanges["7d"]).UTC().Format(logsTimeLayout)
+		window = "7d"
+	}
+	return f, window, ""
+}
+
+func parseLogsFilterRaw(r *http.Request, now time.Time) (queries.RequestLogFilter, string, string) {
 	var f queries.RequestLogFilter
+	window := "all"
 	vals := r.URL.Query()
 	for k, v := range vals {
 		if !logsAllowedParams[k] {
-			return f, "unknown parameter: " + k
+			return f, window, "unknown parameter: " + k
 		}
 		if len(v) != 1 {
-			return f, "parameter given more than once: " + k
+			return f, window, "parameter given more than once: " + k
 		}
 	}
 	text := func(name string) (string, string) {
@@ -66,47 +85,50 @@ func parseLogsFilter(r *http.Request, now time.Time) (queries.RequestLogFilter, 
 	}
 	var msg string
 	if f.Q, msg = text("q"); msg != "" {
-		return f, msg
+		return f, window, msg
 	}
 	if f.ClientID, msg = text("client"); msg != "" {
-		return f, msg
+		return f, window, msg
 	}
 	if f.Service, msg = text("service"); msg != "" {
-		return f, msg
+		return f, window, msg
 	}
 	if f.Credential, msg = text("credential"); msg != "" {
-		return f, msg
+		return f, window, msg
 	}
 
 	if v := vals.Get("range"); v != "" {
 		d, ok := logsRanges[v]
 		if !ok {
-			return f, "invalid range (use 15m, 1h, 24h or 7d)"
+			return f, window, "invalid range (use 15m, 1h, 24h or 7d)"
 		}
 		if vals.Get("since") != "" || vals.Get("until") != "" {
-			return f, "range cannot be combined with since/until"
+			return f, window, "range cannot be combined with since/until"
 		}
 		f.Since = now.Add(-d).UTC().Format(logsTimeLayout)
+		window = v
 	}
 	var since, until time.Time
 	if v := vals.Get("since"); v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
-			return f, "invalid since (RFC3339)"
+			return f, window, "invalid since (RFC3339)"
 		}
 		since = t
 		f.Since = t.UTC().Format(logsTimeLayout)
+		window = "custom"
 	}
 	if v := vals.Get("until"); v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
-			return f, "invalid until (RFC3339)"
+			return f, window, "invalid until (RFC3339)"
 		}
 		until = t
 		f.Until = t.UTC().Format(logsTimeLayout)
+		window = "custom"
 	}
 	if !since.IsZero() && !until.IsZero() && !since.Before(until) {
-		return f, "since must be before until"
+		return f, window, "since must be before until"
 	}
 
 	if v := vals.Get("status"); v != "" {
@@ -115,7 +137,7 @@ func parseLogsFilter(r *http.Request, now time.Time) (queries.RequestLogFilter, 
 			switch c {
 			case "2xx", "3xx", "4xx", "5xx":
 			default:
-				return f, "invalid status class (use 2xx,3xx,4xx,5xx)"
+				return f, window, "invalid status class (use 2xx,3xx,4xx,5xx)"
 			}
 			if !seen[c] {
 				seen[c] = true
@@ -135,7 +157,7 @@ func parseLogsFilter(r *http.Request, now time.Time) (queries.RequestLogFilter, 
 			*b.dst = true
 		case "0", "false":
 		default:
-			return f, "invalid " + b.name + " (use 1/0 or true/false)"
+			return f, window, "invalid " + b.name + " (use 1/0 or true/false)"
 		}
 	}
 	id := func(name string) (int64, string) {
@@ -150,23 +172,23 @@ func parseLogsFilter(r *http.Request, now time.Time) (queries.RequestLogFilter, 
 		return n, ""
 	}
 	if f.BeforeID, msg = id("before_id"); msg != "" {
-		return f, msg
+		return f, window, msg
 	}
 	if f.AfterID, msg = id("after_id"); msg != "" {
-		return f, msg
+		return f, window, msg
 	}
 	if f.BeforeID > 0 && f.AfterID > 0 {
-		return f, "before_id and after_id are mutually exclusive"
+		return f, window, "before_id and after_id are mutually exclusive"
 	}
 	f.Limit = logsDefaultLimit
 	if _, present := vals["limit"]; present {
 		n, err := strconv.Atoi(vals.Get("limit"))
 		if err != nil || n < 1 || n > logsMaxLimit {
-			return f, "invalid limit (1-200)"
+			return f, window, "invalid limit (1-200)"
 		}
 		f.Limit = n
 	}
-	return f, ""
+	return f, window, ""
 }
 
 // newLogsListHandler serves GET /api/logs. With no query parameters it keeps
@@ -186,7 +208,7 @@ func newLogsListHandler(q *queries.RequestLogQueries) http.HandlerFunc {
 			handlers.JsonResponsePublic(w, logs)
 			return
 		}
-		f, msg := parseLogsFilter(r, time.Now())
+		f, window, msg := parseLogsFilterWindow(r, time.Now())
 		if msg != "" {
 			handlers.JsonErrorPublic(w, msg, http.StatusBadRequest)
 			return
@@ -198,7 +220,7 @@ func newLogsListHandler(q *queries.RequestLogQueries) http.HandlerFunc {
 		}
 		resp := logsListResponse{
 			Items: page.Items, Total: page.Total, TotalCapped: page.TotalCapped,
-			Offset: page.Offset, HasNewer: page.HasNewer, Limit: f.Limit,
+			Offset: page.Offset, HasNewer: page.HasNewer, Limit: f.Limit, Window: window,
 		}
 		if resp.Items == nil {
 			resp.Items = []queries.RequestLogEntry{}
