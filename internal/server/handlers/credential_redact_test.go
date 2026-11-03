@@ -50,6 +50,7 @@ func TestSecretFieldNameWordMatching(t *testing.T) {
 		"bearer", "bearerToken", "jwt", "id_jwt", "credential", "credentials", "passphrase", "pem", "private_pem",
 		"access_key", "accessKey", "signing_key", "signingKey", "x-api-key", "X-Api-Key", "tokens", "refresh_tokens",
 		"refreshTokens", "access_token", "accessToken", "id_token", "client_secret", "private_key", "apiKey",
+		"auth", "Auth", "sessionid", "sessionId", "session_id", "code", "auth_code", "authCode", "code_verifier", "otp", "totp_otp", "otp_secret",
 	}
 	for _, n := range secrets {
 		if !isSecretFieldName(n) {
@@ -59,6 +60,8 @@ func TestSecretFieldNameWordMatching(t *testing.T) {
 	visible := []string{
 		"subscriptionType", "rateLimitTier", "scopes", "account_id", "client_id", "clientId", "token_type",
 		"tokenType", "token_endpoint", "displayName", "email", "expires_at", "tokens_remaining", "key_preview", "organization",
+		"auth_type", "authType", "auth_method", "auth_provider", "code_challenge_method", "status_code", "country_code",
+		"authority", "encode",
 	}
 	for _, n := range visible {
 		if isSecretFieldName(n) {

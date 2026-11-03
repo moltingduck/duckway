@@ -221,12 +221,14 @@ func (h *ClientHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	// Delete canary tokens from canarytokens.org + DB
+	remoteFailed := 0
 	if h.canarySvc != nil {
 		_, failed, err := h.canarySvc.DeleteClientTokens(id, false)
 		if err != nil {
 			log.Printf("Warning: failed to clean up canary tokens for client %s: %v", id, err)
 		}
 		if failed > 0 {
+			remoteFailed = failed
 			// The client is being deleted, so its rows must go too; the remote
 			// tokens may stay live until removed on canarytokens.org.
 			log.Printf("Warning: %d canary tokens of deleted client %s could not be removed on canarytokens.org", failed, id)
@@ -240,8 +242,11 @@ func (h *ClientHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to delete client", http.StatusInternalServerError)
 		return
 	}
-	// Return empty body so HTMX outerHTML swap removes the card cleanly
-	w.WriteHeader(http.StatusOK)
+	// canary_remote_failed counts canary tokens whose rows were removed locally
+	// although canarytokens.org could not be reached; they may still be live
+	// there and must be deleted by hand.
+	noStore(w)
+	jsonResponse(w, map[string]interface{}{"status": "deleted", "canary_remote_failed": remoteFailed})
 }
 
 func (h *ClientHandler) assignHeartbeat(clientID string) {

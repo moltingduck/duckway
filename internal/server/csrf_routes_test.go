@@ -27,7 +27,9 @@ func TestAdminMutationsRequireSameOrigin(t *testing.T) {
 	s, shared := newClientDetailServer(t)
 	cookie := shared.AdminAuth.CreateSession("duckway", httptest.NewRequest("GET", "/", nil))
 	js := map[string]string{"Content-Type": "application/json"}
-	with := func(k, v string) map[string]string { return map[string]string{"Content-Type": "application/json", k: v} }
+	with := func(k, v string) map[string]string {
+		return map[string]string{"Content-Type": "application/json", k: v}
+	}
 	body := `{"name":"csrf-probe"}`
 
 	if rec := csrfReq(s, "POST", "/api/clients", body, with("Origin", "http://evil.example"), cookie); rec.Code != 403 || !strings.Contains(rec.Body.String(), "cross-site request blocked") {

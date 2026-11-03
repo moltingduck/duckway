@@ -265,7 +265,22 @@ func (h *ServiceHandler) ListPricing(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to list model pricing", http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, rows)
+	// usage_references tells the console which rows are referenced by priced
+	// usage, so it can lock model/version (the server enforces this with 409).
+	type pricingRow struct {
+		models.ModelPricing
+		UsageReferences int64 `json:"usage_references"`
+	}
+	out := make([]pricingRow, 0, len(rows))
+	for _, row := range rows {
+		n, err := h.pricing.UsageReferences(serviceID, row.Model, row.Version)
+		if err != nil {
+			jsonError(w, "failed to check pricing usage", http.StatusInternalServerError)
+			return
+		}
+		out = append(out, pricingRow{ModelPricing: row, UsageReferences: n})
+	}
+	jsonResponse(w, out)
 }
 
 // CreatePricing appends a price version; existing versions are never updated.

@@ -26,7 +26,19 @@ var visibleMetadataFields = map[string]bool{
 var secretWords = map[string]bool{
 	"authorization": true, "cookie": true, "cookies": true, "session": true, "bearer": true, "jwt": true,
 	"credential": true, "credentials": true, "passphrase": true, "pem": true, "secret": true, "secrets": true,
-	"password": true, "passwd": true,
+	"password": true, "passwd": true, "sessionid": true,
+}
+
+// weakSecretWords are secret only on their own: "auth", "code" and "otp"
+// commonly name credentials (auth, auth_code, otp) but also describe
+// non-secret metadata (auth_type, status_code, code_challenge_method). They
+// stop counting when the name carries a descriptive qualifier word.
+var weakSecretWords = map[string]bool{"auth": true, "code": true, "otp": true}
+
+var benignQualifierWords = map[string]bool{
+	"type": true, "method": true, "mode": true, "provider": true, "scheme": true, "status": true,
+	"country": true, "language": true, "currency": true, "region": true, "count": true, "length": true,
+	"enabled": true, "required": true, "version": true, "style": true, "flow": true,
 }
 
 // nameWords splits snake, kebab, dotted and camelCase names into lower-case words.
@@ -69,6 +81,19 @@ func isSecretFieldName(name string) bool {
 	for _, w := range words {
 		if secretWords[w] {
 			return true
+		}
+	}
+	qualified := false
+	for _, w := range words {
+		if benignQualifierWords[w] {
+			qualified = true
+		}
+	}
+	if !qualified {
+		for _, w := range words {
+			if weakSecretWords[w] {
+				return true
+			}
 		}
 	}
 	if len(words) > 0 {

@@ -68,7 +68,7 @@
     <!-- Password -->
     <section class="card st-sec" id="sec-password" data-sec="password" aria-labelledby="password-h" hidden>
       <h2 id="password-h">Admin password</h2>
-      <p class="text-sm text-muted">Changes the password for the account you are signed in with. Sessions are signed cookies without a server-side list, so other signed-in sessions are <strong>not</strong> signed out by a change; they stay valid until they expire (up to 7 days). This session stays signed in.</p>
+      <p class="text-sm text-muted">Changes the password for the account you are signed in with. Every other signed-in session is signed out when you change it, so each must sign in again with the new password. This session stays signed in.</p>
       <form class="st-form" data-sec="password" data-on-submit="stSave" novalidate autocomplete="off">
         <div class="form-group">
           <label for="cp-current">Current password</label>

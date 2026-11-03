@@ -406,26 +406,23 @@ func (n *Notifier) testDiscordWebhook(configJSON string) TestResult {
 }
 
 func (n *Notifier) testWebhook(configJSON string) TestResult {
-	var cfg struct {
-		URL string `json:"url"`
-	}
-	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
-		return TestResult{Message: "invalid config"}
-	}
 	body, _ := json.Marshal(map[string]string{"test": "duckway"})
-	resp, err := n.client.Post(cfg.URL, "application/json", bytes.NewReader(body))
-	if err != nil {
-		return TestResult{Message: "send failed: " + scrubNetErr(err).Error()}
-	}
-	resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return TestResult{Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}
+	if err := n.postWebhook(configJSON, body); err != nil {
+		return TestResult{Message: err.Error()}
 	}
 	return TestResult{SendOK: true, ReceiveOK: true, Message: "Webhook OK"}
 }
 
 // Webhook: config = {"url": "...", "secret": "..."}
 func (n *Notifier) sendWebhook(configJSON string, notif ApprovalNotification) error {
+	body, _ := json.Marshal(notif)
+	return n.postWebhook(configJSON, body)
+}
+
+// postWebhook is the single webhook send path, shared by real notifications and
+// the admin Test button so the Test exercises exactly what real sends do,
+// including the X-Duckway-Secret header when a secret is configured.
+func (n *Notifier) postWebhook(configJSON string, body []byte) error {
 	var cfg struct {
 		URL    string `json:"url"`
 		Secret string `json:"secret"`
@@ -433,8 +430,6 @@ func (n *Notifier) sendWebhook(configJSON string, notif ApprovalNotification) er
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
 		return fmt.Errorf("parse webhook config: %w", err)
 	}
-
-	body, _ := json.Marshal(notif)
 
 	parsedURL, err := url.Parse(cfg.URL)
 	if err != nil {
@@ -452,7 +447,7 @@ func (n *Notifier) sendWebhook(configJSON string, notif ApprovalNotification) er
 
 	resp, err := n.client.Do(req)
 	if err != nil {
-		return scrubNetErr(err)
+		return fmt.Errorf("send failed: %w", scrubNetErr(err))
 	}
 	defer resp.Body.Close()
 

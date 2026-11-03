@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -240,7 +241,16 @@ func TestStaticKeyDeleteImpactPreviewAndCleanup(t *testing.T) {
 		t.Fatalf("preview deleted the key: n=%d err=%v", n, err)
 	}
 
+	// confirm:true without the previewed counts is refused and deletes nothing.
 	rec = credAdminRequest(t, s, shared, http.MethodDelete, "/api/keys/"+staticID, `{"confirm":true}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "preview required") {
+		t.Fatalf("confirm without expect: %d %s", rec.Code, rec.Body.String())
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE id = ?`, staticID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("refused confirm deleted the key: n=%d err=%v", n, err)
+	}
+	rec = credAdminRequest(t, s, shared, http.MethodDelete, "/api/keys/"+staticID,
+		fmt.Sprintf(`{"confirm":true,"expect":{"key_suites":0,"clients":%d,"control_channels":0,"pools":%d}}`, len(prev.Impact.Clients), len(prev.Impact.Pools)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("confirm: %d %s", rec.Code, rec.Body.String())
 	}

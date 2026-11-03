@@ -278,7 +278,7 @@ func TestMiddleware_CookieValue_ContainsTimestamp(t *testing.T) {
 
 type memEpoch map[string]string
 
-func (m memEpoch) Get(k string) string    { return m[k] }
+func (m memEpoch) Get(k string) string   { return m[k] }
 func (m memEpoch) Set(k, v string) error { m[k] = v; return nil }
 
 func TestSessionEpochRevokesOldCookiesImmediately(t *testing.T) {

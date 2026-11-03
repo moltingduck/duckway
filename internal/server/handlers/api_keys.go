@@ -693,6 +693,12 @@ func (h *APIKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		if req.Expect == nil {
+			// A confirmed delete must carry the counts the admin was shown, or a
+			// stale or scripted confirm could remove references nobody reviewed.
+			jsonError(w, "preview required: send the previewed counts in \"expect\" with confirm:true", http.StatusBadRequest)
+			return
+		}
 		impact, err := h.apiKeys.DeleteKeyWithCleanup(id, req.Expect)
 		if errors.Is(err, queries.ErrImpactChanged) {
 			w.Header().Set("Content-Type", "application/json")

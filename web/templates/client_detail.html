@@ -765,7 +765,11 @@ DW.actions.dzEnable = function() {
 };
 DW.actions.dzDelete = function() {
   openImpactDz({title: 'Delete client', confirmLabel: 'Delete client', danger: true, typeName: C.name, run: function() {
-    return sendJSON('DELETE', '/api/clients/' + enc(CID)).then(function() { window.location = '/admin/clients'; });
+    return sendJSON('DELETE', '/api/clients/' + enc(CID)).then(function(data) {
+      // The clients list shows a one-time warning when remote canary deletes failed.
+      try { if (data && data.canary_remote_failed > 0) { sessionStorage.setItem('dw-canary-remote-failed', String(data.canary_remote_failed)); } } catch (e) { /* storage unavailable */ }
+      window.location = '/admin/clients';
+    });
   }}, function(im) {
     var l = [plural(im.phantom_tokens, 'phantom token') + ' removed (' + im.bundle_tokens + ' from key bundles, ' + im.manual_tokens + ' manual).'];
     if (im.bundles.length) l.push('Removed from ' + plural(im.bundles.length, 'key bundle') + ': ' + im.bundles.map(function(b) { return b.name; }).join(', ') + '.');
