@@ -1,0 +1,405 @@
+{{define "content"}}
+<div class="page-header kb-header">
+  <div>
+    <h1>Key bundles</h1>
+    <p class="kb-sub">Named sets of keys, one per service, that you assign to clients in one step.</p>
+  </div>
+  <div class="kb-header-actions">
+    <button type="button" class="btn" id="kb-refresh" data-action="refresh">Refresh</button>
+    <button type="button" class="btn btn-primary" data-action="openCreate">New bundle</button>
+  </div>
+</div>
+
+<details class="kb-help">
+  <summary>How bundles work</summary>
+  <p>A bundle holds one entry per service. Each entry points at an API key or at a per-request rotation pool. Assign a bundle to a client and that client receives one phantom token for every entry. Changing an entry's key or pool updates the phantom tokens of every assigned client. A phantom token you created by hand for the same service on that client takes priority and is not replaced.</p>
+</details>
+
+<div class="kb-filters">
+  <div class="search-bar">
+    <input type="text" id="kb-q" aria-label="Search bundles" placeholder="Search bundles by name or description" autocomplete="off" data-on-input="applyFilter">
+    <span class="count" id="kb-count" role="status" aria-live="polite"></span>
+  </div>
+</div>
+
+<div id="kb-list" class="kb-list"><p class="text-muted">Loading…</p></div>
+
+<!-- Create / rename bundle -->
+<div id="kb-edit" class="modal-backdrop" hidden>
+  <div class="modal">
+    <h2 id="kb-edit-title">New bundle</h2>
+    <form id="kb-edit-form" data-on-submit="saveBundle">
+      <div class="form-group"><label for="kb-e-name">Name</label><input type="text" id="kb-e-name" maxlength="120" placeholder="Dev stack" required></div>
+      <div class="form-group"><label for="kb-e-desc">Description <span class="text-muted text-sm">(optional)</span></label><input type="text" id="kb-e-desc" maxlength="300"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="kb-e-submit">Create bundle</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Assign to client -->
+<div id="kb-assign" class="modal-backdrop" hidden>
+  <div class="modal">
+    <h2 id="kb-assign-title">Assign bundle</h2>
+    <form id="kb-assign-form" data-on-submit="assign">
+      <div class="form-group"><label for="kb-a-client">Client</label><select id="kb-a-client" data-on-change="assignReset"></select></div>
+      <div id="kb-a-conflict" class="kb-conflict" role="alert" hidden>
+        <strong>Conflicts detected</strong>
+        <p class="text-sm" id="kb-a-conflict-detail"></p>
+        <p class="text-sm">Phantom tokens already set up by hand for these services take priority and will be skipped. Assign the rest anyway?</p>
+      </div>
+      <div id="kb-a-result" class="text-sm" role="status" hidden></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" data-action="modal-close">Close</button>
+        <button type="submit" class="btn btn-primary" id="kb-a-submit">Assign</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- In-page confirmation dialog -->
+<div id="kb-confirm" class="modal-backdrop kb-confirm-bd" hidden>
+  <div class="modal">
+    <h2 id="kb-confirm-title">Confirm</h2>
+    <div id="kb-confirm-body" class="text-sm"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="modal-close">Cancel</button>
+      <button type="button" class="btn btn-danger" id="kb-confirm-go" data-action="confirmGo">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script nonce="{{$.CSPNonce}}">
+(function () {
+  'use strict';
+
+  var S = {loaded: false, error: '', bundles: [], detail: {}, services: [], keys: [], pools: [], clients: [], phs: [],
+    editId: '', assignId: '', assignForce: false, assignDone: false, confirmFn: null, busy: false};
+
+  function $(id) { return document.getElementById(id); }
+  function api(method, url, body) {
+    var opts = {method: method, credentials: 'same-origin', headers: {}};
+    if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    return fetch(url, opts).then(function (r) {
+      if (r.status === 401) { window.location = '/admin/login'; return {ok: false, status: 401, data: {}}; }
+      return r.text().then(function (t) {
+        var d = {};
+        try { d = t ? JSON.parse(t) : {}; } catch (e) { d = {}; }
+        return {ok: r.ok, status: r.status, data: d};
+      });
+    }, function () { return {ok: false, status: 0, data: {error: 'Network error'}}; });
+  }
+  function errText(res, fallback) { return (res && res.data && res.data.error) || fallback; }
+  function arr(r) { return r.ok && Array.isArray(r.data) ? r.data : []; }
+  function plural(n, w) { return n + ' ' + (n === 1 ? w : (w === 'entry' ? 'entries' : w + 's')); }
+
+  /* ---------- data ---------- */
+  function loadShared() {
+    return Promise.all([api('GET', '/api/services'), api('GET', '/api/keys'), api('GET', '/api/groups'), api('GET', '/api/clients'), api('GET', '/api/placeholders')]).then(function (r) {
+      S.services = arr(r[0]); S.keys = arr(r[1]); S.pools = arr(r[2]); S.clients = arr(r[3]); S.phs = arr(r[4]);
+    });
+  }
+  function loadBundle(id) {
+    return api('GET', '/api/key-suites/' + encodeURIComponent(id)).then(function (r) { if (r.ok) S.detail[id] = r.data; return r.ok; });
+  }
+  function loadAll() {
+    return Promise.all([api('GET', '/api/key-suites'), loadShared()]).then(function (r) {
+      if (!r[0].ok) { S.error = 'Could not load key bundles.'; S.loaded = true; renderList(); return; }
+      S.error = '';
+      S.bundles = arr(r[0]);
+      return Promise.all(S.bundles.map(function (b) { return loadBundle(b.id); })).then(function () {
+        S.loaded = true;
+        renderList();
+      });
+    });
+  }
+  function svcById(id) {
+    for (var i = 0; i < S.services.length; i++) if (S.services[i].id === id) return S.services[i];
+    return null;
+  }
+  function svcName(id, fallback) { var s = svcById(id); return s ? (s.display_name || s.name) : (fallback || id); }
+
+  /* ---------- rendering ---------- */
+  function sourceOptions(serviceId, current) {
+    var keys = S.keys.filter(function (k) { return k.service_id === serviceId && (k.is_active || current === 'key:' + k.id); });
+    var pools = S.pools.filter(function (g) { return g.service_id === serviceId; });
+    var out = [];
+    if (!current) out.push(DW.html`<option value="">Select a key or pool</option>`);
+    if (keys.length) out.push(DW.html`<optgroup label="API keys">${keys.map(function (k) { var v = 'key:' + k.id; return DW.html`<option value="${v}"${v === current ? DW.raw(' selected') : ''}>${k.name}</option>`; })}</optgroup>`);
+    if (pools.length) out.push(DW.html`<optgroup label="Pools (per-request rotation)">${pools.map(function (g) { var v = 'pool:' + g.id; return DW.html`<option value="${v}"${v === current ? DW.raw(' selected') : ''}>${g.name}</option>`; })}</optgroup>`);
+    if (!keys.length && !pools.length) out.push(DW.html`<option value="">No keys or pools for this service</option>`);
+    if (current && !keys.concat(pools).some(function (x) { return current === 'key:' + x.id || current === 'pool:' + x.id; })) {
+      out.unshift(DW.html`<option value="${current}" selected>(unavailable source)</option>`);
+    }
+    return out;
+  }
+  function entrySource(e) { return e.api_key_id ? 'key:' + e.api_key_id : (e.group_id ? 'pool:' + e.group_id : ''); }
+  function entryRow(b, e) {
+    var src = entrySource(e);
+    var broken = !src;
+    return DW.html`<li class="kb-entry" data-bundle="${b.id}" data-entry="${e.id}">
+      <div class="kb-e-svc"><span class="badge badge-blue">${svcName(e.service_id, e.service_name)}</span>${broken ? DW.html` <span class="badge badge-red">no source</span>` : ''}</div>
+      <div class="kb-e-field"><label for="kb-s-${e.id}">Source</label><select id="kb-s-${e.id}" class="kb-src" data-orig="${src}" data-on-change="entryDirty">${sourceOptions(e.service_id, src)}</select></div>
+      <div class="kb-e-field"><label for="kb-n-${e.id}">Env name</label><input type="text" id="kb-n-${e.id}" class="kb-env mono" value="${e.env_name}" data-orig="${e.env_name}" maxlength="120" data-on-input="entryDirty"></div>
+      <div class="kb-e-ctl">
+        <button type="button" class="btn btn-sm btn-primary kb-save" data-action="saveEntry" disabled>Save</button>
+        <button type="button" class="btn btn-sm btn-danger" data-action="askRemoveEntry" data-name="${svcName(e.service_id, e.service_name)}">Remove</button>
+      </div>
+    </li>`;
+  }
+  function addForm(b, d) {
+    var used = {};
+    (d.entries || []).forEach(function (e) { used[e.service_id] = true; });
+    var free = S.services.filter(function (s) { return !used[s.id]; });
+    if (!free.length) return DW.html`<p class="text-sm text-muted">Every service already has an entry in this bundle.</p>`;
+    return DW.html`<form class="kb-add" data-on-submit="addEntry" data-bundle="${b.id}">
+      <div class="kb-e-field"><label for="kb-as-${b.id}">Service</label><select id="kb-as-${b.id}" class="kb-add-svc" data-on-change="addSvcChange">${free.map(function (s) { return DW.html`<option value="${s.id}">${s.display_name || s.name}</option>`; })}</select></div>
+      <div class="kb-e-field"><label for="kb-ak-${b.id}">Source</label><select id="kb-ak-${b.id}" class="kb-add-src">${sourceOptions(free[0].id, '')}</select></div>
+      <div class="kb-e-field"><label for="kb-an-${b.id}">Env name <span class="text-muted">(optional)</span></label><input type="text" id="kb-an-${b.id}" class="kb-add-env mono" maxlength="120" placeholder="Default for the service"></div>
+      <div class="kb-e-ctl"><button type="submit" class="btn btn-sm btn-primary">Add entry</button></div>
+    </form>`;
+  }
+  function bundleCard(b) {
+    var d = S.detail[b.id];
+    if (!d) {
+      return DW.html`<section class="card kb-card" data-bundle="${b.id}"><div class="kb-card-head"><h2>${b.name}</h2></div><p class="kb-err" role="alert">Could not load this bundle. Use Refresh to retry.</p></section>`;
+    }
+    var entries = d.entries || [], clients = d.clients || [];
+    var phs = S.phs.filter(function (p) { return p.suite_id === b.id; });
+    return DW.html`<section class="card kb-card" data-bundle="${b.id}" aria-labelledby="kb-h-${b.id}">
+      <div class="kb-card-head">
+        <div class="kb-card-title"><h2 id="kb-h-${b.id}">${d.name}</h2>${d.description ? DW.html`<p class="text-sm text-muted">${d.description}</p>` : ''}
+          <p class="text-sm text-muted">${plural(entries.length, 'entry')} · ${plural(clients.length, 'client')} assigned</p></div>
+        <div class="kb-card-actions">
+          <button type="button" class="btn btn-sm btn-primary" data-action="openAssign">Assign to client</button>
+          <button type="button" class="btn btn-sm" data-action="openRename" data-name="${d.name}" data-desc="${d.description || ''}">Rename</button>
+          <button type="button" class="btn btn-sm btn-danger" data-action="askDeleteBundle" data-name="${d.name}">Delete</button>
+        </div>
+      </div>
+      <h3>Entries</h3>
+      ${entries.length ? DW.html`<ul class="kb-entries">${entries.map(function (e) { return entryRow(b, e); })}</ul>` : DW.html`<p class="text-sm text-muted">No entries yet. Add a service below.</p>`}
+      <p class="text-sm text-muted">Changing a key or pool applies to every assigned client at once. A changed env name applies to clients assigned afterwards.</p>
+      ${addForm(b, d)}
+      <h3>Assigned clients</h3>
+      ${clients.length ? DW.html`<ul class="kb-chips">${clients.map(function (c) {
+        return DW.html`<li class="kb-chip"><a href="/admin/clients/${c.id}">${c.name}</a><span class="text-sm text-muted">${plural(c.service_count, 'service')}</span><button type="button" class="btn btn-sm" data-action="askUnassign" data-client="${c.id}" data-name="${c.name}" aria-label="Remove ${c.name} from this bundle">Remove</button></li>`;
+      })}</ul>` : DW.html`<p class="text-sm text-muted">No clients use this bundle yet.</p>`}
+      <h3>Phantom tokens from this bundle</h3>
+      ${phs.length ? DW.html`<div class="table-wrap"><table class="kb-phtable"><thead><tr><th scope="col">Client</th><th scope="col">Service</th><th scope="col">Env name</th><th scope="col">Status</th></tr></thead><tbody>${phs.map(function (p) {
+        return DW.html`<tr><td><a href="/admin/clients/${p.client_id}">${p.client_name || p.client_id}</a></td><td>${p.service_name || p.service_id}</td><td class="mono">${p.env_name}</td><td>${p.is_active ? DW.html`<span class="badge badge-green">active</span>` : DW.html`<span class="badge badge-gray">inactive</span>`}</td></tr>`;
+      })}</tbody></table></div>` : DW.html`<p class="text-sm text-muted">No phantom tokens generated yet. They appear when a client is assigned this bundle.</p>`}
+    </section>`;
+  }
+  function filteredBundles() {
+    var q = $('kb-q').value.trim().toLowerCase();
+    return S.bundles.filter(function (b) { return !q || (b.name + ' ' + (b.description || '')).toLowerCase().indexOf(q) >= 0; });
+  }
+  function renderList() {
+    if (!S.loaded) return;
+    var list = $('kb-list');
+    var rows = filteredBundles();
+    $('kb-count').textContent = rows.length + ' of ' + S.bundles.length + ' bundles';
+    if (S.error) { DW.setHTML(list, DW.html`<p class="kb-err" role="alert">${S.error} Use Refresh to retry.</p>`); return; }
+    if (!S.bundles.length) { DW.setHTML(list, DW.html`<div class="card"><p class="text-muted">No key bundles yet. Create one to hand a client several services' keys in one step.</p></div>`); return; }
+    if (!rows.length) { DW.setHTML(list, DW.html`<div class="card"><p class="text-muted">No bundles match this search.</p></div>`); return; }
+    DW.setHTML(list, DW.html`${rows.map(bundleCard)}`);
+  }
+  function cardFor(id) {
+    var cards = document.querySelectorAll('.kb-card');
+    for (var i = 0; i < cards.length; i++) if (cards[i].dataset.bundle === id) return cards[i];
+    return null;
+  }
+  function rerenderBundle(id) {
+    var b = S.bundles.filter(function (x) { return x.id === id; })[0];
+    var card = cardFor(id);
+    if (!b || !card) return renderList();
+    var tmp = document.createElement('div');
+    DW.setHTML(tmp, bundleCard(b));
+    card.replaceWith(tmp.firstElementChild);
+  }
+  function refreshBundle(id) {
+    return Promise.all([loadBundle(id), api('GET', '/api/placeholders').then(function (r) { S.phs = arr(r); }), api('GET', '/api/key-suites').then(function (r) {
+      if (r.ok) S.bundles = arr(r);
+    })]).then(function () { rerenderBundle(id); });
+  }
+  function bundleId(el) { var c = el.closest('[data-bundle]'); return c ? c.dataset.bundle : ''; }
+
+  /* ---------- confirm ---------- */
+  function askConfirm(title, bodyHTML, goLabel, fn) {
+    $('kb-confirm-title').textContent = title;
+    DW.setHTML($('kb-confirm-body'), bodyHTML);
+    $('kb-confirm-go').textContent = goLabel;
+    S.confirmFn = fn;
+    DW.modal.open('#kb-confirm');
+  }
+  DW.actions.confirmGo = function () {
+    var fn = S.confirmFn; S.confirmFn = null;
+    DW.modal.close('#kb-confirm');
+    if (fn) return fn();
+  };
+
+  /* ---------- page actions ---------- */
+  DW.actions.refresh = function () {
+    var b = $('kb-refresh'); b.disabled = true;
+    return loadAll().then(function () { DW.toast('Refreshed', 'success'); }).finally(function () { b.disabled = false; });
+  };
+  DW.actions.applyFilter = function () { renderList(); };
+
+  DW.actions.openCreate = function () {
+    S.editId = '';
+    $('kb-edit-title').textContent = 'New bundle';
+    $('kb-e-submit').textContent = 'Create bundle';
+    $('kb-e-name').value = ''; $('kb-e-desc').value = '';
+    DW.modal.open('#kb-edit');
+    $('kb-e-name').focus();
+  };
+  DW.actions.openRename = function (el) {
+    S.editId = bundleId(el);
+    $('kb-edit-title').textContent = 'Rename bundle';
+    $('kb-e-submit').textContent = 'Save changes';
+    $('kb-e-name').value = el.dataset.name; $('kb-e-desc').value = el.dataset.desc || '';
+    DW.modal.open('#kb-edit');
+    $('kb-e-name').focus();
+  };
+  DW.actions.saveBundle = function () {
+    var name = $('kb-e-name').value.trim();
+    if (!name) { DW.toast('Name is required', 'error'); return; }
+    var body = {name: name, description: $('kb-e-desc').value.trim()};
+    var id = S.editId;
+    $('kb-e-submit').disabled = true;
+    return (id ? api('PATCH', '/api/key-suites/' + encodeURIComponent(id), body) : api('POST', '/api/key-suites', body)).then(function (res) {
+      $('kb-e-submit').disabled = false;
+      if (!res.ok) { DW.toast(errText(res, 'Could not save the bundle'), 'error'); return; }
+      DW.modal.close('#kb-edit');
+      DW.toast(id ? 'Bundle updated' : 'Bundle created', 'success');
+      return loadAll();
+    });
+  };
+
+  DW.actions.askDeleteBundle = function (el) {
+    var id = bundleId(el), name = el.dataset.name, d = S.detail[id] || {};
+    var phs = S.phs.filter(function (p) { return p.suite_id === id; }).length;
+    askConfirm('Delete bundle ' + name, DW.html`<p>This cannot be undone.</p><ul class="kb-impact"><li>${plural((d.entries || []).length, 'entry')} will be deleted.</li><li>${plural((d.clients || []).length, 'client')} lose the assignment.</li><li>${plural(phs, 'phantom token')} created from this bundle stay on their clients but are no longer tracked by it.</li></ul>`, 'Delete bundle', function () {
+      return api('DELETE', '/api/key-suites/' + encodeURIComponent(id)).then(function (res) {
+        if (!res.ok) { DW.toast(errText(res, 'Could not delete the bundle'), 'error'); return; }
+        DW.toast('Bundle deleted', 'success');
+        return loadAll();
+      });
+    });
+  };
+
+  /* ---------- entries ---------- */
+  DW.actions.entryDirty = function (el) {
+    var row = el.closest('.kb-entry'); if (!row) return;
+    var src = row.querySelector('.kb-src'), env = row.querySelector('.kb-env');
+    var dirty = src.value !== src.dataset.orig || env.value !== env.dataset.orig;
+    row.classList.toggle('kb-dirty', dirty);
+    row.querySelector('.kb-save').disabled = !dirty || !src.value;
+  };
+  DW.actions.saveEntry = function (el) {
+    var row = el.closest('.kb-entry'), id = row.dataset.bundle, eid = row.dataset.entry;
+    var src = row.querySelector('.kb-src'), env = row.querySelector('.kb-env'), body = {};
+    if (src.value !== src.dataset.orig) {
+      var i = src.value.indexOf(':'), kind = src.value.slice(0, i), val = src.value.slice(i + 1);
+      if (kind === 'key') body.api_key_id = val; else if (kind === 'pool') body.group_id = val; else return;
+    }
+    if (env.value !== env.dataset.orig) body.env_name = env.value.trim();
+    el.disabled = true;
+    return api('PATCH', '/api/key-suites/' + encodeURIComponent(id) + '/entries/' + encodeURIComponent(eid), body).then(function (res) {
+      if (!res.ok) { el.disabled = false; DW.toast(errText(res, 'Could not save the entry'), 'error'); return; }
+      DW.toast('Entry saved', 'success');
+      return refreshBundle(id);
+    });
+  };
+  DW.actions.askRemoveEntry = function (el) {
+    var row = el.closest('.kb-entry'), id = row.dataset.bundle, eid = row.dataset.entry, name = el.dataset.name;
+    var d = S.detail[id] || {};
+    askConfirm('Remove entry', DW.html`<p>Remove the <strong>${name}</strong> entry from this bundle?</p><p>${plural((d.clients || []).length, 'assigned client')} will lose the bundle-managed phantom token for this service.</p>`, 'Remove entry', function () {
+      return api('DELETE', '/api/key-suites/' + encodeURIComponent(id) + '/entries/' + encodeURIComponent(eid)).then(function (res) {
+        if (!res.ok) { DW.toast(errText(res, 'Could not remove the entry'), 'error'); return; }
+        DW.toast('Entry removed', 'success');
+        return refreshBundle(id);
+      });
+    });
+  };
+  DW.actions.addSvcChange = function (el) {
+    var form = el.closest('form');
+    DW.setHTML(form.querySelector('.kb-add-src'), DW.html`${sourceOptions(el.value, '')}`);
+  };
+  DW.actions.addEntry = function (el) {
+    var form = el.closest ? el.closest('form') : el, id = form.dataset.bundle;
+    var svc = form.querySelector('.kb-add-svc').value, src = form.querySelector('.kb-add-src').value;
+    var env = form.querySelector('.kb-add-env').value.trim();
+    if (!src) { DW.toast('Select a key or pool for this service', 'error'); return; }
+    var i = src.indexOf(':'), kind = src.slice(0, i), val = src.slice(i + 1);
+    var body = {service_id: svc, env_name: env};
+    if (kind === 'key') body.api_key_id = val; else body.group_id = val;
+    return api('POST', '/api/key-suites/' + encodeURIComponent(id) + '/entries', body).then(function (res) {
+      if (!res.ok) { DW.toast(errText(res, 'Could not add the entry'), 'error'); return; }
+      var prop = (res.data && res.data.propagated) || [];
+      DW.toast(prop.length ? 'Entry added and applied to ' + plural(prop.length, 'client') : 'Entry added', 'success');
+      return refreshBundle(id);
+    });
+  };
+
+  /* ---------- assignment ---------- */
+  DW.actions.openAssign = function (el) {
+    var id = bundleId(el), d = S.detail[id] || {};
+    S.assignId = id; S.assignForce = false; S.assignDone = false;
+    $('kb-assign-title').textContent = 'Assign ' + (d.name || 'bundle');
+    var assigned = {};
+    (d.clients || []).forEach(function (c) { assigned[c.id] = true; });
+    var opts = S.clients.filter(function (c) { return !assigned[c.id]; }).map(function (c) { return DW.html`<option value="${c.id}">${c.name}${c.is_active ? '' : ' (disabled)'}</option>`; });
+    DW.setHTML($('kb-a-client'), opts.length ? DW.html`${opts}` : DW.html`<option value="">Every client already has this bundle</option>`);
+    $('kb-a-client').disabled = !opts.length;
+    $('kb-a-conflict').hidden = true; $('kb-a-result').hidden = true;
+    $('kb-a-submit').textContent = 'Assign'; $('kb-a-submit').disabled = !opts.length;
+    DW.modal.open('#kb-assign');
+  };
+  DW.actions.assignReset = function () {
+    S.assignForce = false; S.assignDone = false;
+    $('kb-a-conflict').hidden = true; $('kb-a-result').hidden = true;
+    $('kb-a-submit').textContent = 'Assign';
+  };
+  DW.actions.assign = function () {
+    if (S.assignDone) { DW.modal.close('#kb-assign'); return; }
+    var id = S.assignId, client = $('kb-a-client').value;
+    if (!client) return;
+    $('kb-a-submit').disabled = true;
+    return api('POST', '/api/key-suites/' + encodeURIComponent(id) + '/assign', {client_id: client, force: S.assignForce}).then(function (res) {
+      $('kb-a-submit').disabled = false;
+      if (res.status === 409 && !S.assignForce) {
+        var names = ((res.data && res.data.conflicts) || []).map(function (c) { return c.service_name; }).join(', ');
+        $('kb-a-conflict-detail').textContent = 'Conflicting services: ' + names;
+        $('kb-a-conflict').hidden = false;
+        S.assignForce = true;
+        $('kb-a-submit').textContent = 'Assign anyway';
+        return;
+      }
+      if (!res.ok) { DW.toast(errText(res, 'Could not assign the bundle'), 'error'); return; }
+      var assigned = (res.data.assigned || []), skipped = (res.data.skipped || []);
+      $('kb-a-conflict').hidden = true;
+      DW.setHTML($('kb-a-result'), DW.html`<p>Assigned: ${assigned.length ? assigned.join(', ') : 'nothing new'}</p>${skipped.length ? DW.html`<p class="text-muted">Skipped (conflicts): ${skipped.join(', ')}</p>` : ''}`);
+      $('kb-a-result').hidden = false;
+      S.assignDone = true;
+      $('kb-a-submit').textContent = 'Done';
+      return refreshBundle(id);
+    });
+  };
+  DW.actions.askUnassign = function (el) {
+    var id = bundleId(el), client = el.dataset.client, name = el.dataset.name;
+    askConfirm('Remove client from bundle', DW.html`<p>Remove <strong>${name}</strong> from this bundle?</p><p>Phantom tokens created from this bundle are removed from that client. Individually created tokens are kept.</p>`, 'Remove client', function () {
+      return api('DELETE', '/api/key-suites/' + encodeURIComponent(id) + '/assignments/' + encodeURIComponent(client)).then(function (res) {
+        if (!res.ok) { DW.toast(errText(res, 'Could not remove the client'), 'error'); return; }
+        DW.toast('Client removed from bundle', 'success');
+        return refreshBundle(id);
+      });
+    });
+  };
+
+  loadAll();
+})();
+</script>
+{{end}}

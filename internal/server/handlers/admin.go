@@ -87,7 +87,7 @@ func NewAdminHandler(
 	// Parse each page template paired with the layout
 	pageNames := []string{
 		"dashboard", "services", "api_keys", "usage", "oauth", "placeholders",
-		"clients", "client_detail", "client_updates", "plugins", "groups", "key_groups", "key_group_detail", "key_suites", "approvals", "logs", "notifications", "canary", "supplychain", "settings", "docs", "cc", "onboarding", "moved",
+		"clients", "client_detail", "client_updates", "plugins", "key_pools", "key_bundles", "approvals", "logs", "notifications", "canary", "supplychain", "settings", "docs", "cc", "onboarding", "moved",
 	}
 
 	pages := make(map[string]*template.Template)
@@ -307,77 +307,22 @@ func (h *AdminHandler) ClientUpdatesPage(w http.ResponseWriter, r *http.Request)
 	h.render(w, r, "client_updates", pageData{Title: "Rollouts", Active: "clients"})
 }
 
-func (h *AdminHandler) GroupsPage(w http.ResponseWriter, r *http.Request) {
-	groups, _ := h.groups.List("")
-	svcs, _ := h.services.List()
-	for i := range groups {
-		members, _ := h.groups.GetMembers(groups[i].ID)
-		groups[i].Members = members
-	}
-	h.render(w, r, "groups", pageData{
-		Title:    "Key Groups",
-		Active:   "groups",
-		Groups:   groups,
-		Services: svcs,
+// KeyPoolsPage renders the Key pools shell. Both pool kinds (legacy
+// per-request rotation groups and quota-aware lease groups) are loaded by the
+// page from the admin APIs; the optional ?pool=<kind>:<id> deep link is read
+// client-side.
+func (h *AdminHandler) KeyPoolsPage(w http.ResponseWriter, r *http.Request) {
+	h.render(w, r, "key_pools", pageData{
+		Title:  "Key pools",
+		Active: "key_pools",
 	})
 }
 
-func (h *AdminHandler) KeyGroupsPage(w http.ResponseWriter, r *http.Request) {
-	var keyGroups interface{}
-	if h.db != nil {
-		kgs, err := queries.ListKeyGroups(h.db)
-		if err == nil {
-			keyGroups = kgs
-		}
-	}
-	keys, _ := h.apiKeys.List("")
-	h.render(w, r, "key_groups", pageData{
-		Title:     "Key Groups",
-		Active:    "key_groups",
-		KeyGroups: keyGroups,
-		Keys:      keys,
-	})
-}
-
-func (h *AdminHandler) KeyGroupDetailPage(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var group interface{}
-	if h.db != nil {
-		if g, err := queries.GetKeyGroupWithMembers(h.db, id); err == nil {
-			group = g
-		}
-	}
-	if group == nil {
-		http.Error(w, "Key group not found", http.StatusNotFound)
-		return
-	}
-	keys, _ := h.apiKeys.List("")
-	h.render(w, r, "key_group_detail", pageData{
-		Title:    "Key Group",
-		Active:   "key_groups",
-		KeyGroup: group,
-		Keys:     keys,
-	})
-}
-
-func (h *AdminHandler) KeySuitesPage(w http.ResponseWriter, r *http.Request) {
-	var suites interface{}
-	if h.keySuites != nil {
-		s, err := h.keySuites.List()
-		if err == nil {
-			suites = s
-		}
-	}
-	svcs, _ := h.services.List()
-	keys, _ := h.apiKeys.List("")
-	clients, _ := h.clients.List()
-	h.render(w, r, "key_suites", pageData{
-		Title:     "Key Suites",
-		Active:    "key_suites",
-		KeySuites: suites,
-		Services:  svcs,
-		Keys:      keys,
-		Clients:   clients,
+// KeyBundlesPage renders the Key bundles shell (data loaded by the page).
+func (h *AdminHandler) KeyBundlesPage(w http.ResponseWriter, r *http.Request) {
+	h.render(w, r, "key_bundles", pageData{
+		Title:  "Key bundles",
+		Active: "key_bundles",
 	})
 }
 

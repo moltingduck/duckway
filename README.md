@@ -8,7 +8,7 @@ API proxy that manages real API keys centrally. AI agents use **phantom tokens**
 - **HTTPS MITM proxy** — transparent interception via CONNECT tunnels
 - **Three-layer ACL** — 22 pre-built templates (OpenAI, Anthropic, GitHub, Discord, Telegram) + custom JSON rules. Each layer can only narrow, never widen.
 - **Approval workflow** — admin approves via Discord reactions / Telegram buttons / web panel, configurable TTL per key
-- **Key groups** — round-robin, least-used, failover to avoid rate limits
+- **Key pools** — per-request rotation (round-robin, least-used, failover) or quota-aware leases to avoid rate limits; **Key bundles** assign one key per service to a client in one step
 - **16 canary token types** — auto-deployed honeypots via [canarytokens.org](https://canarytokens.org), per-client Gmail `+` tagging
 - **Admin panel** — dark theme, Go templates + HTMX, search/filter/pagination, live ACL preview
 - **Discord Gateway WSS + Telegram polling** — interactive approval without public endpoints

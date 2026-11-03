@@ -15,7 +15,7 @@
     <li><a href="#placeholders">7. Phantom Tokens</a></li>
     <li><a href="#proxy">8. Proxy Modes</a></li>
     <li><a href="#approvals">9. Approval Workflow</a></li>
-    <li><a href="#groups">10. Key Groups &amp; Load Balancing</a></li>
+    <li><a href="#groups">10. Key pools &amp; Load Balancing</a></li>
     <li><a href="#canary">11. Canary Tokens</a></li>
     <li><a href="#notifications">12. Notifications &amp; Interactive Approval</a></li>
     <li><a href="#cc">13. Control Channels (Discord)</a></li>
@@ -34,7 +34,7 @@
     <li><strong>ACL system</strong> — 22 pre-built templates from official API docs + custom JSON rules</li>
     <li><strong>Approval workflow</strong> — require admin consent with configurable TTL, approve via Discord/Telegram</li>
     <li><strong>HTTPS MITM proxy</strong> — transparent interception with auto-generated TLS certificates</li>
-    <li><strong>Key groups</strong> — round-robin, least-used, failover to avoid rate limits</li>
+    <li><strong>Key pools</strong> — per-request rotation or quota-aware leases to avoid rate limits; <strong>Key bundles</strong> assign several services' keys to a client at once</li>
     <li><strong>16 canary token types</strong> — auto-deployed honeypots detect compromised machines</li>
     <li><strong>Audit trail</strong> — filterable request log with client, service, key, status</li>
   </ul>
@@ -219,7 +219,7 @@ duckway init</code></pre>
     </tbody>
   </table>
   </div>
-  <p class="text-sm text-muted mt-1">Deleting a refreshable token first shows impacted Key Suites, clients, and Control Channels. Confirming removes suite entries, unassigns client phantom tokens, and disables affected Control Channels in red until a replacement bot token is assigned.</p>
+  <p class="text-sm text-muted mt-1">Deleting a refreshable token first shows impacted Key bundles, clients, and Control Channels. Confirming removes suite entries, unassigns client phantom tokens, and disables affected Control Channels in red until a replacement bot token is assigned.</p>
   <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Claude local credentials
 jq -r '.claudeAiOauth | [.accessToken, .refreshToken, (.expiresAt // 0)] | @tsv' ~/.claude/.credentials.json
 
@@ -261,7 +261,8 @@ curl https://api.openai.com/v1/chat/completions ...
 
 <!-- 10 -->
 <div class="card" id="groups">
-  <h3>10. Key Groups &amp; Load Balancing</h3>
+  <h3>10. Key pools &amp; Load Balancing</h3>
+  <p>The <strong>Key pools</strong> page (<code>/admin/key-pools</code>) holds two kinds of pool. <em>Per-request rotation</em> pools pick a member for every request using the strategies below; phantom tokens and key bundles point at them. <em>Quota-aware lease</em> pools lease a key to a client by remaining quota and move on when the client reports it exhausted.</p>
   <div class="table-wrap">
   <table>
     <thead><tr><th>Strategy</th><th>Behavior</th></tr></thead>
