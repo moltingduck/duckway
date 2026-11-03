@@ -24,18 +24,23 @@ func TestClientUpdatesTemplateContainsRolloutControls(t *testing.T) {
 	}
 }
 
-func TestClientsTemplateContainsManagedUpdatePolicy(t *testing.T) {
-	body, err := Content.ReadFile("templates/clients.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	page := string(body)
-	for _, want := range []string{
-		"ce-managed-updates", "update_policy", "Manual updates", "Managed updates",
-		`class="client-tab active"`, `href="/admin/client-updates"`, "Details",
+func TestClientsTemplatesContainManagedUpdatePolicy(t *testing.T) {
+	for file, wants := range map[string][]string{
+		"templates/clients.html": {
+			`href="/admin/clients/rollouts"`, `href="/admin/clients/new"`, `class="cl-subtabs"`, "Needs update", "Install instructions", "managed",
+		},
+		"templates/client_detail.html": {
+			"ce-managed", "update_policy", "Manual updates", "Managed updates",
+		},
 	} {
-		if !strings.Contains(page, want) {
-			t.Errorf("clients template missing %q", want)
+		body, err := Content.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range wants {
+			if !strings.Contains(string(body), want) {
+				t.Errorf("%s missing %q", file, want)
+			}
 		}
 	}
 }

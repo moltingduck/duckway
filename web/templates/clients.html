@@ -1,1677 +1,417 @@
 {{define "content"}}
-<style>
-.repo-grant-table {
-  display: grid;
-  gap: .75rem;
-}
-.repo-grant-row {
-  padding: .9rem;
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius) + 2px);
-  background: var(--bg-input);
-}
-.repo-grant-header {
-  display: none;
-}
-.repo-grant-check {
-  display: flex;
-  justify-content: center;
-}
-.repo-grant-check input {
-  width: 1.05rem;
-  height: 1.05rem;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-.repo-grant-name {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: .45rem;
-  min-width: 0;
-  margin-bottom: .75rem;
-}
-.repo-grant-name .mono {
-  overflow-wrap: anywhere;
-}
-.repo-grant-controls {
-  margin-top: .65rem;
-  border-top: 1px solid var(--border);
-  padding-top: .65rem;
-}
-.repo-grant-section-label {
-  display: block;
-  margin-bottom: .35rem;
-  color: var(--text-muted);
-  font-size: .76rem;
-}
-.repo-capability-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(9rem, 1fr));
-  gap: .5rem .75rem;
-  margin: .75rem 0;
-}
-.repo-policy-lists {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: .5rem;
-}
-@media (max-width: 760px) {
-  .repo-policy-lists { grid-template-columns: 1fr; }
-  .repo-capability-grid { grid-template-columns: repeat(2, minmax(8rem, 1fr)); }
-}
-@media (max-width: 420px) {
-  .repo-capability-grid { grid-template-columns: minmax(0, 1fr); }
-}
-.setup-details {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-input);
-  overflow: hidden;
-}
-.setup-details summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: .75rem;
-  padding: .65rem .75rem;
-  cursor: pointer;
-  font-size: .82rem;
-  font-weight: 600;
-  list-style: none;
-}
-.setup-details summary::-webkit-details-marker {
-  display: none;
-}
-.setup-details summary::after {
-  content: "Show";
-  color: var(--text-muted);
-  font-size: .72rem;
-  font-weight: 500;
-}
-.setup-details[open] summary::after {
-  content: "Hide";
-}
-.setup-details-body {
-  border-top: 1px solid var(--border);
-  padding: .75rem;
-}
-.setup-details-body pre {
-  margin-top: .5rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: .75rem;
-  overflow: auto;
-  font-size: .76rem;
-}
-.setup-details-body pre code {
-  background: transparent;
-  padding: 0;
-}
-</style>
-<div class="page-header">
-  <h1>Clients</h1>
-  <button class="btn btn-primary" data-action="modal-open" data-target="#add-modal">Register Client</button>
-</div>
-
-<nav class="client-tabs" aria-label="Client views">
-  <a class="client-tab active" href="/admin/clients" aria-current="page">Details</a>
-  <a class="client-tab" href="/admin/client-updates">Updates</a>
-</nav>
-
-<div class="search-bar">
-  <input type="text" id="search-clients" placeholder="Search or filter (e.g. name:laptop service:openai canary:on)">
-  <span class="count" id="count-clients"></span>
-</div>
-
-<div class="card mb-1">
-  <div class="flex-between">
-    <div>
-      <strong>Quick Client Install</strong>
-      <div class="text-sm text-muted">Run this on any machine to install the Duckway client:</div>
-    </div>
-    <button class="btn btn-sm btn-icon" data-action="copyInstallCmd" title="Copy install command" aria-label="Copy install command"><span class="copy-icon" aria-hidden="true"></span></button>
-  </div>
-  <div style="position:relative;margin-top:0.5rem">
-    <code id="install-cmd" style="display:block;padding:0.75rem;word-break:break-all;font-size:0.85rem;background:var(--bg-input);border-radius:var(--radius)"></code>
-  </div>
-</div>
-
-<div class="card mb-1">
-  <strong>Download SHA-256 checksums</strong>
-  <p class="text-sm text-muted">Compare these values with <code>sha256sum</code> after downloading. The install script hash is generated for the configured gateway URL.</p>
-  <div class="text-sm" style="margin:.5rem 0"><strong>install.sh</strong> <code id="install-sha256">Loading…</code><br><code>sha256sum install.sh</code></div>
-  <div style="overflow-x:auto">
-    <div class="table-wrap">
-    <table class="table"><thead><tr><th>Ducklord platform</th><th>Binary</th><th>SHA-256</th></tr></thead><tbody id="ducklord-sha256-list"><tr><td colspan="3" class="text-muted">Loading…</td></tr></tbody></table>
-    </div>
-  </div>
-</div>
-
-<div id="canary-alert" style="display:none;background:rgba(245,158,11,0.1);border:1px solid var(--warning);border-radius:var(--radius);padding:0.75rem;margin-bottom:1rem">
-  Canary tokens require an alert email. <a href="/admin/canary">Configure in Canary Tokens settings</a>.
-</div>
-
-<div id="client-cards-container">
-{{range .Clients}}
-<div class="card" id="client-card-{{.ID}}">
-  <div class="flex-between">
-    <div>
-      <a href="#" data-action="openClientDetail" data-id="{{.ID}}" style="text-decoration:none"><strong style="font-size:1.1rem">{{.Name}}</strong></a>
-      <code class="text-muted" style="font-size:0.75rem">{{.ShortID}}</code>
-      {{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}
-      {{if eq .UpdatePolicy "manual"}}<span class="badge badge-yellow">Manual updates</span>{{else}}<span class="badge badge-blue">Managed updates</span>{{end}}
-      <span class="text-muted text-sm" id="key-count-{{.ID}}"></span>
-      <div class="text-muted text-sm">Last seen: {{if .LastSeenAt}}{{deref .LastSeenAt}}{{else}}Never{{end}}</div>
-    </div>
-    <div class="flex gap-sm">
-      <button class="btn btn-sm btn-primary" data-action="openAssignModal" data-id="{{.ID}}" data-name="{{.Name}}">Assign Key</button>
-      <button class="btn btn-sm" data-action="openClientDetail" data-id="{{.ID}}">Reconfigure connection info</button>
-      {{if .CanaryEnabled}}<button class="btn btn-sm" data-action="genCanary" data-id="{{.ID}}" data-name="{{.Name}}" data-short-id="{{.ShortID}}">Gen Canary</button>{{end}}
-      <button class="btn btn-sm {{if .CanaryEnabled}}btn-primary{{else}}{{end}}" id="canary-btn-{{.ID}}"
-        data-action="toggleCanary" data-id="{{.ID}}" data-enable="{{if .CanaryEnabled}}false{{else}}true{{end}}">
-        {{if .CanaryEnabled}}Canary: ON{{else}}Canary: OFF{{end}}
-      </button>
-      <button class="btn btn-sm btn-danger"
-        hx-delete="/api/clients/{{.ID}}"
-        hx-target="#client-card-{{.ID}}"
-        hx-swap="outerHTML"
-        hx-confirm="Delete client '{{.Name}}'?">Delete</button>
-    </div>
-  </div>
-
-  <!-- Collapsible: API Keys -->
-  <div class="mt-1">
-    <div class="flex-between" style="cursor:pointer;padding:0.375rem 0" data-action="toggleSection" data-target="keys-section-{{.ID}}" role="button" tabindex="0" aria-expanded="false" aria-controls="keys-section-{{.ID}}">
-      <strong class="text-sm">API Keys &amp; Phantom Tokens <span class="toggle-arrow">&#9654;</span></strong>
-    </div>
-    <div id="keys-section-{{.ID}}" style="display:none">
-      <div class="table-wrap">
-      <table>
-        <thead><tr><th>API Key</th><th>Service</th><th>Phantom Token</th><th>Approval</th><th>Valid Until</th><th>TTL</th><th>Usage</th><th></th></tr></thead>
-        <tbody id="keys-{{.ID}}"></tbody>
-      </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- Collapsible: Canary Tokens -->
+<div class="page-header cl-header">
   <div>
-    <div class="flex-between" style="cursor:pointer;padding:0.375rem 0" data-action="toggleSection" data-target="canary-section-{{.ID}}" role="button" tabindex="0" aria-expanded="false" aria-controls="canary-section-{{.ID}}">
-      <strong class="text-sm">Canary Tokens {{if not .CanaryEnabled}}<span class="badge badge-gray">Disabled</span>{{end}} <span class="toggle-arrow">&#9654;</span></strong>
-    </div>
-    <div id="canary-section-{{.ID}}" style="display:none">
-      <div class="table-wrap">
-      <table>
-        <thead><tr><th>Type</th><th>Token / Hostname</th><th>Deploy Path</th><th>Created</th></tr></thead>
-        <tbody id="canaries-{{.ID}}"></tbody>
+    <h1>Clients</h1>
+    <p class="cl-sub">Machines running the duckway agent, their credentials and update state.</p>
+  </div>
+  <div class="cl-header-actions">
+    <button type="button" class="btn" data-action="openInstall">Install instructions</button>
+    <a class="btn btn-primary" href="/admin/clients/new">Add client</a>
+  </div>
+</div>
+
+<nav class="cl-subtabs" aria-label="Fleet views"><a href="/admin/clients" aria-current="page">All clients</a><a href="/admin/clients/rollouts">Rollouts</a></nav>
+
+<div class="cl-tabs" role="tablist" aria-label="Client status" id="cl-tablist">
+  <button type="button" role="tab" class="cl-tab" id="cl-tab-all" aria-selected="true" aria-controls="cl-panel" data-action="pickTab" data-tab="all">All · <span id="cnt-all">0</span></button>
+  <button type="button" role="tab" class="cl-tab" id="cl-tab-online" aria-selected="false" tabindex="-1" aria-controls="cl-panel" data-action="pickTab" data-tab="online">Online · <span id="cnt-online">0</span></button>
+  <button type="button" role="tab" class="cl-tab" id="cl-tab-offline" aria-selected="false" tabindex="-1" aria-controls="cl-panel" data-action="pickTab" data-tab="offline">Offline · <span id="cnt-offline">0</span></button>
+  <button type="button" role="tab" class="cl-tab" id="cl-tab-update" aria-selected="false" tabindex="-1" aria-controls="cl-panel" data-action="pickTab" data-tab="update">Needs update · <span id="cnt-update">0</span></button>
+</div>
+
+<div class="cl-filters">
+  <div class="search-bar">
+    <input type="text" id="search-clients" aria-label="Search clients" placeholder="Search or filter (e.g. name:laptop service:openai canary:on)" autocomplete="off">
+    <span class="count" id="count-clients" role="status"></span>
+  </div>
+  <label class="cl-filter-label">Status
+    <select id="f-status" data-on-change="applyFilters">
+      <option value="">Any</option>
+      <option value="online">Online</option>
+      <option value="offline">Offline</option>
+      <option value="disabled">Disabled</option>
+    </select>
+  </label>
+  <label class="cl-filter-label">Updates
+    <select id="f-updates" data-on-change="applyFilters">
+      <option value="">Any</option>
+      <option value="managed">Managed</option>
+      <option value="manual">Manual</option>
+    </select>
+  </label>
+  <label class="cl-filter-label">Canary
+    <select id="f-canary" data-on-change="applyFilters">
+      <option value="">Any</option>
+      <option value="on">On</option>
+      <option value="off">Off</option>
+    </select>
+  </label>
+</div>
+<div id="cl-search-shadow" hidden></div>
+
+<div id="cl-panel" role="tabpanel" aria-labelledby="cl-tab-all">
+  <div class="card cl-tablecard" id="cl-card">
+    <div class="table-wrap">
+      <table class="cl-table">
+        <thead><tr><th scope="col">Client</th><th scope="col">Status</th><th scope="col">Version</th><th scope="col">Credentials</th><th scope="col">Control channel</th><th scope="col">Canary</th><th scope="col">Last seen</th></tr></thead>
+        <tbody id="cl-body"><tr><td colspan="7" class="text-muted">Loading…</td></tr></tbody>
       </table>
-      </div>
     </div>
   </div>
-</div>
-{{else}}
-<div class="card"><p class="text-muted">No clients registered.</p></div>
-{{end}}
+  <div class="cl-more" id="cl-more" hidden><button type="button" class="btn" data-action="showMore">Show more</button></div>
 </div>
 
-<!-- Phantom token detail popup -->
-<div id="ph-detail-modal" class="modal-backdrop" style="display:none">
-  <div class="modal">
-    <h2>Phantom Token Details</h2>
-    <table id="ph-detail-table">
-      <tbody>
-        <tr><td class="text-muted">Env Name</td><td id="phd-env" class="mono"></td></tr>
-        <tr><td class="text-muted">Service</td><td id="phd-service"></td></tr>
-        <tr><td class="text-muted">Phantom Token</td><td id="phd-placeholder" class="mono text-sm" style="word-break:break-all"></td></tr>
-        <tr><td class="text-muted">Linked API Key</td><td id="phd-apikey"></td></tr>
-        <tr><td class="text-muted">Key Path</td><td id="phd-keypath" class="mono text-sm"></td></tr>
-        <tr><td class="text-muted">Approval</td><td id="phd-approval"></td></tr>
-        <tr><td class="text-muted">Usage Count</td><td id="phd-usage"></td></tr>
-      </tbody>
-    </table>
-    <div id="phd-git-setup" style="display:none;margin-top:1rem;border-top:1px solid var(--border);padding-top:0.75rem">
-      <strong>Git repo setup</strong>
-      <div class="grid-2 mt-1">
-        <div class="form-group"><label>Repository for clone example</label><input type="text" id="phd-git-repo" placeholder="OWNER/REPO" list="phd-git-repo-options" data-on-input="renderGitSetupPhd"><datalist id="phd-git-repo-options"></datalist></div>
-        <div class="form-group"><label>Mode</label>
-          <select id="phd-git-mode" data-on-change="renderGitSetupPhd">
-            <option value="deploy">Pull only deploy</option>
-            <option value="dev">Pull and push development</option>
-          </select>
-        </div>
-      </div>
-      <div class="form-group">
-        <label>Granted repositories</label>
-        <div id="phd-git-grants" class="text-sm"></div>
-      </div>
-      <div class="form-group">
-        <label>Client commands</label>
-        <pre id="phd-git-commands" class="mono text-sm" style="white-space:pre-wrap;background:var(--bg-input);padding:0.75rem;border-radius:var(--radius)"></pre>
-      </div>
-      <div class="form-group">
-        <label>ACL permission_config</label>
-        <pre id="phd-git-acl" class="mono text-sm" style="white-space:pre-wrap;background:var(--bg-input);padding:0.75rem;border-radius:var(--radius)"></pre>
-      </div>
+<div id="install-drawer" class="modal-backdrop cl-drawer-bd" hidden>
+  <div class="modal cl-drawer">
+    <div class="cl-drawer-head">
+      <h2>Install instructions</h2>
+      <button type="button" class="btn btn-sm" data-action="modal-close">Close</button>
     </div>
-    <div class="modal-actions">
-      <button type="button" class="btn" data-action="modal-close">Close</button>
+    <p class="text-sm text-muted">Run this on any machine to install the Duckway client, then register it with <strong>Add client</strong>.</p>
+    <div class="cl-cmd">
+      <code id="install-cmd">Loading…</code>
+      <button type="button" class="btn btn-sm btn-icon" data-action="copyInstallCmd" title="Copy install command" aria-label="Copy install command"><span class="copy-icon" aria-hidden="true"></span></button>
+    </div>
+    <h3>Download SHA-256 checksums</h3>
+    <p class="text-sm text-muted">Compare these values with <code>sha256sum</code> after downloading. The install script hash is generated for the configured gateway URL.</p>
+    <div class="text-sm"><strong>install.sh</strong> <code class="cl-sha" id="install-sha256">Loading…</code><br><code>sha256sum install.sh</code></div>
+    <div class="table-wrap">
+      <table class="table"><thead><tr><th scope="col">Ducklord platform</th><th scope="col">Binary</th><th scope="col">SHA-256</th></tr></thead><tbody id="ducklord-sha256-list"><tr><td colspan="3" class="text-muted">Loading…</td></tr></tbody></table>
     </div>
   </div>
 </div>
 
-<!-- Register modal -->
-<div id="add-modal" class="modal-backdrop" style="display:none">
-  <div class="modal">
-    <h2>Register Client</h2>
-    <form id="add-client-form">
-      <div class="form-group"><label>Client Name</label><input type="text" id="client-name" name="name" placeholder="my-laptop" required></div>
-      <div class="modal-actions">
-        <button type="button" class="btn" data-action="modal-close">Cancel</button>
-        <button type="submit" class="btn btn-primary">Register</button>
-      </div>
-    </form>
-  </div>
-</div>
-
-<!-- Token display modal -->
-<div id="token-modal" class="modal-backdrop" style="display:none">
-  <div class="modal">
-	<h2 id="token-modal-title">Client Registered</h2>
-	<p id="token-modal-notice" class="text-sm text-muted mb-1">Save this token — it will only be shown once.</p>
-    <div class="form-group">
-      <label>Client Token</label>
-      <div style="position:relative">
-        <input type="text" id="token-value" readonly style="font-family:monospace;padding-right:2.5rem">
-        <button type="button" class="btn btn-sm btn-icon" data-action="copyToken" title="Copy client token" aria-label="Copy client token" style="position:absolute;right:4px;top:4px"><span class="copy-icon" aria-hidden="true"></span></button>
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Quick Setup (duckway already installed)</label>
-      <div style="position:relative">
-        <code id="init-cmd" style="display:block;padding:0.75rem;padding-right:2.5rem;word-break:break-all;font-size:0.8rem;background:var(--bg-input);border-radius:var(--radius)"></code>
-        <button type="button" class="btn btn-sm btn-icon" data-action="copyCmd" title="Copy quick setup command" aria-label="Copy quick setup command" style="position:absolute;right:4px;top:4px"><span class="copy-icon" aria-hidden="true"></span></button>
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Full Setup (install + register in one command)</label>
-      <div style="position:relative">
-        <code id="full-setup-cmd" style="display:block;padding:0.75rem;padding-right:2.5rem;word-break:break-all;font-size:0.8rem;background:var(--bg-input);border-radius:var(--radius)"></code>
-        <button type="button" class="btn btn-sm btn-icon" data-action="copyFullSetup" title="Copy full setup command" aria-label="Copy full setup command" style="position:absolute;right:4px;top:4px"><span class="copy-icon" aria-hidden="true"></span></button>
-      </div>
-    </div>
-    <div class="form-group">
-      <details class="setup-details">
-        <summary>Auto-start Duckway on Linux with systemd</summary>
-        <div class="setup-details-body">
-          <p class="text-sm text-muted">Run this on the client after the setup command above. It starts the local proxy at login; enable linger if it should run after boot before you log in.</p>
-          <pre><code># Finish client state first
-duckway sync
-
-mkdir -p ~/.config/systemd/user
-
-cat &gt; ~/.config/systemd/user/duckway-proxy.service &lt;&lt;'EOF'
-[Unit]
-Description=Duckway local API proxy
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/duckway proxy
-Restart=on-failure
-RestartSec=5
-Environment=HOME=%h
-
-[Install]
-WantedBy=default.target
-EOF
-
-cat &gt; ~/.config/systemd/user/duckway-cc-watch.service &lt;&lt;'EOF'
-[Unit]
-Description=Duckway Control Channel watcher
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/duckway cc watch
-Restart=on-failure
-RestartSec=5
-Environment=HOME=%h
-
-[Install]
-WantedBy=default.target
-EOF
-
-systemctl --user daemon-reload
-systemctl --user enable --now duckway-proxy
-
-# Optional: only needed for Discord/Control Channel agents.
-systemctl --user enable --now duckway-cc-watch
-
-# Optional: keep user services running after boot before login.
-sudo loginctl enable-linger "$USER"</code></pre>
-          <p class="text-sm text-muted mt-1">If Duckway was installed somewhere other than <code>/usr/local/bin/duckway</code>, replace that path in both service files. Logs: <code>journalctl --user -u duckway-proxy -f</code> and <code>journalctl --user -u duckway-cc-watch -f</code>.</p>
-        </div>
-      </details>
-    </div>
-    <div class="modal-actions">
-      <button type="button" class="btn btn-primary" data-action="dismissToken">I've saved the token</button>
-    </div>
-  </div>
-</div>
-
-<!-- Edit placeholder modal -->
-<div id="edit-ph-modal" class="modal-backdrop" style="display:none">
-  <div class="modal" style="max-width:960px;width:min(96vw,960px)">
-    <h2>Edit Phantom Token</h2>
-    <input type="hidden" id="eph-id">
-    <form id="edit-ph-form">
-      <div class="form-group"><label>Env Name</label><input type="text" id="eph-env" required></div>
-      <div class="form-group"><label>Key Path (under ~/)</label><input type="text" id="eph-path" placeholder=".config/openai/credentials"></div>
-      <div class="form-group">
-        <label><input type="checkbox" id="eph-approval"> Require approval</label>
-      </div>
-      <div class="form-group"><label>Approval TTL (minutes, 0 = no approval)</label><input type="number" id="eph-ttl" min="0"></div>
-      <div id="eph-github-repo-scope" style="display:none;border:1px solid var(--border);border-radius:var(--radius);padding:0.75rem;margin-bottom:1rem">
-        <div class="flex-between">
-          <label style="margin:0">GitHub repository authorization</label>
-          <button type="button" class="btn btn-sm" data-action="loadEditGitHubRepos">Reload</button>
-        </div>
-        <div id="eph-github-repo-status" class="text-sm text-muted mt-1">Repository list loads for GitHub App installation minters.</div>
-        <div id="eph-github-repo-list" style="max-height:52vh;overflow:auto;margin-top:0.75rem;padding-right:0.25rem"></div>
-      </div>
-      <div class="form-group">
-        <label class="text-sm">ACL Pre-set Rules <span class="text-muted">(click to load)</span></label>
-        <div id="eph-acl-templates" style="display:flex;flex-wrap:wrap;gap:0.25rem"></div>
-      </div>
-      <div class="form-group">
-        <label class="text-sm">ACL JSON Editor</label>
-        <textarea id="eph-acl" style="min-height:100px;font-family:monospace;font-size:0.75rem" placeholder="Leave empty to inherit from API key / service" data-on-input="ephACLInput"></textarea>
-        <span class="text-muted text-sm">Narrowest layer — can only restrict, not widen</span>
-      </div>
-      <div class="form-group">
-        <label class="text-sm">Preview</label>
-        <div id="eph-acl-preview" class="acl-preview"></div>
-      </div>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-sm" data-action="clearEphACL">Clear</button>
-        <div style="flex:1"></div>
-        <button type="button" class="btn" data-action="modal-close">Close</button>
-        <button type="submit" class="btn btn-primary">Apply</button>
-      </div>
-    </form>
-  </div>
-</div>
-
-<!-- Assign key modal -->
-<div id="assign-modal" class="modal-backdrop" style="display:none">
-  <div class="modal" style="max-width:960px;width:min(96vw,960px)">
-    <h2>Assign Key to <span id="assign-client-name"></span></h2>
-    <input type="hidden" id="assign-client-id">
-
-    <div class="form-group">
-      <label class="text-sm">Bind to</label>
-      <div class="flex gap-md">
-        <label><input type="radio" name="assign-bind-type" value="key" checked data-on-change="onAssignBindTypeChange"> Single API Key</label>
-        <label><input type="radio" name="assign-bind-type" value="group" data-on-change="onAssignBindTypeChange"> Key Group</label>
-      </div>
-    </div>
-
-    <div class="form-group" id="assign-key-row">
-      <label>API Key</label>
-      <select id="assign-key-select" data-on-change="onAssignKeyChange">
-        <option value="">Select an API key...</option>
-      </select>
-    </div>
-
-    <div class="form-group" id="assign-group-row" style="display:none">
-      <label>Key Group</label>
-      <select id="assign-group-select" data-on-change="onAssignGroupChange">
-        <option value="">Select a key group...</option>
-      </select>
-      <span class="text-muted text-sm">Manage groups in <a href="/admin/groups">Key Groups</a></span>
-    </div>
-
-    <div id="assign-preview" style="display:none" class="card mt-1">
-      <div class="text-sm">
-        <div><strong>Service:</strong> <span id="assign-svc-name"></span></div>
-        <div><strong>Env Name:</strong> <span id="assign-env-name"></span></div>
-      </div>
-    </div>
-    <div id="assign-github-repo-scope" style="display:none;border:1px solid var(--border);border-radius:var(--radius);padding:0.75rem;margin-top:1rem">
-      <div class="flex-between">
-        <label style="margin:0">Allowed repositories</label>
-        <button type="button" class="btn btn-sm" data-action="loadAssignGitHubRepos">Reload</button>
-      </div>
-      <div id="assign-github-repo-status" class="text-sm text-muted mt-1">Select a GitHub App installation minter key.</div>
-      <div id="assign-github-repo-list" style="max-height:52vh;overflow:auto;margin-top:0.75rem;padding-right:0.25rem"></div>
-    </div>
-    <div class="form-group mt-1">
-      <label><input type="checkbox" id="assign-approval"> Require admin approval on first use</label>
-    </div>
-    <div class="modal-actions">
-      <button type="button" class="btn" data-action="modal-close">Cancel</button>
-      <button type="button" class="btn btn-primary" data-action="submitAssign">Assign &amp; Generate Phantom Token</button>
-    </div>
-  </div>
-</div>
-
-<!-- Client Detail / Edit modal -->
-<div id="client-detail-modal" class="modal-backdrop" style="display:none">
-  <div class="modal">
-    <h2 id="cd-title">Client Details</h2>
-    <div id="cd-view">
-      <table class="detail-table">
-        <tr><td class="text-muted">ID</td><td id="cd-id" class="mono text-sm"></td></tr>
-        <tr><td class="text-muted">Short ID</td><td id="cd-short" class="mono"></td></tr>
-        <tr><td class="text-muted">Name</td><td id="cd-name"></td></tr>
-        <tr><td class="text-muted">Status</td><td id="cd-status"></td></tr>
-        <tr><td class="text-muted">Canary</td><td id="cd-canary"></td></tr>
-        <tr><td class="text-muted">Updates</td><td id="cd-updates"></td></tr>
-        <tr><td class="text-muted">Last Seen</td><td id="cd-seen"></td></tr>
-        <tr><td class="text-muted">Created</td><td id="cd-created"></td></tr>
-      </table>
-
-      <div class="mt-1">
-        <strong class="text-sm">Control Channel</strong>
-        <div id="cd-cc-summary" class="text-sm text-muted">Loading…</div>
-      </div>
-
-      <div class="mt-1">
-        <strong class="text-sm">Key Suites</strong>
-        <div id="cd-suite-summary" class="text-sm text-muted">Loading…</div>
-      </div>
-
-      <p class="text-sm text-muted mt-1">Reconfiguring connection info revokes the current client token immediately. Existing client and API key assignments remain in place. The new token and setup instructions are shown once.</p>
-
-      <div class="modal-actions mt-1">
-        <button type="button" class="btn" data-action="modal-close">Close</button>
-		<button type="button" class="btn btn-danger" data-action="rotateClientToken">Reconfigure Connection Info</button>
-        <button type="button" class="btn btn-primary" data-action="switchToClientEdit">Edit</button>
-      </div>
-    </div>
-    <div id="cd-edit" style="display:none">
-      <form id="client-edit-form">
-        <input type="hidden" id="ce-id">
-        <div class="form-group"><label>Name</label><input type="text" id="ce-name" required></div>
-        <div class="form-group"><label><input type="checkbox" id="ce-active"> Active</label></div>
-        <div class="form-group">
-          <label><input type="checkbox" id="ce-managed-updates"> Managed updates</label>
-          <span class="text-muted text-sm">Turn off to exclude this client from fleet rollouts and update it manually.</span>
-        </div>
-        <div class="modal-actions">
-          <button type="button" class="btn" data-action="switchToClientView">Back</button>
-          <button type="submit" class="btn btn-primary">Save</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
+<script nonce="{{$.CSPNonce}}" src="/static/client-install.js"></script>
 <script nonce="{{$.CSPNonce}}">
-var currentClient = null;
+var PAGE = 50;
+var S = {tab: 'all', q: '', status: '', updates: '', canary: '', limit: PAGE};
+var D = {drafts: [], clients: [], runtimes: {}, recommended: '', placeholders: [], ccs: [], suites: {}, loaded: false, error: ''};
+var gatewayInfo = null;
+var checksumsLoaded = false;
+var loadSeq = 0;
 
-DW.actions.openClientDetail = function(el) { openClientDetail(el.dataset.id); };
-DW.actions.openAssignModal = function(el) { openAssignModal(el.dataset.id, el.dataset.name); };
-DW.actions.genCanary = function(el) { genCanary(el.dataset.id, el.dataset.name, el.dataset.shortId); };
-DW.actions.toggleCanary = function(el) { toggleCanary(el.dataset.id, el.dataset.enable === 'true'); };
-DW.actions.toggleSection = function(el) { toggleSection(el.dataset.target, el); };
-DW.actions.copyInstallCmd = function() { copyInstallCmd(); };
-DW.actions.copyToken = function() { copyToken(); };
-DW.actions.copyCmd = function() { copyCmd(); };
-DW.actions.copyFullSetup = function() { copyFullSetup(); };
-DW.actions.dismissToken = function() { dismissToken(); };
-DW.actions.loadEditGitHubRepos = function() { loadEditGitHubRepos(); };
-DW.actions.loadAssignGitHubRepos = function() { loadAssignGitHubRepos(); };
-DW.actions.submitAssign = function() { submitAssign(); };
-DW.actions.rotateClientToken = function() { rotateClientToken(); };
-DW.actions.switchToClientEdit = function() { switchToClientEdit(); };
-DW.actions.switchToClientView = function() { switchToClientView(); };
-DW.actions.onAssignBindTypeChange = function() { onAssignBindTypeChange(); };
-DW.actions.renderGitSetupPhd = function() { renderGitSetup('phd'); };
-DW.actions.ephACLInput = function() { renderACLPreview('eph-acl', 'eph-acl-preview'); };
-DW.actions.clearEphACL = function() {
-  document.getElementById('eph-acl').value = '';
-  renderACLPreview('eph-acl', 'eph-acl-preview');
+function el(id) { return document.getElementById(id); }
+function fetchJSON(url) {
+  return fetch(url, {credentials: 'same-origin'}).then(function(r) {
+    if (r.status === 401) { window.location = '/admin/login'; return null; }
+    if (!r.ok) throw new Error(url + ' ' + r.status);
+    return r.json();
+  });
+}
+function soft(p, fallback) { return p.catch(function() { return fallback; }); }
+
+/* ---------- derived state ---------- */
+var ONLINE_MS = 10 * 60 * 1000;
+function lastSeenMs(c) {
+  var r = D.runtimes[c.id];
+  var a = DWInstall.parseTime(c.last_seen_at);
+  var b = r ? DWInstall.parseTime(r.last_heartbeat_at) : NaN;
+  var m = Math.max(isFinite(a) ? a : -Infinity, isFinite(b) ? b : -Infinity);
+  return isFinite(m) ? m : NaN;
+}
+function normVer(v) { return String(v || '').replace(/^v/i, ''); }
+function derive(c) {
+  var r = D.runtimes[c.id] || null;
+  var seen = lastSeenMs(c);
+  var disabled = !c.is_active;
+  var online = !disabled && isFinite(seen) && (Date.now() - seen) < ONLINE_MS;
+  var version = r && r.version ? r.version : '';
+  var needsUpdate = !!(version && D.recommended && normVer(version) !== normVer(D.recommended) && !disabled);
+  var ph = D.placeholders.filter(function(p) { return p.client_id === c.id; });
+  var suiteNames = {};
+  ph.forEach(function(p) { if (p.suite_id && D.suites[p.suite_id]) suiteNames[D.suites[p.suite_id]] = true; });
+  var cc = D.ccs.filter(function(x) { return x.client_id === c.id; })[0] || null;
+  return {c: c, status: disabled ? 'disabled' : (online ? 'online' : 'offline'), online: online, disabled: disabled,
+    version: version, needsUpdate: needsUpdate, ph: ph, bundles: Object.keys(suiteNames), cc: cc, seen: seen};
+}
+function agentLabel(t) {
+  if (t === 'claude_code') return 'Claude Code';
+  if (t === 'codex') return 'Codex';
+  return t || 'Agent';
+}
+var STATUS_PILL = {online: ['Online', 'cl-pill-ok'], offline: ['Offline', 'cl-pill-warn'], disabled: ['Disabled', 'cl-pill-mute']};
+
+/* ---------- query parsing (same grammar as the shared search helper) ---------- */
+function parseQuery(query) {
+  var filters = {}, text = [], re = /(\w+):(?:"([^"]+)"|(\S+))/g, m, last = 0;
+  while ((m = re.exec(query)) !== null) {
+    var before = query.substring(last, m.index).trim();
+    if (before) text.push(before);
+    last = m.index + m[0].length;
+    filters[m[1].toLowerCase()] = (m[2] || m[3]).toLowerCase();
+  }
+  var rest = query.substring(last).trim();
+  if (rest) text.push(rest);
+  return {filters: filters, text: text.join(' ').toLowerCase()};
+}
+function matchesQuery(d, pq) {
+  var c = d.c;
+  var services = d.ph.map(function(p) { return (p.service_name || '').toLowerCase(); });
+  var envs = d.ph.map(function(p) { return (p.env_name || '').toLowerCase(); });
+  var statusTokens = [c.is_active ? 'active' : 'inactive', d.status];
+  for (var key in pq.filters) {
+    var val = pq.filters[key];
+    var ok;
+    if (key === 'name') ok = c.name.toLowerCase().indexOf(val) >= 0;
+    else if (key === 'service') ok = services.some(function(s) { return s.indexOf(val) >= 0; });
+    else if (key === 'key') ok = envs.some(function(s) { return s.indexOf(val) >= 0; });
+    else if (key === 'canary') ok = (c.canary_enabled ? 'on' : 'off') === val;
+    else if (key === 'status') ok = statusTokens.indexOf(val) >= 0;
+    else {
+      ok = (c.name + ' ' + c.id + ' ' + c.short_id + ' ' + services.join(' ') + ' ' + envs.join(' ')).toLowerCase().indexOf(val) >= 0;
+    }
+    if (!ok) return false;
+  }
+  if (pq.text) {
+    var hay = (c.name + ' ' + c.id + ' ' + c.short_id + ' ' + services.join(' ') + ' ' + envs.join(' ') + ' ' + d.status + ' ' + d.version).toLowerCase();
+    if (hay.indexOf(pq.text) < 0) return false;
+  }
+  return true;
+}
+function passes(d, ignoreTab) {
+  if (!ignoreTab) {
+    if (S.tab === 'online' && d.status !== 'online') return false;
+    if (S.tab === 'offline' && d.status !== 'offline') return false;
+    if (S.tab === 'update' && !d.needsUpdate) return false;
+  }
+  if (S.status && d.status !== S.status) return false;
+  if (S.updates && d.c.update_policy !== S.updates) return false;
+  if (S.canary && (d.c.canary_enabled ? 'on' : 'off') !== S.canary) return false;
+  return matchesQuery(d, parseQuery(S.q));
+}
+
+/* ---------- render ---------- */
+function setTabLabelCounts(all) {
+  var base = all.filter(function(d) { return passes(d, true); });
+  el('cnt-all').textContent = base.length;
+  el('cnt-online').textContent = base.filter(function(d) { return d.status === 'online'; }).length;
+  el('cnt-offline').textContent = base.filter(function(d) { return d.status === 'offline'; }).length;
+  el('cnt-update').textContent = base.filter(function(d) { return d.needsUpdate; }).length;
+  el('cl-total') && (el('cl-total').textContent = all.length);
+}
+function row(d) {
+  var c = d.c, sp = STATUS_PILL[d.status];
+  var verCell = d.version
+    ? DW.html`<span class="cl-ver">${d.version}</span> <span class="cl-muted">${c.update_policy === 'manual' ? 'manual' : 'managed'}</span>${d.needsUpdate ? DW.html` <span class="cl-pill cl-pill-info">Update available</span>` : ''}`
+    : DW.html`<span class="cl-muted">— ${c.update_policy === 'manual' ? 'manual' : 'managed'}</span>`;
+  var credCell = d.ph.length
+    ? DW.html`${d.ph.length}${d.bundles.length ? DW.html` <span class="cl-muted">· ${d.bundles.join(', ')}</span>` : ''}`
+    : DW.html`<span class="cl-muted">0</span>`;
+  var ccCell = d.cc ? DW.html`${agentLabel(d.cc.agent_type)} <span class="cl-muted">· ${d.cc.name}</span>` : DW.html`<span class="cl-muted">—</span>`;
+  var canary = c.canary_enabled ? DW.html`<span class="cl-pill cl-pill-ok">On</span>` : DW.html`<span class="cl-pill cl-pill-mute">Off</span>`;
+  var seen = isFinite(d.seen) ? DWInstall.relTime(new Date(d.seen).toISOString()) : 'never';
+  return DW.html`<tr data-id="${c.id}">
+    <td class="cl-c-name" data-field="name"><a class="cl-name" href="${'/admin/clients/' + encodeURIComponent(c.id)}">${c.name}</a><span class="cl-id">${c.short_id || c.id}</span></td>
+    <td class="cl-c-status" data-field="status"><span class="cl-pill ${sp[1]}">${sp[0]}</span></td>
+    <td class="cl-c-ver" data-label="Version">${verCell}</td>
+    <td class="cl-c-creds" data-label="Credentials">${credCell}</td>
+    <td class="cl-c-cc" data-label="Control channel">${ccCell}</td>
+    <td class="cl-c-canary" data-label="Canary">${canary}</td>
+    <td class="cl-c-seen" data-label="Last seen">${seen}</td></tr>`;
+}
+function draftVisible(d) {
+  if (S.tab !== 'all' || S.status || S.updates || S.canary) return false;
+  var pq = parseQuery(S.q);
+  for (var k in pq.filters) { if (k !== 'name' || String(d.name || '').toLowerCase().indexOf(pq.filters[k]) < 0) return false; }
+  return !pq.text || String(d.name || '').toLowerCase().indexOf(pq.text) >= 0;
+}
+function draftRow(d) {
+  var arm = pendingDiscard === d.id;
+  return DW.html`<tr data-draft="${d.id}">
+    <td class="cl-c-name" data-field="name"><a class="cl-name" href="${'/admin/clients/new?draft=' + encodeURIComponent(d.id)}">${d.name || 'Unnamed client'}</a><span class="cl-id">draft</span></td>
+    <td class="cl-c-status" data-field="status"><span class="cl-pill cl-pill-info">Draft</span></td>
+    <td class="cl-c-ver" data-label="Version"><span class="cl-muted">— ${d.update_policy === 'manual' ? 'manual' : 'managed'}</span></td>
+    <td class="cl-c-creds" data-label="Credentials"><a href="${'/admin/clients/new?draft=' + encodeURIComponent(d.id)}">Finish setup</a></td>
+    <td class="cl-c-cc" data-label="Control channel"><span class="cl-muted">—</span></td>
+    <td class="cl-c-canary" data-label="Canary"><button type="button" class="btn btn-sm ${arm ? 'btn-danger' : ''}" data-action="discardDraft" data-id="${d.id}">${arm ? 'Confirm discard' : 'Discard'}</button></td>
+    <td class="cl-c-seen" data-label="Updated">${d.updated_at ? DWInstall.relTime(d.updated_at) : '—'}</td></tr>`;
+}
+var pendingDiscard = '';
+DW.actions.discardDraft = function(b) {
+  var id = b.dataset.id;
+  if (pendingDiscard !== id) { pendingDiscard = id; render(); return; }
+  pendingDiscard = '';
+  return fetch('/api/client-drafts/' + encodeURIComponent(id), {method: 'DELETE', credentials: 'same-origin'}).then(function(r) {
+    if (!r.ok) throw new Error('discard failed (' + r.status + ')');
+    showToast('Draft discarded', 'success'); load();
+  }).catch(function(e) { showToast(e.message, 'error'); render(); });
 };
-DW.actions.unassignClientSuite = function(el) { unassignClientSuite(el.dataset.suiteId, el.dataset.clientId, el.dataset.suiteName); };
-DW.actions.showPhDetail = function(el) { showPhDetail(el.dataset.id); };
-DW.actions.editPhTTL = function(el) { editPhTTL(el.dataset.id, el.dataset.requiresApproval === 'true', parseInt(el.dataset.ttl, 10) || 0); };
-DW.actions.editPh = function(el) { editPh(el.dataset.id, el.dataset.env, el.dataset.keyPath || ''); };
-DW.actions.deletePh = function(el) { deletePh(el.dataset.id); };
-DW.actions.onGitHubGrantToggle = function(el) { onGitHubGrantToggle(el); };
-DW.actions.onAssignKeyChange = function() {
-  var keySel = document.getElementById('assign-key-select');
-  var opt = keySel.options[keySel.selectedIndex];
-  if (!opt || !opt.value) {
-    document.getElementById('assign-preview').style.display = 'none';
-    document.getElementById('assign-github-repo-scope').style.display = 'none';
+function render() {
+  var body = el('cl-body');
+  if (D.error) {
+    DW.setHTML(body, DW.html`<tr><td colspan="7"><div class="cl-empty"><strong>Could not load clients</strong><span class="text-muted text-sm">${D.error}</span><button type="button" class="btn" data-action="reload">Retry</button></div></td></tr>`);
+    el('cl-more').hidden = true;
     return;
   }
-  buildAssignPreview(opt.dataset.serviceName);
-  updateAssignGitHubRepoScope();
-};
-DW.actions.onAssignGroupChange = function() {
-  var grpSel = document.getElementById('assign-group-select');
-  var opt = grpSel.options[grpSel.selectedIndex];
-  document.getElementById('assign-github-repo-scope').style.display = 'none';
-  if (!opt || !opt.value) { document.getElementById('assign-preview').style.display = 'none'; return; }
-  buildAssignPreview(opt.dataset.serviceName);
-};
-
-// The one-time client token modal must only be dismissed by its explicit button
-// (which also reloads the page): block the shared backdrop-click and Esc closers.
-(function() {
-  var tokenModal = document.getElementById('token-modal');
-  if (!tokenModal) return;
-  tokenModal.addEventListener('mousedown', function(e) {
-    if (e.target === tokenModal) e.stopPropagation();
+  var all = D.clients.map(derive);
+  setTabLabelCounts(all);
+  var shown = all.filter(function(d) { return passes(d, false); });
+  var drafts = D.drafts.filter(draftVisible);
+  var tabs = ['all', 'online', 'offline', 'update'];
+  tabs.forEach(function(t) {
+    var b = el('cl-tab-' + t), on = t === S.tab;
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+    b.tabIndex = on ? 0 : -1;
   });
-  document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape' && tokenModal.style.display !== 'none') {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }
-  }, true);
+  el('cl-panel').setAttribute('aria-labelledby', 'cl-tab-' + S.tab);
+  el('count-clients').textContent = shown.length === all.length ? (all.length + (all.length === 1 ? ' client' : ' clients')) : (shown.length + ' of ' + all.length);
+  if (!all.length && !D.drafts.length) {
+    DW.setHTML(body, DW.raw('<tr><td colspan="7"><div class="cl-empty"><strong>No clients yet</strong><span class="text-muted text-sm">Register a machine to start issuing phantom tokens.</span><a class="btn btn-primary" href="/admin/clients/new">Add client</a></div></td></tr>'));
+    el('cl-more').hidden = true;
+    return;
+  }
+  if (!shown.length && !drafts.length) {
+    DW.setHTML(body, DW.raw('<tr><td colspan="7"><div class="cl-empty"><strong>No clients match</strong><span class="text-muted text-sm">Try a different tab, filter or search.</span><button type="button" class="btn" data-action="clearFilters">Clear filters</button></div></td></tr>'));
+    el('cl-more').hidden = true;
+    return;
+  }
+  var page = shown.slice(0, S.limit);
+  DW.setHTML(body, DW.html`${drafts.map(draftRow)}${page.map(row)}`);
+  el('cl-more').hidden = shown.length <= S.limit;
+}
+
+/* ---------- state <-> controls <-> URL ---------- */
+function writeURL() {
+  var p = new URLSearchParams();
+  if (S.tab !== 'all') p.set('tab', S.tab);
+  if (S.q) p.set('q', S.q);
+  if (S.status) p.set('status', S.status);
+  if (S.updates) p.set('updates', S.updates);
+  if (S.canary) p.set('canary', S.canary);
+  var qs = p.toString();
+  try { history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '')); } catch (e) { /* ignore */ }
+}
+function readURL() {
+  var p = new URLSearchParams(location.search);
+  var t = p.get('tab');
+  if (['all', 'online', 'offline', 'update'].indexOf(t) >= 0) S.tab = t;
+  S.q = (p.get('q') || '').slice(0, 200);
+  if (['online', 'offline', 'disabled'].indexOf(p.get('status')) >= 0) S.status = p.get('status');
+  if (['managed', 'manual'].indexOf(p.get('updates')) >= 0) S.updates = p.get('updates');
+  if (['on', 'off'].indexOf(p.get('canary')) >= 0) S.canary = p.get('canary');
+  el('search-clients').value = S.q;
+  el('f-status').value = S.status;
+  el('f-updates').value = S.updates;
+  el('f-canary').value = S.canary;
+}
+function change() { S.limit = PAGE; writeURL(); render(); }
+
+DW.actions.pickTab = function(b) { S.tab = b.dataset.tab; change(); };
+DW.actions.applyFilters = function() {
+  S.status = el('f-status').value; S.updates = el('f-updates').value; S.canary = el('f-canary').value;
+  change();
+};
+DW.actions.clearFilters = function() {
+  S.tab = 'all'; S.q = ''; S.status = ''; S.updates = ''; S.canary = '';
+  el('search-clients').value = ''; el('f-status').value = ''; el('f-updates').value = ''; el('f-canary').value = '';
+  change();
+  el('search-clients').focus();
+};
+DW.actions.showMore = function() { S.limit += PAGE; render(); };
+DW.actions.reload = function() { load(); };
+el('cl-tablist').addEventListener('keydown', function(e) {
+  var order = ['all', 'online', 'offline', 'update'], i = order.indexOf(S.tab);
+  if (e.key === 'ArrowRight') i = (i + 1) % order.length;
+  else if (e.key === 'ArrowLeft') i = (i + order.length - 1) % order.length;
+  else if (e.key === 'Home') i = 0;
+  else if (e.key === 'End') i = order.length - 1;
+  else return;
+  e.preventDefault();
+  S.tab = order[i]; change();
+  el('cl-tab-' + S.tab).focus();
+});
+(function() {
+  var input = el('search-clients');
+  input.addEventListener('input', function() { S.q = input.value; change(); });
+  // The shared helper's suggestion dropdown sets the value without firing input.
+  function resync() { setTimeout(function() { if (input.value !== S.q) { S.q = input.value; change(); } }, 0); }
+  input.parentNode.addEventListener('click', resync);
+  input.addEventListener('keydown', function(e) { if (e.key === 'Enter') resync(); });
 })();
 
-function openClientDetail(id) {
-  fetch('/api/clients/' + encodeURIComponent(id), {credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(c) {
-      if (c.error) { showToast(c.error, 'error'); return; }
-      currentClient = c;
-      document.getElementById('cd-title').textContent = c.name;
-      document.getElementById('cd-id').textContent = c.id;
-      document.getElementById('cd-short').textContent = c.short_id;
-      document.getElementById('cd-name').textContent = c.name;
-      DW.setHTML(document.getElementById('cd-status'), c.is_active ? DW.raw('<span class="badge badge-green">Active</span>') : DW.raw('<span class="badge badge-red">Inactive</span>'));
-      DW.setHTML(document.getElementById('cd-canary'), c.canary_enabled ? DW.raw('<span class="badge badge-green">Enabled</span>') : DW.raw('<span class="badge badge-gray">Disabled</span>'));
-      DW.setHTML(document.getElementById('cd-updates'), c.update_policy === 'manual' ? DW.raw('<span class="badge badge-yellow">Manual only</span>') : DW.raw('<span class="badge badge-blue">Managed</span>'));
-      document.getElementById('cd-seen').textContent = c.last_seen_at || 'Never';
-      document.getElementById('cd-created').textContent = c.created_at;
-      document.getElementById('cd-view').style.display = '';
-      document.getElementById('cd-edit').style.display = 'none';
-      DW.modal.open('#client-detail-modal');
-      loadClientCCs(c.id);
-      loadClientSuites(c.id);
-    });
-}
-
-function loadClientCCs(clientID) {
-  // CC v2: 1:1 client↔CC. Show a one-line summary; admin manages the
-  // binding from the Control Channels page.
-  fetch('/api/cc', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(list) {
-    var allCC = Array.isArray(list) ? list : [];
-    var mine = allCC.filter(function(c){return c.client_id === clientID;})[0];
-    var el = document.getElementById('cd-cc-summary');
-    if (!mine) {
-      DW.setHTML(el, DW.raw('No CC assigned. Create one on the <a href="/admin/cc">Control Channels</a> page.'));
-      return;
-    }
-    var status = mine.is_active
-      ? DW.raw('<span class="badge badge-green">Active</span>')
-      : DW.raw('<span class="badge badge-gray">Inactive</span>');
-    DW.setHTML(el, DW.html`<a href="/admin/cc">${mine.name}</a>  ${status}  <code>${mine.agent_type}</code>`);
+/* ---------- data ---------- */
+function load() {
+  var seq = ++loadSeq;
+  Promise.all([
+    fetchJSON('/api/clients'),
+    soft(fetchJSON('/api/client-updates'), {}),
+    soft(fetchJSON('/api/placeholders'), []),
+    soft(fetchJSON('/api/cc'), []),
+    soft(fetchJSON('/api/key-suites'), []),
+    soft(fetchJSON('/api/client-drafts'), [])
+  ]).then(function(r) {
+    if (seq !== loadSeq) return;
+    D.clients = Array.isArray(r[0]) ? r[0] : [];
+    D.runtimes = (r[1] && r[1].runtimes) || {};
+    D.recommended = (r[1] && r[1].recommended_version) || '';
+    D.placeholders = Array.isArray(r[2]) ? r[2] : [];
+    D.ccs = Array.isArray(r[3]) ? r[3] : [];
+    D.drafts = Array.isArray(r[5]) ? r[5] : [];
+    D.suites = {};
+    (Array.isArray(r[4]) ? r[4] : []).forEach(function(s) { D.suites[s.id] = s.name; });
+    D.error = '';
+    D.loaded = true;
+    render();
+  }).catch(function(err) {
+    if (seq !== loadSeq) return;
+    D.error = err && err.message ? err.message : 'request failed';
+    render();
   });
 }
 
-function loadClientSuites(clientID) {
-  fetch('/api/key-suites/clients/' + encodeURIComponent(clientID), {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(list) {
-    var suites = Array.isArray(list) ? list : [];
-    var el = document.getElementById('cd-suite-summary');
-    if (!suites.length) {
-      DW.setHTML(el, DW.raw('No key suite assigned.'));
-      return;
+/* ---------- install drawer ---------- */
+DW.actions.openInstall = function() {
+  DW.modal.open('#install-drawer');
+  DWInstall.gateway().then(function(g) {
+    gatewayInfo = g;
+    var cmd = el('install-cmd');
+    if (g.valid) {
+      cmd.textContent = DWInstall.installCmd(g.url);
+      if (!checksumsLoaded) { checksumsLoaded = true; loadChecksums(g.url); }
+    } else {
+      DW.setHTML(cmd, DW.raw('<span class="cl-warn">Gateway URL not configured.</span> Set it in <a href="/admin/settings">Settings</a> (this admin panel does not serve <code>/install.sh</code> in split mode).'));
     }
-    DW.setHTML(el, DW.html`${suites.map(function(s) {
-      return DW.html`<span class="badge badge-gray" style="display:inline-flex;align-items:center;gap:.35rem;margin:.15rem .2rem .15rem 0">${s.name} · ${s.service_count} service${s.service_count === 1 ? '' : 's'}<button class="btn btn-sm" style="padding:.1rem .35rem" data-action="unassignClientSuite" data-suite-id="${s.id}" data-client-id="${clientID}" data-suite-name="${s.name}">Remove</button></span> `;
+  });
+};
+DW.actions.copyInstallCmd = function() {
+  if (!gatewayInfo || !gatewayInfo.valid) { showToast('Gateway URL is not configured', 'error'); return; }
+  DWInstall.copy(DWInstall.installCmd(gatewayInfo.url)).then(function() { showToast('Install command copied', 'success'); });
+};
+function loadChecksums(gw) {
+  var base = gw.replace(/\/$/, '');
+  var installTarget = el('install-sha256');
+  fetch(base + '/install.sh.sha256')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+    .then(function(v) { installTarget.textContent = v.trim(); })
+    .catch(function() { installTarget.textContent = 'Unavailable'; });
+  var platforms = [['linux', 'amd64'], ['linux', 'arm64'], ['darwin', 'amd64'], ['darwin', 'arm64']];
+  Promise.all(platforms.map(function(p) {
+    return fetch(base + '/ducklord/update-info?os=' + p[0] + '&arch=' + p[1])
+      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(info) { return {platform: p[0] + '/' + p[1], binary: info.binary, sha256: info.sha256}; })
+      .catch(function() { return {platform: p[0] + '/' + p[1], binary: 'Unavailable', sha256: 'Unavailable'}; });
+  })).then(function(rows) {
+    DW.setHTML(el('ducklord-sha256-list'), DW.html`${rows.map(function(r) {
+      return DW.html`<tr><td><code>${r.platform}</code></td><td><code>${r.binary}</code></td><td><code class="cl-sha">${r.sha256}</code></td></tr><tr><td colspan="3"><code>sha256sum ${r.binary}</code></td></tr>`;
     })}`);
   });
 }
 
-function unassignClientSuite(suiteID, clientID, suiteName) {
-  if (!confirm('Remove this client from ' + suiteName + '? Suite-managed phantom tokens from this suite will be removed. Individual keys are kept.')) return;
-  fetch('/api/key-suites/' + encodeURIComponent(suiteID) + '/assignments/' + encodeURIComponent(clientID), {
-    method: 'DELETE',
-    credentials: 'same-origin'
-  }).then(function(r) { return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
-    .then(function(res) {
-      if (!res.ok) { showToast('Remove failed: ' + (res.body.error || 'unknown error'), 'error'); return; }
-      showToast('Key suite removed from client', 'success');
-      location.reload();
-    });
-}
-
-function switchToClientEdit() {
-  if (!currentClient) return;
-  document.getElementById('ce-id').value = currentClient.id;
-  document.getElementById('ce-name').value = currentClient.name;
-  document.getElementById('ce-active').checked = currentClient.is_active;
-  document.getElementById('ce-managed-updates').checked = currentClient.update_policy !== 'manual';
-  document.getElementById('cd-view').style.display = 'none';
-  document.getElementById('cd-edit').style.display = '';
-}
-
-function switchToClientView() {
-  document.getElementById('cd-view').style.display = '';
-  document.getElementById('cd-edit').style.display = 'none';
-}
-
-function rotateClientToken() {
-	if (!currentClient) return;
-	if (!confirm('Reconfigure connection info for ' + currentClient.name + '? The current token will be revoked immediately. Existing client and API key assignments will remain in place. The new token and setup instructions will be shown once.')) return;
-	fetch('/api/clients/' + encodeURIComponent(currentClient.id) + '/rotate-token', {
-		method: 'POST',
-		credentials: 'same-origin'
-	}).then(function(r) { return r.json().then(function(body) { return {ok:r.ok, body:body}; }); })
-		.then(function(result) {
-			if (!result.ok || result.body.error) { showToast(result.body.error || 'Token rotation failed', 'error'); return; }
-			DW.modal.close('#client-detail-modal');
-			showClientToken(result.body, true);
-		});
-}
-
-document.getElementById('client-edit-form').addEventListener('submit', function(e) {
-  e.preventDefault();
-  var id = document.getElementById('ce-id').value;
-  fetch('/api/clients/' + encodeURIComponent(id), {
-    method: 'PUT',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      name: document.getElementById('ce-name').value,
-      is_active: document.getElementById('ce-active').checked,
-      update_policy: document.getElementById('ce-managed-updates').checked ? 'managed' : 'manual'
-    }),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('Client updated', 'success');
-    location.reload();
-  });
-});
-</script>
-
-<script nonce="{{$.CSPNonce}}">
-var apiKeys = [
-  {{range .Keys}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}", isRefreshable:{{.IsRefreshable}}, isMintable:{{.IsMintable}}},{{end}}
-];
-var assignGitHubRepoLoadSeq = 0;
-var editGitHubRepoLoadSeq = 0;
-var editPhLoadSeq = 0;
-
-var keyGroups = [
-  {{range .Groups}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}", strategy:"{{.Strategy}}", memberCount: {{len .Members}}},{{end}}
-];
-
-var placeholders = [
-  {{range .Placeholders}}{id:"{{.ID}}", envName:"{{.EnvName}}", placeholder:"{{.Placeholder}}", serviceName:"{{.ServiceName}}", serviceId:"{{.ServiceID}}", apiKeyId:"{{if .APIKeyID}}{{deref .APIKeyID}}{{end}}", apiKeyName:"{{if .APIKeyName}}{{deref .APIKeyName}}{{end}}", groupId:"{{if .GroupID}}{{deref .GroupID}}{{end}}", clientId:"{{.ClientID}}", clientName:"{{.ClientName}}", keyPath:"{{.KeyPath}}", permissionConfig:"{{if .PermissionConfig}}{{deref .PermissionConfig}}{{end}}", requiresApproval:{{.RequiresApproval}}, approvalTTL:{{.ApprovalTTLMinutes}}, usageCount:{{.UsageCount}}},{{end}}
-];
-
-// Will be enriched with approval data
-var approvalData = {}; // placeholderID → {status, approved_at, expires_at}
-
-var canaryTokens = [
-  {{range .CanaryTokens}}{id:"{{.ID}}", clientId:"{{.ClientID}}", tokenType:"{{.TokenType}}", tokenValue:"{{.TokenValue}}", canaryToken:"{{.CanaryToken}}", authToken:"{{.AuthToken}}", deployPath:"{{.DeployPath}}", createdAt:"{{.CreatedAt}}"},{{end}}
-];
-
-var svcEnvMap = {"openai":"OPENAI_API_KEY","anthropic":"ANTHROPIC_API_KEY","github":"GITHUB_TOKEN","discord":"DISCORD_BOT_TOKEN","telegram":"TELEGRAM_BOT_TOKEN"};
-
-var gatewayURL = window.location.origin;
-var gatewayURLValid = false;  // true once we confirm gateway URL is set or admin serves /install.sh
-
-document.addEventListener('DOMContentLoaded', function() {
-  // Load gateway URL from settings. If empty, verify current origin actually serves
-  // /install.sh (combined mode does, split-mode admin does NOT).
-  fetch('/api/settings', {credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(s) {
-      if (s.gateway_url) {
-        gatewayURL = s.gateway_url;
-        gatewayURLValid = true;
-        document.getElementById('install-cmd').textContent = 'curl -fsSL ' + gatewayURL + '/install.sh | sh';
-        loadDownloadChecksums();
-      } else {
-        // Probe current origin for /install.sh
-        fetch('/install.sh', {method: 'HEAD'})
-          .then(function(r) {
-            if (r.ok) {
-              gatewayURLValid = true;
-              document.getElementById('install-cmd').textContent = 'curl -fsSL ' + gatewayURL + '/install.sh | sh';
-              loadDownloadChecksums();
-            } else {
-              DW.setHTML(document.getElementById('install-cmd'), DW.raw(
-                '<span style="color:var(--danger)">Gateway URL not configured.</span> ' +
-                'Set it in <a href="/admin/settings">Settings</a> ' +
-                '(this admin panel does not serve <code>/install.sh</code> in split mode).'));
-            }
-          })
-          .catch(function() {
-            DW.setHTML(document.getElementById('install-cmd'), DW.raw(
-              '<span style="color:var(--danger)">Gateway URL not configured.</span> ' +
-              'Set it in <a href="/admin/settings">Settings</a>.'));
-          });
-      }
-    });
-
-  // Check canary settings
-  fetch('/api/canary/settings', {credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (!data.email) document.getElementById('canary-alert').style.display = 'block';
-    })
-    .catch(function() {});
-
-  // Count keys per client
-  var keyCounts = {};
-  var canaryCounts = {};
-
-  // Fetch approval data then populate
-  fetch('/api/placeholders/with-approvals', {credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      data.forEach(function(p) {
-        approvalData[p.id] = {status: p.approval_status, approved_at: p.approved_at, expires_at: p.expires_at};
-        var local = placeholders.find(function(x) { return x.id === p.id; });
-        if (local) local.permissionConfig = p.permission_config || local.permissionConfig || '';
-      });
-      renderPlaceholders();
-    })
-    .catch(function() { renderPlaceholders(); });
-
-  function renderPlaceholders() {
-    placeholders.forEach(function(ph) {
-      var tbody = document.getElementById('keys-' + ph.clientId);
-      if (!tbody) return;
-      keyCounts[ph.clientId] = (keyCounts[ph.clientId] || 0) + 1;
-      var tr = document.createElement('tr');
-      tr.id = 'ph-' + ph.id;
-      var phShort = ph.placeholder.length > 28 ? ph.placeholder.substring(0,28)+'...' : ph.placeholder;
-
-      var ad = approvalData[ph.id] || {};
-      var approvalBadge = [ph.requiresApproval ? DW.raw('<span class="badge badge-yellow">Required</span>') : DW.raw('<span class="badge badge-green">Auto</span>')];
-      if (ad.status === 'approved') approvalBadge.push(DW.raw(' <span class="badge badge-green">Approved</span>'));
-      else if (ad.status === 'pending') approvalBadge.push(DW.raw(' <span class="badge badge-yellow">Pending</span>'));
-
-      var validUntil = '—';
-      if (ad.expires_at) {
-        var exp = ad.expires_at;
-        var isExpired = new Date(exp + 'Z') < new Date();
-        validUntil = DW.html`<span class="text-sm ${isExpired ? 'badge badge-red' : ''}">${exp}${isExpired ? ' (expired)' : ''}</span>`;
-      }
-
-      var ttlText = ph.approvalTTL ? (ph.approvalTTL >= 1440 ? (ph.approvalTTL/1440) + 'd' : ph.approvalTTL + 'm') : '24h';
-
-      DW.setHTML(tr, DW.html`<td><strong>${ph.apiKeyName || DW.raw('<span class="text-muted">—</span>')}</strong></td><td><span class="badge badge-blue">${ph.serviceName}</span></td><td class="mono text-sm" style="cursor:pointer;text-decoration:underline dotted" data-action="showPhDetail" data-id="${ph.id}" title="Click for details">${phShort}</td><td>${approvalBadge}</td><td>${validUntil}</td><td><a href="#" data-action="editPhTTL" data-id="${ph.id}" data-requires-approval="${String(ph.requiresApproval)}" data-ttl="${ph.approvalTTL}" class="text-sm">${ttlText}</a></td><td>${ph.usageCount}</td><td class="text-right flex gap-sm" style="justify-content:flex-end"><button class="btn btn-sm" data-action="editPh" data-id="${ph.id}" data-env="${ph.envName}" data-key-path="${ph.keyPath||''}">Edit</button><button class="btn btn-sm btn-danger" data-action="deletePh" data-id="${ph.id}">Unassign</button></td>`);
-      tbody.appendChild(tr);
-    });
-
-    renderEmptyMessages();
-  }
-
-  // Populate canary tokens per client
-  canaryTokens.forEach(function(ct) {
-    var tbody = document.getElementById('canaries-' + ct.clientId);
-    if (!tbody) return;
-    canaryCounts[ct.clientId] = (canaryCounts[ct.clientId] || 0) + 1;
-    var tr = document.createElement('tr');
-    var tokenCell;
-    if (ct.canaryToken && ct.authToken) {
-      var manageURL = 'https://canarytokens.org/manage?token=' + encodeURIComponent(ct.canaryToken) + '&auth=' + encodeURIComponent(ct.authToken);
-      tokenCell = DW.html`<a href="${manageURL}" target="_blank" rel="noopener" class="mono text-sm" title="Manage on canarytokens.org">${ct.canaryToken.substring(0,12)}...</a>`;
-    } else {
-      tokenCell = DW.raw('<span class="text-muted text-sm">local</span>');
-    }
-    DW.setHTML(tr, DW.html`<td><span class="badge badge-blue">${ct.tokenType}</span></td><td>${tokenCell}</td><td class="mono text-sm">~/${ct.deployPath}</td><td class="text-muted text-sm">${ct.createdAt}</td>`);
-    tbody.appendChild(tr);
-  });
-
-  function renderEmptyMessages() {
-    document.querySelectorAll('tbody[id^="keys-"]').forEach(function(tbody) {
-      if (tbody.children.length === 0) {
-        var tr = document.createElement('tr');
-        tr.className = 'empty-row';
-        DW.setHTML(tr, DW.raw('<td colspan="8" class="text-muted text-sm">No keys assigned. Click "Assign Key" to add.</td>'));
-        tbody.appendChild(tr);
-      }
-    });
-  }
-
-  document.querySelectorAll('tbody[id^="canaries-"]').forEach(function(tbody) {
-    if (tbody.children.length === 0) {
-      var tr = document.createElement('tr');
-      DW.setHTML(tr, DW.raw('<td colspan="4" class="text-muted text-sm">No canary tokens. Configure in <a href="/admin/canary">Canary Tokens</a> settings.</td>'));
-      tbody.appendChild(tr);
-    }
-  });
-
-  // Update summary counts
-  Object.keys(keyCounts).forEach(function(cid) {
-    var el = document.getElementById('key-count-' + cid);
-    if (el) {
-      var kc = keyCounts[cid] || 0;
-      var cc = canaryCounts[cid] || 0;
-      el.textContent = kc + ' key' + (kc !== 1 ? 's' : '') + ', ' + cc + ' canary';
-    }
-  });
-});
-
-function loadDownloadChecksums() {
-  var base = gatewayURL.replace(/\/$/, '');
-  var installTarget = document.getElementById('install-sha256');
-  fetch(base + '/install.sh.sha256')
-    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-    .then(function(value) { installTarget.textContent = value.trim(); })
-    .catch(function() { installTarget.textContent = 'Unavailable'; });
-
-  var platforms = [['linux','amd64'],['linux','arm64'],['darwin','amd64'],['darwin','arm64']];
-  var body = document.getElementById('ducklord-sha256-list');
-  Promise.all(platforms.map(function(p) {
-    return fetch(base + '/ducklord/update-info?os=' + p[0] + '&arch=' + p[1])
-      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-      .then(function(info) { return {platform:p[0] + '/' + p[1], binary:info.binary, sha256:info.sha256}; })
-      .catch(function() { return {platform:p[0] + '/' + p[1], binary:'Unavailable', sha256:'Unavailable'}; });
-  })).then(function(rows) {
-    body.textContent = '';
-    rows.forEach(function(row) {
-      var tr = document.createElement('tr');
-      [row.platform, row.binary, row.sha256].forEach(function(value) {
-        var td = document.createElement('td');
-        var code = document.createElement('code');
-        code.textContent = value;
-        td.appendChild(code);
-        tr.appendChild(td);
-      });
-      body.appendChild(tr);
-      var commandRow = document.createElement('tr');
-      var commandCell = document.createElement('td');
-      commandCell.colSpan = 3;
-      var command = document.createElement('code');
-      command.textContent = 'sha256sum ' + row.binary;
-      commandCell.appendChild(command);
-      commandRow.appendChild(commandCell);
-      body.appendChild(commandRow);
-    });
-  });
-}
-
-function toggleSection(id, header) {
-  var el = document.getElementById(id);
-  var arrow = header.querySelector('.toggle-arrow');
-  if (el.style.display === 'none') {
-    el.style.display = 'block';
-    header.setAttribute('aria-expanded', 'true');
-    if (arrow) arrow.textContent = '\u25BC';
-  } else {
-    el.style.display = 'none';
-    header.setAttribute('aria-expanded', 'false');
-    if (arrow) arrow.textContent = '\u25B6';
-  }
-}
-
-function showPhDetail(phId) {
-  var ph = placeholders.find(function(p) { return p.id === phId; });
-  if (!ph) return;
-
-  document.getElementById('phd-env').textContent = ph.envName;
-  document.getElementById('phd-env').dataset.placeholderId = ph.id;
-  DW.setHTML(document.getElementById('phd-service'), DW.html`<span class="badge badge-blue">${ph.serviceName}</span>`);
-  document.getElementById('phd-placeholder').textContent = ph.placeholder;
-  DW.setHTML(document.getElementById('phd-approval'), ph.requiresApproval
-    ? DW.raw('<span class="badge badge-yellow">Required</span>')
-    : DW.raw('<span class="badge badge-green">Auto</span>'));
-  document.getElementById('phd-usage').textContent = ph.usageCount;
-  document.getElementById('phd-keypath').textContent = ph.keyPath ? '~/' + ph.keyPath : '(keys.env only)';
-
-  // Find linked API key
-  var ak = apiKeys.find(function(k) { return k.id === ph.apiKeyId; });
-  if (ak) {
-    DW.setHTML(document.getElementById('phd-apikey'), DW.html`<strong>${ak.name}</strong> <span class="badge badge-blue">${ak.serviceName}</span>`);
-  } else if (ph.groupId) {
-    DW.setHTML(document.getElementById('phd-apikey'), DW.raw('<span class="badge badge-gray">Key Group</span>'));
-  } else {
-    document.getElementById('phd-apikey').textContent = '—';
-  }
-
-  var gitSetup = document.getElementById('phd-git-setup');
-  if (ph.serviceName === 'github') {
-    gitSetup.style.display = 'block';
-    renderGitGrants(ph, 'phd');
-    renderGitSetup('phd');
-  } else {
-    gitSetup.style.display = 'none';
-  }
-
-  DW.modal.open('#ph-detail-modal');
-}
-
-function renderGitSetup(prefix) {
-  var repoEl = document.getElementById(prefix + '-git-repo');
-  var modeEl = document.getElementById(prefix + '-git-mode');
-  var cmdEl = document.getElementById(prefix + '-git-commands');
-  var aclEl = document.getElementById(prefix + '-git-acl');
-  if (!repoEl || !modeEl || !cmdEl || !aclEl) return;
-  var repo = normalizeGitRepo(repoEl.value);
-  var activePh = prefix === 'phd' ? placeholders.find(function(p) { return p.id === document.getElementById('phd-env').dataset.placeholderId; }) : null;
-  var grant = activePh ? gitGrantForRepo(activePh.permissionConfig, repo) : null;
-  var mode = grant ? grantMode(grant) : (modeEl.value || 'deploy');
-  modeEl.value = mode;
-  var repoDir = repo.split('/').pop();
-  cmdEl.textContent = [
-    'duckway update',
-    'duckway restart',
-    'duckway git list',
-    'duckway git setup',
-    '',
-    '# Pick a repo from `duckway git list`:',
-    'duckway git clone ' + repo,
-    '',
-    'cd ' + repoDir,
-    mode === 'deploy' ? 'git pull --ff-only' : 'git pull --ff-only && git push'
-  ].join('\n');
-  aclEl.textContent = JSON.stringify(gitACL(repo, mode), null, 2);
-}
-
-function renderGitGrants(ph, prefix) {
-  var grants = gitGrantsFromACL(ph.permissionConfig);
-  var list = document.getElementById(prefix + '-git-grants');
-  var options = document.getElementById(prefix + '-git-repo-options');
-  var repoEl = document.getElementById(prefix + '-git-repo');
-  if (!list || !options || !repoEl) return;
-  options.replaceChildren();
-  if (!grants.length) {
-    DW.setHTML(list, DW.raw('<span class="text-muted">No repository ACL found. Use the editor to set repository scope.</span>'));
-    return;
-  }
-  grants.forEach(function(g) {
-    var opt = document.createElement('option');
-    opt.value = g.repo;
-    options.appendChild(opt);
-  });
-  var allowed = {};
-  grants.forEach(function(g) { allowed[g.repo.toLowerCase()] = true; });
-  if (!allowed[normalizeGitRepo(repoEl.value).toLowerCase()]) repoEl.value = grants[0].repo;
-  DW.setHTML(list, DW.html`${grants.map(function(g) {
-    return DW.html`<div><code>${g.repo}</code> <span class="badge badge-gray">${grantLabel(g)}</span></div>`;
-  })}`);
-}
-
-function gitGrantForRepo(configJSON, repo) {
-  repo = normalizeGitRepo(repo).toLowerCase();
-  return gitGrantsFromACL(configJSON).find(function(g) { return g.repo.toLowerCase() === repo; }) || null;
-}
-
-function gitGrantsFromACL(configJSON) {
-  if (!configJSON) return [];
-  var cfg;
-  try { cfg = JSON.parse(configJSON); } catch(e) { return []; }
-	if (cfg.version === '2' && cfg.provider === 'github') {
-		return Object.keys(cfg.repositories || {}).sort().map(function(repo) {
-			var p = cfg.repositories[repo] || {};
-			return {repo: repo, capabilities: p.capabilities || {}, workflow_allowlist: p.workflow_allowlist || [], ref_allowlist: p.ref_allowlist || [], environment_allowlist: p.environment_allowlist || [], pull: !!(p.capabilities || {}).clone, push: !!(p.capabilities || {}).push};
-		});
-	}
-  var byRepo = {};
-  (cfg.rules || []).forEach(function(rule) {
-    (rule.endpoints || []).forEach(function(ep) {
-      if (!ep.allow || !ep.path) return;
-      var repo = repoFromGitACLPath(ep.path);
-      if (!repo) return;
-      if (!byRepo[repo]) byRepo[repo] = {repo: repo, pull: false, push: false, capabilities: {}};
-      if (ep.path.indexOf('.git/git-upload-pack') !== -1) byRepo[repo].pull = true;
-      if (ep.path.indexOf('.git/git-receive-pack') !== -1) byRepo[repo].push = true;
-    });
-  });
-  return Object.keys(byRepo).sort(function(a,b) { return a.localeCompare(b); }).map(function(repo) { return byRepo[repo]; });
-}
-
-function grantMode(grant) {
-  return grant && grant.push ? 'dev' : 'deploy';
-}
-
-function grantLabel(grant) {
-	if (grant.capabilities && Object.keys(grant.capabilities).length) {
-		return Object.keys(grant.capabilities).filter(function(k) { return grant.capabilities[k]; }).join(', ') || 'none';
-	}
-  var parts = [];
-  if (grant.pull) parts.push('pull');
-  if (grant.push) parts.push('push');
-  return parts.length ? parts.join(' + ') : 'none';
-}
-
-function repoFromGitACLPath(path) {
-  path = (path || '').trim();
-  var suffixes = ['.git/info/refs', '.git/git-upload-pack', '.git/git-receive-pack'];
-  for (var i = 0; i < suffixes.length; i++) {
-    if (path.endsWith(suffixes[i])) return normalizeGitRepo(path.slice(0, -suffixes[i].length));
-  }
-  if (path.indexOf('/repos/') === 0) {
-    var parts = path.replace(/^\/repos\//, '').split('/');
-    if (parts.length >= 2) return normalizeGitRepo(parts[0] + '/' + parts[1]);
-  }
-  return '';
-}
-
-function gitACL(repo, mode) {
-  return gitACLForRepoGrants([{repo: repo, pull: true, push: mode === 'dev'}]);
-}
-
-function gitACLForRepos(repos, mode) {
-  return gitACLForRepoGrants(repos.map(function(repo) {
-    return {repo: repo, pull: true, push: mode === 'dev'};
-  }));
-}
-
-function gitACLForRepoGrants(grants) {
-	var repositories = {};
-  grants.forEach(function(grant) {
-		var caps = grant.capabilities || githubPresetCapabilities(grant.push ? 'developer' : 'read');
-		repositories[grant.repo] = {capabilities: caps};
-		if (grant.workflow_allowlist && grant.workflow_allowlist.length) repositories[grant.repo].workflow_allowlist = grant.workflow_allowlist;
-		if (grant.ref_allowlist && grant.ref_allowlist.length) repositories[grant.repo].ref_allowlist = grant.ref_allowlist;
-		if (grant.environment_allowlist && grant.environment_allowlist.length) repositories[grant.repo].environment_allowlist = grant.environment_allowlist;
-  });
-	return {version:'2', provider:'github', repositories:repositories};
-}
-
-function githubPresetCapabilities(preset) {
-	var c = {clone:true, push:false, issues_read:true, issues_write:false, pull_requests_read:true, pull_requests_write:false, releases_read:true, releases_write:false, actions_read:true, workflow_dispatch:false, workflow_rerun:false, workflow_cancel:false};
-	if (preset === 'developer') { c.push=true; c.issues_write=true; c.pull_requests_write=true; }
-	if (preset === 'cicd') { c.workflow_dispatch=true; c.workflow_rerun=true; c.workflow_cancel=true; }
-	return c;
-}
-
-function normalizeGitRepo(value) {
-  var repo = (value || '').trim()
-    .replace(/^https:\/\/github\.com\//, '')
-    .replace(/^\/+|\/+$/g, '');
-  repo = repo
-    .replace(/^git@github\.com:/, '')
-    .replace(/^\/+|\/+$/g, '')
-    .replace(/\.git$/, '')
-    .replace(/^\/+|\/+$/g, '');
-  return repo || 'ORG/REPO';
-}
-
-function parseGitRepoList(value) {
-  var seen = {};
-  return (value || '').split(/[\n,]+/).map(normalizeGitRepo).filter(function(repo) {
-    if (repo === 'ORG/REPO' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || seen[repo.toLowerCase()]) return false;
-    seen[repo.toLowerCase()] = true;
-    return true;
-  });
-}
-
-function genCanary(clientId, clientName, shortId) {
-  showToast('Generating canary tokens...', '');
-  fetch('/api/canary/clients/' + encodeURIComponent(clientId) + '/generate?name=' + encodeURIComponent(clientName) + '&short_id=' + encodeURIComponent(shortId), {
-    method: 'POST', credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    var count = Array.isArray(data) ? data.length : 0;
-    showToast(count + ' canary tokens generated', 'success');
-    location.reload();
-  });
-}
-
-function editPh(phId, envName, keyPath) {
-  var editSeq = ++editPhLoadSeq;
-  var ph = placeholders.find(function(p) { return p.id === phId; });
-  document.getElementById('eph-id').value = phId;
-  document.getElementById('eph-env').value = envName;
-  document.getElementById('eph-path').value = keyPath;
-  document.getElementById('eph-approval').checked = ph ? ph.requiresApproval : false;
-  document.getElementById('eph-ttl').value = ph ? ph.approvalTTL : 1440;
-  document.getElementById('eph-acl').value = '';
-  document.getElementById('eph-acl-templates').replaceChildren();
-  document.getElementById('eph-github-repo-scope').style.display = ph && ph.serviceName === 'github' ? '' : 'none';
-  document.getElementById('eph-github-repo-status').textContent = 'Repository list loads for GitHub App installation minters.';
-  document.getElementById('eph-github-repo-list').replaceChildren();
-
-  // Load current permission_config + ACL templates
-  fetch('/api/placeholders/with-approvals?', {credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(phs) {
-      if (editSeq !== editPhLoadSeq || document.getElementById('eph-id').value !== phId) return;
-      var p = phs.find(function(x) { return x.id === phId; });
-      if (!p) return;
-      document.getElementById('eph-acl').value = p.permission_config || '';
-      if (ph) ph.permissionConfig = p.permission_config || '';
-      loadEditGitHubRepos();
-      loadInheritedACL('eph-acl', 'eph-acl-preview', p.service_id, p.api_key_id || '');
-      renderACLPreview('eph-acl', 'eph-acl-preview');
-      if (p.service_id) {
-        fetch('/api/services/' + encodeURIComponent(p.service_id) + '/acl-templates', {credentials:'same-origin'})
-          .then(function(r) { return r.json(); })
-          .then(function(data) {
-            if (editSeq !== editPhLoadSeq || document.getElementById('eph-id').value !== phId) return;
-            var container = document.getElementById('eph-acl-templates');
-            var currentACL = document.getElementById('eph-acl').value;
-            (data.templates || []).forEach(function(t) {
-              var isActive = currentACL === t.config;
-              var btn = document.createElement('button');
-              btn.type = 'button';
-              btn.className = 'btn btn-sm' + (isActive ? ' btn-primary' : '');
-              btn.textContent = t.name; btn.title = t.description;
-              btn.addEventListener('click', function() {
-                document.getElementById('eph-acl').value = t.config;
-                renderACLPreview('eph-acl','eph-acl-preview');
-                container.querySelectorAll('.btn').forEach(function(b) { b.classList.remove('btn-primary'); });
-                btn.classList.add('btn-primary');
-              });
-              container.appendChild(btn);
-            });
-          });
-      }
-    });
-
-  DW.modal.open('#edit-ph-modal');
-}
-
-function loadEditGitHubRepos() {
-  var phId = document.getElementById('eph-id').value;
-  var ph = placeholders.find(function(p) { return p.id === phId; });
-  var key = ph ? apiKeys.find(function(k) { return k.id === ph.apiKeyId; }) : null;
-  var status = document.getElementById('eph-github-repo-status');
-  var list = document.getElementById('eph-github-repo-list');
-  if (!ph || ph.serviceName !== 'github') return;
-  if (!key || !key.isMintable) {
-    status.textContent = 'This GitHub token is not a GitHub App installation minter. Edit ACL JSON directly if needed.';
-    list.replaceChildren();
-    return;
-  }
-  var loadSeq = ++editGitHubRepoLoadSeq;
-  status.textContent = 'Loading repositories...';
-  list.replaceChildren();
-  fetch('/api/keys/' + encodeURIComponent(key.id) + '/github-app/repositories', {credentials:'same-origin'})
-    .then(function(r) { return r.json().then(function(j) { return {ok:r.ok, body:j}; }); })
-    .then(function(res) {
-      if (loadSeq !== editGitHubRepoLoadSeq) return;
-      if (!res.ok || res.body.error) throw new Error(res.body.error || 'failed to list repositories');
-      var repos = res.body.repositories || [];
-      if (!repos.length) {
-        status.textContent = 'No repositories returned. Check the GitHub App installation repository access.';
-        return;
-      }
-	  status.textContent = repos.length + ' repositories available. Configure capabilities and save.';
-	  DW.setHTML(list, repoGrantTableHTML(repos, document.getElementById('eph-acl').value || '', res.body.installation_permissions || {}));
-    })
-    .catch(function(err) {
-      if (loadSeq !== editGitHubRepoLoadSeq) return;
-      status.textContent = 'Could not load repositories: ' + err.message + '. Reload or check the GitHub App installation.';
-    });
-}
-
-document.getElementById('edit-ph-form').addEventListener('submit', function(e) {
-  e.preventDefault();
-  var id = document.getElementById('eph-id').value;
-  var ph = placeholders.find(function(p) { return p.id === id; });
-  if (ph && ph.serviceName === 'github' && document.getElementById('eph-github-repo-list').childElementCount > 0) {
-    var grants = selectedGitHubRepoGrants('#eph-github-repo-list');
-    if (!grants.length) {
-	  showToast('Enable at least one repository', 'error');
-      return;
-    }
-    document.getElementById('eph-acl').value = JSON.stringify(gitACLForRepoGrants(grants));
-  }
-  var acl = document.getElementById('eph-acl').value.trim();
-  if (acl) { try { JSON.parse(acl); } catch(e) { showToast('Invalid ACL JSON: ' + e.message, 'error'); return; } }
-  var body = {
-    env_name: document.getElementById('eph-env').value,
-    key_path: document.getElementById('eph-path').value,
-    requires_approval: document.getElementById('eph-approval').checked,
-    approval_ttl_minutes: parseInt(document.getElementById('eph-ttl').value) || 0,
-    permission_config: acl
-  };
-
-  fetch('/api/placeholders/' + encodeURIComponent(id), {
-    method: 'PUT',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('Phantom token updated', 'success');
-    location.reload();
-  });
-});
-
-function editPhTTL(phId, requiresApproval, ttlMinutes) {
-  var newTTL = prompt(
-    'Approval TTL (minutes):\n' +
-    '  60 = 1 hour\n' +
-    '  1440 = 1 day\n' +
-    '  10080 = 1 week\n' +
-    '  0 = no approval required\n\n' +
-    'Current: ' + ttlMinutes + ' minutes',
-    ttlMinutes
-  );
-  if (newTTL === null) return;
-  newTTL = parseInt(newTTL);
-  if (isNaN(newTTL) || newTTL < 0) { showToast('Invalid value', 'error'); return; }
-
-  var needsApproval = newTTL > 0;
-  fetch('/api/placeholders/' + encodeURIComponent(phId), {
-    method: 'PUT',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({requires_approval: needsApproval, approval_ttl_minutes: newTTL}),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('TTL updated: ' + (needsApproval ? newTTL + ' minutes' : 'no approval'), 'success');
-    location.reload();
-  });
-}
-
-function toggleCanary(clientId, enable) {
-  fetch('/api/clients/' + encodeURIComponent(clientId) + '/canary', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({enabled: enable}),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('Canary tokens ' + (enable ? 'enabled' : 'disabled'), 'success');
-    location.reload();
-  });
-}
-
-function onAssignBindTypeChange() {
-  ++assignGitHubRepoLoadSeq;
-  var t = document.querySelector('input[name="assign-bind-type"]:checked').value;
-  var keyRow = document.getElementById('assign-key-row');
-  var grpRow = document.getElementById('assign-group-row');
-  document.getElementById('assign-preview').style.display = 'none';
-  document.getElementById('assign-github-repo-scope').style.display = 'none';
-  if (t === 'group') {
-    keyRow.style.display = 'none';
-    grpRow.style.display = '';
-  } else {
-    keyRow.style.display = '';
-    grpRow.style.display = 'none';
-  }
-}
-
-function selectedAssignKey() {
-  var sel = document.getElementById('assign-key-select');
-  if (!sel || sel.selectedIndex < 0) return null;
-  var opt = sel.options[sel.selectedIndex];
-  if (!opt || !opt.value) return null;
-  return {
-    id: opt.value,
-    serviceName: opt.dataset.serviceName || '',
-    isMintable: opt.dataset.isMintable === 'true'
-  };
-}
-
-function updateAssignGitHubRepoScope() {
-  var key = selectedAssignKey();
-  var clientId = document.getElementById('assign-client-id').value;
-  var wrap = document.getElementById('assign-github-repo-scope');
-  if (!key || key.serviceName !== 'github' || !key.isMintable) {
-    ++assignGitHubRepoLoadSeq;
-    wrap.style.display = 'none';
-    return;
-  }
-  wrap.style.display = '';
-  var existing = existingMintableAssignment(clientId, key.id);
-  if (existing) {
-	document.getElementById('assign-github-repo-status').textContent = 'Current scope loaded below. Adjust capabilities and assign again to overwrite.';
-  }
-  loadAssignGitHubRepos();
-}
-
-function loadAssignGitHubRepos() {
-  var key = selectedAssignKey();
-  var status = document.getElementById('assign-github-repo-status');
-  var list = document.getElementById('assign-github-repo-list');
-  if (!key || key.serviceName !== 'github' || !key.isMintable) return;
-  var loadSeq = ++assignGitHubRepoLoadSeq;
-  var keyID = key.id;
-  status.textContent = 'Loading repositories...';
-  list.replaceChildren();
-  fetch('/api/keys/' + encodeURIComponent(key.id) + '/github-app/repositories', {credentials:'same-origin'})
-    .then(function(r) { return r.json().then(function(j) { return {ok:r.ok, body:j}; }); })
-    .then(function(res) {
-      var currentKey = selectedAssignKey();
-      if (loadSeq !== assignGitHubRepoLoadSeq || !currentKey || currentKey.id !== keyID) return;
-      if (!res.ok || res.body.error) throw new Error(res.body.error || 'failed to list repositories');
-      var repos = res.body.repositories || [];
-      if (!repos.length) {
-        status.textContent = 'No repositories returned. Check the GitHub App installation repository access.';
-        return;
-      }
-      status.textContent = repos.length + ' repositories available. Select one or more.';
-      var existing = existingMintableAssignment(document.getElementById('assign-client-id').value, keyID);
-	  DW.setHTML(list, repoGrantTableHTML(repos, existing ? existing.permissionConfig : '', res.body.installation_permissions || {}));
-    })
-    .catch(function(err) {
-      var currentKey = selectedAssignKey();
-      if (loadSeq !== assignGitHubRepoLoadSeq || !currentKey || currentKey.id !== keyID) return;
-      status.textContent = 'Could not load repositories: ' + err.message + '. Reload or check the GitHub App installation.';
-    });
-}
-
-function selectedAssignGitHubRepoGrants() {
-  return selectedGitHubRepoGrants('#assign-github-repo-list');
-}
-
-function selectedGitHubRepoGrants(scopeSelector) {
-  var grants = [];
-  document.querySelectorAll(scopeSelector + ' .assign-github-repo-row').forEach(function(row) {
-		if (!row.querySelector('.assign-github-repo-enabled').checked) return;
-		var capabilities = {};
-		row.querySelectorAll('[data-capability]').forEach(function(input) { capabilities[input.dataset.capability] = input.checked; });
-    grants.push({
-      repo: row.dataset.repo,
-			capabilities: capabilities,
-			workflow_allowlist: parsePolicyList(row.querySelector('.github-workflows').value),
-			ref_allowlist: parsePolicyList(row.querySelector('.github-refs').value),
-			environment_allowlist: parsePolicyList(row.querySelector('.github-environments').value)
-    });
-  });
-	return grants.sort(function(a,b) { return a.repo.localeCompare(b.repo); });
-}
-
-function parsePolicyList(value) {
-	return (value || '').split(/[\n,]+/).map(function(v) { return v.trim(); }).filter(Boolean);
-}
-
-function repoGrantTableHTML(repos, configJSON, installationPermissions) {
-  var existingRepos = {};
-  gitGrantsFromACL(configJSON || '').forEach(function(g) {
-    existingRepos[g.repo.toLowerCase()] = g;
-  });
-	var capabilityLabels = {clone:'Clone',push:'Push',issues_read:'Issues read',issues_write:'Issues write',pull_requests_read:'PR read',pull_requests_write:'PR write',releases_read:'Releases read',releases_write:'Releases write',actions_read:'Actions read',workflow_dispatch:'Dispatch',workflow_rerun:'Rerun',workflow_cancel:'Cancel'};
-	installationPermissions = installationPermissions || {};
-  var anyAvailable = githubAnyCapabilityAvailable(installationPermissions);
-  return DW.html`<div class="repo-grant-table">${repos.map(function(repo) {
-      var name = repo.full_name || '';
-      var grant = existingRepos[name.toLowerCase()];
-			var caps = grant ? (grant.capabilities && Object.keys(grant.capabilities).length ? grant.capabilities : githubPresetCapabilities(grant.push ? 'developer' : 'read')) : {};
-			var enabled = !!grant;
-			var checks = Object.keys(capabilityLabels).map(function(cap) {
-				var requirement=githubCapabilityRequirement(cap), available=githubPermissionAllows(installationPermissions, requirement.scope, requirement.level);
-				var reason=available ? '' : 'GitHub App installation permission is insufficient: requires ' + requirement.scope + ':' + requirement.level + '.';
-				return DW.html`<label class="text-sm" ${reason ? DW.html`title="${reason}"` : ''}><input type="checkbox" data-capability="${cap}" ${caps[cap] ? DW.raw('checked') : ''} ${available ? '' : DW.raw('disabled')} data-on-change="onGitHubGrantToggle"> ${capabilityLabels[cap]}</label>`;
-			});
-      return DW.html`<div class="assign-github-repo-row repo-grant-row" data-repo="${name}"><div class="repo-grant-name"><span class="mono text-sm" title="${name}">${name}</span>${repo.private ? DW.raw('<span class="badge badge-gray">private</span>') : ''}<label class="text-sm"><input type="checkbox" class="assign-github-repo-enabled" ${enabled ? DW.raw('checked') : ''} ${anyAvailable ? '' : DW.raw('disabled title="GitHub App installation does not grant any supported repository permission."')}> Enable</label></div><div class="repo-grant-controls"><span class="repo-grant-section-label">Capabilities</span><div class="repo-capability-grid">${checks}</div><div class="repo-policy-lists"><input class="github-workflows" aria-label="Allowed workflows" placeholder="Allowed workflows: ci.yml" value="${(grant && grant.workflow_allowlist || []).join(', ')}"><input class="github-refs" aria-label="Allowed refs" placeholder="Allowed refs: main, release/*" value="${(grant && grant.ref_allowlist || []).join(', ')}"><input class="github-environments" aria-label="Allowed environments" placeholder="Allowed environments: staging" value="${(grant && grant.environment_allowlist || []).join(', ')}"></div></div></div>`;
-    })}</div>`;
-}
-
-function githubCapabilityRequirement(capability) {
-	if (capability.indexOf('issues_') === 0) return {scope:'issues',level:capability.endsWith('_write') ? 'write' : 'read'};
-	if (capability.indexOf('pull_requests_') === 0) return {scope:'pull_requests',level:capability.endsWith('_write') ? 'write' : 'read'};
-	if (capability.indexOf('actions_') === 0 || capability.indexOf('workflow_') === 0) return {scope:'actions',level:capability === 'actions_read' ? 'read' : 'write'};
-	return {scope:'contents',level:(capability === 'push' || capability === 'releases_write') ? 'write' : 'read'};
-}
-
-function githubPermissionAllows(permissions, scope, requiredLevel) {
-	var actual=(permissions[scope] || '').toLowerCase();
-	return actual === 'write' || (requiredLevel === 'read' && actual === 'read');
-}
-
-function githubAnyCapabilityAvailable(permissions) {
-	return ['contents','issues','pull_requests','actions'].some(function(scope) { return githubPermissionAllows(permissions, scope, 'read'); });
-}
-
-function onGitHubGrantToggle(input) {
-  var row = input.closest('.assign-github-repo-row');
-  if (!row) return;
-	row.querySelector('.assign-github-repo-enabled').checked = true;
-	var cap = input.dataset.capability;
-	function set(name, value) { var el=row.querySelector('[data-capability="'+name+'"]'); if (el && !(el.disabled && !value)) el.checked=value; }
-	if (input.checked && cap === 'push') set('clone', true);
-	if (input.checked && cap && cap.indexOf('_write') > 0) set(cap.replace('_write','_read'), true);
-	if (input.checked && ['workflow_dispatch','workflow_rerun','workflow_cancel'].indexOf(cap) >= 0) set('actions_read', true);
-	if (!input.checked && cap === 'clone') set('push', false);
-	if (!input.checked && cap && cap.indexOf('_read') > 0) set(cap.replace('_read','_write'), false);
-	if (!input.checked && cap === 'actions_read') { set('workflow_dispatch',false); set('workflow_rerun',false); set('workflow_cancel',false); }
-}
-
-function buildAssignPreview(svcName) {
-  document.getElementById('assign-svc-name').textContent = svcName;
-  document.getElementById('assign-env-name').textContent = svcEnvMap[svcName] || svcName.toUpperCase() + '_API_KEY';
-  document.getElementById('assign-preview').style.display = 'block';
-}
-
-function existingMintableAssignment(clientId, apiKeyId) {
-  return placeholders.find(function(ph) {
-    return ph.clientId === clientId && ph.apiKeyId === apiKeyId && ph.serviceName === 'github';
-  }) || null;
-}
-
-function summarizeGitGrants(configJSON) {
-  var grants = gitGrantsFromACL(configJSON);
-  if (!grants.length) return '(no repository scope)';
-  return grants.map(function(g) { return g.repo + ' [' + grantLabel(g) + ']'; }).join(', ');
-}
-
-function openAssignModal(clientId, clientName) {
-  ++assignGitHubRepoLoadSeq;
-  document.getElementById('assign-client-id').value = clientId;
-  document.getElementById('assign-client-name').textContent = clientName;
-  document.getElementById('assign-preview').style.display = 'none';
-  document.getElementById('assign-github-repo-scope').style.display = 'none';
-  document.getElementById('assign-github-repo-status').textContent = 'Select a GitHub App installation minter key.';
-  document.getElementById('assign-github-repo-list').replaceChildren();
-
-  // Reset radio to "key"
-  document.querySelectorAll('input[name="assign-bind-type"]').forEach(function(r) {
-    r.checked = (r.value === 'key');
-  });
-  onAssignBindTypeChange();
-
-  // Populate API key dropdown
-  var keySel = document.getElementById('assign-key-select');
-  keySel.replaceChildren();
-  var keyPlaceholder = document.createElement('option');
-  keyPlaceholder.value = '';
-  keyPlaceholder.textContent = 'Select an API key...';
-  keySel.appendChild(keyPlaceholder);
-  apiKeys.forEach(function(k) {
-    var opt = document.createElement('option');
-    opt.value = k.id;
-    var badges = [];
-    if (k.isRefreshable) badges.push('Refreshable');
-    if (k.isMintable) badges.push('Mintable');
-    opt.textContent = k.name + ' (' + k.serviceName + ')' + (badges.length ? ' - ' + badges.join(', ') : '');
-    opt.dataset.serviceId = k.serviceId;
-    opt.dataset.serviceName = k.serviceName;
-    opt.dataset.isRefreshable = k.isRefreshable ? 'true' : 'false';
-    opt.dataset.isMintable = k.isMintable ? 'true' : 'false';
-    keySel.appendChild(opt);
-  });
-  // Populate Key Group dropdown
-  var grpSel = document.getElementById('assign-group-select');
-  grpSel.replaceChildren();
-  var grpPlaceholder = document.createElement('option');
-  grpPlaceholder.value = '';
-  grpPlaceholder.textContent = 'Select a key group...';
-  grpSel.appendChild(grpPlaceholder);
-  keyGroups.forEach(function(g) {
-    var opt = document.createElement('option');
-    opt.value = g.id;
-    opt.textContent = g.name + ' (' + g.serviceName + ', ' + g.strategy + ', ' + g.memberCount + ' members)';
-    opt.dataset.serviceId = g.serviceId;
-    opt.dataset.serviceName = g.serviceName;
-    grpSel.appendChild(opt);
-  });
-  DW.modal.open('#assign-modal');
-}
-
-function submitAssign() {
-  var clientId = document.getElementById('assign-client-id').value;
-  var bindType = document.querySelector('input[name="assign-bind-type"]:checked').value;
-  var sel = document.getElementById(bindType === 'group' ? 'assign-group-select' : 'assign-key-select');
-  var opt = sel.options[sel.selectedIndex];
-  if (!opt || !opt.value) {
-    showToast(bindType === 'group' ? 'Select a key group' : 'Select an API key', 'error');
-    return;
-  }
-
-  var body = {
-    service_id: opt.dataset.serviceId,
-    client_id: clientId,
-    requires_approval: document.getElementById('assign-approval').checked
-  };
-  if (bindType === 'group') body.group_id = opt.value;
-  else {
-    body.api_key_id = opt.value;
-    if (opt.dataset.serviceName === 'github' && opt.dataset.isMintable === 'true') {
-      var grants = selectedAssignGitHubRepoGrants();
-      if (!grants.length) {
-		showToast('Enable at least one repository', 'error');
-        return;
-      }
-      body.permission_config = JSON.stringify(gitACLForRepoGrants(grants));
-      var existing = existingMintableAssignment(clientId, opt.value);
-      if (existing && !confirm('This GitHub mintable token is already assigned to this client. Reassigning will overwrite its repository authorization.\n\nCurrent: ' + summarizeGitGrants(existing.permissionConfig) + '\nNew: ' + summarizeGitGrants(body.permission_config) + '\n\nOverwrite existing assignment?')) {
-        return;
-      }
-    }
-  }
-
-  fetch('/api/placeholders', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    DW.modal.close('#assign-modal');
-    showToast('Phantom token saved: ' + data.env_name, 'success');
-    location.reload();
-  });
-}
-
-function deletePh(id) {
-  if (!confirm('Unassign this phantom token from the client? The API key / refreshable token will not be deleted.')) return;
-  fetch('/api/placeholders/' + encodeURIComponent(id), {method:'DELETE',credentials:'same-origin'})
-    .then(function(r) {
-      return r.text().then(function(text) {
-        var data = {};
-        if (text) {
-          try { data = JSON.parse(text); } catch(e) {}
-        }
-        if (!r.ok || data.error) {
-          throw new Error(data.error || 'failed to unassign phantom token');
-        }
-      });
-    })
-    .then(function() {
-      showToast('Phantom token unassigned', 'success');
-      location.reload();
-    })
-    .catch(function(err) {
-      showToast(err.message, 'error');
-    });
-}
-
-// Register client
-document.getElementById('add-client-form').addEventListener('submit', function(e) {
-  e.preventDefault();
-  var name = document.getElementById('client-name').value.trim();
-  if (!name) return;
-  fetch('/api/clients', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name}),credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.error) { showToast(data.error, 'error'); return; }
-	  DW.modal.close('#add-modal');
-	  showClientToken(data, false);
-    });
-});
-
-function shellQuote(value) {
-	return "'" + String(value).replace(/'/g, "'\\''") + "'";
-}
-
-function showClientToken(data, rotated) {
-	document.getElementById('token-modal-title').textContent = rotated ? 'Client Token Rotated' : 'Client Registered';
-	document.getElementById('token-modal-notice').textContent = rotated
-		? 'The previous token has been revoked. Reconfigure the Duckway client with this one-time token.'
-		: 'Save this token - it will only be shown once.';
-	document.getElementById('token-value').value = data.token;
-	if (!gatewayURLValid) {
-		var warn = '# Set Gateway URL in Settings first - current admin URL does not serve /install.sh\n# https://github.com/anthropics/duckway#split-mode-setup';
-		document.getElementById('init-cmd').textContent = warn;
-		document.getElementById('full-setup-cmd').textContent = warn;
-	} else {
-		var initCmd = "printf '%s\\n' " + [gatewayURL, data.name, '1', data.token].map(shellQuote).join(' ') + ' | duckway init';
-		document.getElementById('init-cmd').textContent = initCmd;
-		document.getElementById('full-setup-cmd').textContent = 'curl -fsSL ' + shellQuote(gatewayURL + '/install.sh') + ' | sh && ' + initCmd;
-	}
-	DW.modal.open('#token-modal');
-}
-
-// Smart search init (after DOM + data loaded)
-setTimeout(function() {
+/* ---------- boot ---------- */
+readURL();
+if (window.initSmartSearch) {
   initSmartSearch({
-    inputId: 'search-clients',
-    targetId: 'client-cards-container',
-    type: 'cards',
-    countId: 'count-clients',
+    inputId: 'search-clients', targetId: 'cl-search-shadow', type: 'cards',
     filters: [
-      {key: 'name', label: 'Client name', values: function() {
-        return Array.from(document.querySelectorAll('[id^="client-card-"] strong')).map(function(e){return e.textContent}).filter(function(v,i,a){return a.indexOf(v)===i});
-      }},
-      {key: 'service', label: 'Service name', values: function() {
-        var s = new Set(); placeholders.forEach(function(p){s.add(p.serviceName)}); return Array.from(s);
-      }},
-      {key: 'key', label: 'Env name', values: function() {
-        var s = new Set(); placeholders.forEach(function(p){s.add(p.envName)}); return Array.from(s);
-      }},
-      {key: 'canary', label: 'Canary on/off', values: ['on','off']},
-      {key: 'status', label: 'Active/Inactive', values: ['Active','Inactive']},
+      {key: 'name', label: 'Client name', values: function() { return D.clients.map(function(c) { return c.name; }); }},
+      {key: 'service', label: 'Service name', values: function() { var s = {}; D.placeholders.forEach(function(p) { if (p.service_name) s[p.service_name] = 1; }); return Object.keys(s); }},
+      {key: 'key', label: 'Env name', values: function() { var s = {}; D.placeholders.forEach(function(p) { if (p.env_name) s[p.env_name] = 1; }); return Object.keys(s); }},
+      {key: 'canary', label: 'Canary on/off', values: ['on', 'off']},
+      {key: 'status', label: 'Active/Inactive/Online/Offline/Disabled', values: ['Active', 'Inactive', 'Online', 'Offline', 'Disabled']}
     ]
   });
-}, 500);
-
-function copyInstallCmd() {
-  copyToClipboard(document.getElementById('install-cmd').textContent);
-  showToast('Install command copied', 'success');
 }
-
-function copyToClipboard(text) {
-  var ta = document.createElement('textarea');
-  ta.value = text;
-  ta.style.position = 'fixed';
-  ta.style.left = '-9999px';
-  document.body.appendChild(ta);
-  ta.select();
-  document.execCommand('copy');
-  document.body.removeChild(ta);
-}
-function copyToken() {
-  copyToClipboard(document.getElementById('token-value').value);
-  showToast('Token copied', 'success');
-}
-function copyCmd() {
-  copyToClipboard(document.getElementById('init-cmd').textContent);
-  showToast('Command copied', 'success');
-}
-function copyFullSetup() {
-  copyToClipboard(document.getElementById('full-setup-cmd').textContent);
-  showToast('Full setup command copied', 'success');
-}
-function dismissToken() {
-  DW.modal.close('#token-modal');
-  location.reload();
-}
+load();
+DW.live.on('rollouts', function() { load(); }, {defer: true});
 </script>
 {{end}}
