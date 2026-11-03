@@ -165,6 +165,13 @@ function parseTime(s) {
   var t = Date.parse(String(s).replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? '' : 'Z'));
   return t;
 }
+// The token's approval time limit (its approval_ttl_minutes; 24 hours by default).
+function fmtTTL(m) {
+  m = parseInt(m, 10) || 1440;
+  if (m % 1440 === 0) { var d = m / 1440; return d + (d === 1 ? ' day' : ' days'); }
+  if (m % 60 === 0) { var h = m / 60; return h + (h === 1 ? ' hour' : ' hours'); }
+  return m + (m === 1 ? ' minute' : ' minutes');
+}
 function expiryOf(a) { return parseTime(a.created_at) + ttlMinutes * 60000; }
 function fmtCountdown(ms) {
   if (ms <= 0) return 'Expired';
@@ -250,7 +257,7 @@ function renderDetail(a) {
   var info = infoOf(a);
   var open = a.status === 'pending';
   var dash = DW.raw('<span class="text-muted">—</span>');
-  var actions = open ? DW.html`<div class="appr-actions"><button type="button" class="btn btn-primary appr-act" data-action="approveOne" data-id="${a.id}">Approve <kbd class="appr-kbd">A</kbd></button><button type="button" class="btn btn-danger appr-act" data-action="rejectOne" data-id="${a.id}">Reject <kbd class="appr-kbd">R</kbd></button><span class="text-muted text-sm appr-help">${info.rule ? 'Approving allows that exact request (method, path, query and body) for 24 hours, until it expires.' : 'Approving allows this token\'s requests for 24 hours, until it expires.'}</span></div>` : DW.raw('');
+  var actions = open ? DW.html`<div class="appr-actions"><button type="button" class="btn btn-primary appr-act" data-action="approveOne" data-id="${a.id}">Approve <kbd class="appr-kbd">A</kbd></button><button type="button" class="btn btn-danger appr-act" data-action="rejectOne" data-id="${a.id}">Reject <kbd class="appr-kbd">R</kbd></button><span class="text-muted text-sm appr-help">${info.rule ? 'Approving allows that exact request (method, path, query and body) for ' + fmtTTL(a.approval_ttl_minutes) + ', until it expires.' : 'Approving allows this token\'s requests for ' + fmtTTL(a.approval_ttl_minutes) + ', until it expires.'}</span></div>` : DW.raw('');
   var bar = open ? DW.html`<div class="appr-bar"><button type="button" class="btn btn-danger appr-act" data-action="rejectOne" data-id="${a.id}">Reject</button><button type="button" class="btn btn-primary appr-act" data-action="approveOne" data-id="${a.id}">Approve</button></div>` : DW.raw('');
   var seen = a.client_last_seen_at ? DW.html`last seen ${fmtAgo(parseTime(a.client_last_seen_at))}` : DW.raw('never seen');
   var ver = a.client_version ? a.client_version : DW.raw('<span class="text-muted">version not reported</span>');

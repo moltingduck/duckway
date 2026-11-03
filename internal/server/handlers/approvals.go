@@ -93,11 +93,11 @@ func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		DurationMinutes int `json:"duration_minutes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Default to 24 hours
-		req.DurationMinutes = 1440
+		req.DurationMinutes = 0
 	}
 	if req.DurationMinutes <= 0 {
-		req.DurationMinutes = 1440
+		// No explicit duration: the token's approval time limit (24 hours by default).
+		req.DurationMinutes = h.approvals.PlaceholderApprovalMinutes(existing.PlaceholderID)
 	}
 
 	if err := h.approvals.Approve(id, queries.ApprovalExpiry(time.Duration(queries.ClampApprovalMinutes(req.DurationMinutes))*time.Minute)); err != nil {

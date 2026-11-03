@@ -397,7 +397,11 @@ func (h *AdminHandler) NotificationsPage(w http.ResponseWriter, r *http.Request)
 
 func (h *AdminHandler) ApproveAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := h.approvals.Approve(id, queries.ApprovalExpiry(24*time.Hour)); err != nil {
+	minutes := queries.DefaultApprovalMinutes
+	if a, err := h.approvals.GetByID(id); err == nil {
+		minutes = h.approvals.PlaceholderApprovalMinutes(a.PlaceholderID)
+	}
+	if err := h.approvals.Approve(id, queries.ApprovalExpiry(time.Duration(queries.ClampApprovalMinutes(minutes))*time.Minute)); err != nil {
 		log.Printf("approve %s: %v", id, err)
 	}
 	http.Redirect(w, r, "/admin/approvals", http.StatusSeeOther)

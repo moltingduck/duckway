@@ -39,10 +39,10 @@ func TestUsageRangeNoteStaysMountedAndEscapeClosesCustom(t *testing.T) {
 
 func TestApprovalsCopyIsAGrantNotOneShot(t *testing.T) {
 	html := readWeb(t, "templates/approvals.html")
-	if strings.Contains(html, "Next request asks again") || strings.Contains(html, "this one request only") {
+	if strings.Contains(html, "Next request asks again") || strings.Contains(html, "this one request only") || strings.Contains(html, "for 24 hours") {
 		t.Error("an approval is a grant until it expires, not a single request")
 	}
-	for _, want := range []string{"that exact request (method, path, query and body)", "this token"} {
+	for _, want := range []string{"that exact request (method, path, query and body)", "this token", "fmtTTL(a.approval_ttl_minutes)", "approval_ttl_minutes; 24 hours by default"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("approvals copy missing %q", want)
 		}

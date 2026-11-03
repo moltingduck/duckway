@@ -156,6 +156,22 @@ func ClampApprovalMinutes(n int) int {
 	return n
 }
 
+// DefaultApprovalMinutes is the lifetime of an approval when neither the
+// request nor the phantom token specifies one (24 hours).
+const DefaultApprovalMinutes = 1440
+
+// PlaceholderApprovalMinutes returns the phantom token's configured approval
+// lifetime (approval_ttl_minutes), or DefaultApprovalMinutes when it is unset or
+// the token cannot be read. This is the lifetime an approval gets when the
+// approver does not choose one.
+func (q *ApprovalQueries) PlaceholderApprovalMinutes(placeholderID string) int {
+	var n int
+	if err := q.db.QueryRow(`SELECT approval_ttl_minutes FROM placeholder_keys WHERE id = ?`, placeholderID).Scan(&n); err != nil || n <= 0 {
+		return DefaultApprovalMinutes
+	}
+	return n
+}
+
 // ApprovalExpiry returns the UTC expiry timestamp string for an approval
 // granted now that lasts d. Computed in Go so it is portable across SQLite and
 // PostgreSQL.
@@ -227,6 +243,9 @@ type ApprovalListItem struct {
 	RequiresApproval bool    `json:"requires_approval"` // phantom token flag that caused the hold
 	ClientLastSeenAt *string `json:"client_last_seen_at"`
 	ClientVersion    string  `json:"client_version"` // "" when the client never reported one
+	// ApprovalTTLMinutes is how long an approval granted from the console lasts
+	// (the token's approval_ttl_minutes).
+	ApprovalTTLMinutes int `json:"approval_ttl_minutes"`
 }
 
 // ListEnriched returns approvals filtered by status (any of the given values)
@@ -243,7 +262,7 @@ func (q *ApprovalQueries) ListEnrichedFiltered(statuses []string, clientID, serv
 	          p.client_id, COALESCE(c.name, ''),
 	          p.service_id, COALESCE(s.name, ''),
 	          a.status, a.request_info, a.created_at, a.approved_at, a.expires_at,
-	          COALESCE(k.name, g.name, ''), p.requires_approval, c.last_seen_at, COALESCE(rs.version, '')
+	          COALESCE(k.name, g.name, ''), p.requires_approval, c.last_seen_at, COALESCE(rs.version, ''), p.approval_ttl_minutes
 	          FROM approvals a
 	          JOIN placeholder_keys p ON a.placeholder_id = p.id
 	          LEFT JOIN clients c ON p.client_id = c.id
@@ -295,7 +314,7 @@ func (q *ApprovalQueries) ListEnrichedFiltered(statuses []string, clientID, serv
 		if err := rows.Scan(&a.ID, &a.PlaceholderID, &a.EnvName,
 			&a.ClientID, &a.ClientName, &a.ServiceID, &a.ServiceName,
 			&a.Status, &a.RequestInfo, &a.CreatedAt, &a.ApprovedAt, &a.ExpiresAt,
-			&a.CredentialName, &requires, &a.ClientLastSeenAt, &a.ClientVersion); err != nil {
+			&a.CredentialName, &requires, &a.ClientLastSeenAt, &a.ClientVersion, &a.ApprovalTTLMinutes); err != nil {
 			return nil, err
 		}
 		a.RequiresApproval = requires != 0
