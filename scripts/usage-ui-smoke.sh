@@ -53,6 +53,6 @@ grep -q 'LLM Tokens (90d)' <<<"$CREDENTIALS_PAGE"
 grep -q 'View usage details' <<<"$CREDENTIALS_PAGE"
 grep -q 'Model Pricing' <<<"$SERVICES_PAGE"
 grep -q 'key_group_id' <<<"$USAGE_PAGE"
-grep -q 'usage-heatmap' <<<"$USAGE_PAGE"
+grep -q "us-heat" <<<"$USAGE_PAGE"
 
 echo "usage UI smoke test passed"

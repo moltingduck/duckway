@@ -14,12 +14,19 @@ func TestUsageTemplateUsesMeteredDetailContract(t *testing.T) {
 	for _, want := range []string{
 		"/api/usage/detail?",
 		"key_group_id",
-		"data-days=\"90\"",
-		"usage-heatmap",
+		"us-heat",
+		"range=",
+		"role=\"tablist\"",
+		"Refreshable",
 		"unpriced_requests",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("usage template missing %q", want)
+		}
+	}
+	for _, bad := range []string{"<style", " style=", ">OAuth<", "innerHTML", "alert(", "confirm("} {
+		if strings.Contains(page, bad) {
+			t.Errorf("usage template must not contain %q", bad)
 		}
 	}
 	if strings.Contains(page, "?group_id=") {

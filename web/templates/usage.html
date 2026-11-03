@@ -1,610 +1,611 @@
 {{define "content"}}
-<style>
-.usage-tabs { display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:1rem; }
-.usage-tab { border:1px solid var(--border); background:var(--bg-input); color:var(--text-muted); border-radius:var(--radius); padding:.45rem .75rem; cursor:pointer; font-size:.8125rem; }
-.usage-tab.active { color:var(--text); border-color:var(--accent); background:color-mix(in srgb, var(--accent) 14%, transparent); }
-.usage-toolbar { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin-bottom:1rem; }
-.usage-toolbar select { width:auto; min-width:9rem; }
-.usage-toolbar input { max-width:18rem; }
-.usage-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:.75rem; margin-bottom:1rem; }
-.usage-summary .stat-card { padding:.85rem 1rem; }
-.usage-summary .value { font-size:1.25rem; }
-.usage-section { display:none; }
-.usage-section.active { display:block; }
-.usage-table-wrap { overflow-x:auto; }
-.usage-expand-row { background:color-mix(in srgb, var(--ink) 3%, transparent); }
-.usage-progress { width:110px; height:7px; border-radius:4px; background:var(--raised); overflow:hidden; display:inline-block; vertical-align:middle; margin-right:.4rem; }
-.usage-progress > span { display:block; height:100%; border-radius:4px; }
-.usage-status { white-space:nowrap; }
-.usage-key-table { margin:.5rem 0 .75rem 2rem; width:calc(100% - 2rem); }
-.usage-toggle { background:none; border:0; padding:0; font:inherit; color:inherit; cursor:pointer; text-align:left; display:inline-flex; align-items:center; }
-.usage-caret { display:inline-block; width:1rem; color:var(--text-muted); }
-.usage-detail-toolbar { display:grid; grid-template-columns:minmax(220px,1fr) auto; gap:.75rem; align-items:end; margin-bottom:1rem; }
-.usage-detail-toolbar .form-group { margin:0; }
-.usage-range, .usage-heatmap-toggle { display:flex; flex-wrap:wrap; gap:.25rem; }
-.usage-range button, .usage-heatmap-toggle button { min-height:2.25rem; }
-.usage-range button.active, .usage-heatmap-toggle button.active { border-color:var(--accent); color:var(--text); background:color-mix(in srgb, var(--accent) 14%, transparent); }
-.usage-detail-state { padding:1rem 0; color:var(--text-muted); }
-.usage-client-picker { display:flex; flex-wrap:wrap; gap:.5rem 1rem; margin:.25rem 0 1rem; }
-.usage-client-picker label { display:inline-flex; align-items:center; gap:.4rem; font-size:.8125rem; cursor:pointer; }
-.usage-client-picker input { width:auto; margin:0; }
-.usage-model-layout { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(280px,.8fr); gap:1rem; align-items:start; }
-.usage-detail h3 { font-size:1rem; margin:.25rem 0 .65rem; }
-.usage-heatmap-head { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:.75rem; margin-bottom:.65rem; }
-.usage-heatmap { display:grid; grid-template-rows:repeat(7,12px); grid-auto-flow:column; grid-auto-columns:12px; gap:3px; max-width:100%; overflow-x:auto; padding:2px 0 .45rem; }
-.usage-heatmap-cell { width:12px; height:12px; border:0; border-radius:2px; background:var(--border); padding:0; }
-.usage-heatmap-cell:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
-.usage-heatmap-legend { display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:4px; font-size:.75rem; color:var(--text-muted); }
-.usage-heatmap-legend span:not(:first-child) { width:12px; height:12px; border-radius:2px; }
-@media (max-width:800px) {
-  .usage-detail-toolbar, .usage-model-layout { grid-template-columns:1fr; }
-  .usage-detail-toolbar > div:last-child { justify-self:start; }
-  .usage-key-table { margin-left:0; width:100%; }
-}
-</style>
-
-<div class="page-header">
-  <h1>Usage</h1>
-  <button class="btn" data-action="refreshActive">Refresh</button>
-</div>
-
-<div class="usage-tabs">
-  <button class="usage-tab active" id="tab-clients" data-action="showUsageTab" data-tab="clients">Clients</button>
-  <button class="usage-tab" id="tab-keys" data-action="showUsageTab" data-tab="keys">Keys</button>
-  <button class="usage-tab" id="tab-sessions" data-action="showUsageTab" data-tab="sessions">Sessions</button>
-</div>
-
-<div class="card usage-section active" id="usage-clients">
-  <div class="usage-toolbar">
-    <label class="text-sm text-muted">Window</label>
-    <select id="client-window" data-on-change="reloadClientsAndUsage">
-      <option value="3" selected>Last 3 days</option>
-      <option value="7">Last 7 days</option>
-      <option value="30">Last month</option>
-    </select>
-    <input type="text" id="client-search" placeholder="Search client" data-on-input="renderClients">
+<div class="page-header cl-header">
+  <div>
+    <h1>Usage</h1>
+    <p class="cl-sub">Token and request volume captured through Duckway, per client, key and agent session.</p>
   </div>
-
-  <div class="usage-summary">
-    <div class="stat-card"><div class="label">Clients</div><div class="value" id="sum-clients">0</div></div>
-    <div class="stat-card"><div class="label">Tokens</div><div class="value" id="sum-tokens">0</div></div>
-    <div class="stat-card"><div class="label">Requests</div><div class="value" id="sum-requests">0</div></div>
-    <div class="stat-card"><div class="label">Shared Key Pressure</div><div class="value" id="sum-pressure">—</div></div>
-  </div>
-
-  <div class="usage-table-wrap">
-    <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>Client</th>
-          <th>Tokens</th>
-          <th>Requests</th>
-          <th>Keys</th>
-          <th>Services</th>
-          <th>Shared key pressure</th>
-          <th>Last seen</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody id="client-rows"></tbody>
-    </table>
+  <div class="cl-header-actions">
+    <div class="us-range" role="group" aria-label="Time range">
+      <button type="button" class="btn" data-action="usRange" data-range="24h" aria-pressed="false">24h</button>
+      <button type="button" class="btn" data-action="usRange" data-range="7d" aria-pressed="true">7d</button>
+      <button type="button" class="btn" data-action="usRange" data-range="30d" aria-pressed="false">30d</button>
     </div>
+    <button type="button" class="btn" data-action="usRefresh">Refresh</button>
   </div>
 </div>
 
-<div class="card usage-section" id="usage-keys">
-  <h3>LLM API Keys</h3>
-  <div class="usage-detail-toolbar">
+<div class="us-terms" id="us-terms">
+  <span>Terms:</span>
+  <button type="button" class="us-hint-btn" data-action="usHint" data-hint="us-hint-pressure" aria-expanded="false" aria-controls="us-hint-pressure">Shared key pressure</button>
+  <button type="button" class="us-hint-btn" data-action="usHint" data-hint="us-hint-refreshable" aria-expanded="false" aria-controls="us-hint-refreshable">Refreshable</button>
+  <button type="button" class="us-hint-btn" data-action="usHint" data-hint="us-hint-unpriced" aria-expanded="false" aria-controls="us-hint-unpriced">Unpriced requests</button>
+</div>
+<p class="us-hint-note" id="us-hint-pressure" role="note" hidden><strong>Shared key pressure</strong> is the highest quota usage (percent of a provider limit already consumed) among the shared keys a client used. High pressure means several clients may be draining the same upstream key.</p>
+<p class="us-hint-note" id="us-hint-refreshable" role="note" hidden><strong>Refreshable</strong> keys are tokens Duckway renews itself with a refresh token, so they do not need to be replaced by hand when they expire.</p>
+<p class="us-hint-note" id="us-hint-unpriced" role="note" hidden><strong>Unpriced requests</strong> used a model that has no price configured on its service, so their tokens are counted but their cost is not.</p>
+
+<div class="cl-tabs us-tabs" role="tablist" aria-label="Usage views">
+  <button type="button" class="cl-tab" role="tab" id="us-tab-clients" aria-controls="us-panel-clients" aria-selected="true" tabindex="0" data-action="usTab" data-tab="clients">Clients</button>
+  <button type="button" class="cl-tab" role="tab" id="us-tab-keys" aria-controls="us-panel-keys" aria-selected="false" tabindex="-1" data-action="usTab" data-tab="keys">Keys</button>
+  <button type="button" class="cl-tab" role="tab" id="us-tab-sessions" aria-controls="us-panel-sessions" aria-selected="false" tabindex="-1" data-action="usTab" data-tab="sessions">Sessions</button>
+</div>
+
+<section class="card us-panel" id="us-panel-clients" role="tabpanel" aria-labelledby="us-tab-clients">
+  <h2>Clients</h2>
+  <div class="us-toolbar">
     <div class="form-group">
-      <label for="usage-detail-target">Key or key group</label>
-      <select id="usage-detail-target" data-on-change="loadUsageDetail" aria-describedby="usage-detail-help">
-        <option value="">Select a key or group...</option>
-      </select>
-      <span id="usage-detail-help" class="text-sm text-muted">Inspect captured usage for one key or the combined members of a key group.</span>
-    </div>
-    <div class="usage-range" role="group" aria-label="Usage range">
-      <button type="button" class="btn btn-sm" data-days="1" data-action="setDetailRange">1d</button>
-      <button type="button" class="btn btn-sm active" data-days="3" data-action="setDetailRange" aria-pressed="true">3d</button>
-      <button type="button" class="btn btn-sm" data-days="7" data-action="setDetailRange">1w</button>
-      <button type="button" class="btn btn-sm" data-days="30" data-action="setDetailRange">1m</button>
-      <button type="button" class="btn btn-sm" data-days="90" data-action="setDetailRange">90d</button>
+      <label for="us-client-search">Search clients</label>
+      <input type="text" id="us-client-search" placeholder="Client name" autocomplete="off" data-on-input="usClientFilter">
     </div>
   </div>
-
-  <div id="usage-detail-state" class="usage-detail-state">Select a key or key group to view details.</div>
-  <div id="usage-detail" class="usage-detail" hidden>
-    <div class="usage-summary" aria-label="Selected usage summary">
-      <div class="stat-card"><div class="label">Total tokens</div><div class="value" id="detail-total-tokens">0</div></div>
-      <div class="stat-card"><div class="label">Cost</div><div class="value" id="detail-total-cost">$0.00</div></div>
-      <div class="stat-card"><div class="label">Requests</div><div class="value" id="detail-total-requests">0</div></div>
-      <div class="stat-card"><div class="label">Clients</div><div class="value" id="detail-total-clients">0</div></div>
+  <div class="us-state" id="us-state-clients" role="status" hidden></div>
+  <div class="us-body" id="us-body-clients">
+    <div class="us-summary">
+      <div class="stat-card"><div class="label">Clients</div><div class="value" id="us-sum-clients">—</div></div>
+      <div class="stat-card"><div class="label">Tokens</div><div class="value" id="us-sum-tokens">—</div></div>
+      <div class="stat-card"><div class="label">Requests</div><div class="value" id="us-sum-requests">—</div></div>
+      <div class="stat-card"><div class="label">Highest shared key pressure</div><div class="value" id="us-sum-pressure">—</div></div>
     </div>
-
-    <h3>Clients</h3>
-    <div id="usage-detail-clients" class="usage-client-picker" role="group" aria-label="Clients included in totals"></div>
-
-    <div class="usage-model-layout">
-      <section aria-labelledby="usage-model-title">
-        <h3 id="usage-model-title">Models</h3>
-        <div class="usage-table-wrap">
-          <div class="table-wrap">
-          <table>
-            <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache</th><th>Total</th><th>Cost</th></tr></thead>
-            <tbody id="usage-detail-models"></tbody>
-          </table>
-          </div>
-        </div>
-      </section>
-      <section aria-labelledby="usage-heatmap-title">
-        <div class="usage-heatmap-head">
-          <h3 id="usage-heatmap-title">Daily activity</h3>
-          <div class="usage-heatmap-toggle" role="group" aria-label="Heatmap metric">
-            <button type="button" class="btn btn-sm active" id="heatmap-tokens-btn" data-action="setHeatmapMetric" data-metric="tokens" aria-pressed="true">Tokens</button>
-            <button type="button" class="btn btn-sm" id="heatmap-cost-btn" data-action="setHeatmapMetric" data-metric="cost" aria-pressed="false">Cost</button>
-          </div>
-        </div>
-        <div id="usage-heatmap" class="usage-heatmap" role="grid" aria-label="90-day token usage heatmap"></div>
-        <div id="usage-heatmap-legend" class="usage-heatmap-legend" aria-hidden="true"></div>
-      </section>
-    </div>
-  </div>
-  <hr style="border:0;border-top:1px solid var(--border);margin:1.25rem 0">
-  <h3>Key overview</h3>
-  <div id="usage-cards"></div>
-</div>
-
-<div class="card usage-section" id="usage-sessions">
-  <div class="usage-toolbar">
-    <label class="text-sm text-muted">Window</label>
-    <select id="session-window" data-on-change="loadSessions">
-      <option value="72" selected>Last 3 days</option>
-      <option value="168">Last 7 days</option>
-      <option value="720">Last month</option>
-    </select>
-  </div>
-  <div class="usage-table-wrap">
     <div class="table-wrap">
-    <table>
-      <thead><tr><th>Agent</th><th>Service</th><th>Requests</th><th>Errors</th><th>Last seen</th></tr></thead>
-      <tbody id="session-rows"></tbody>
-    </table>
+      <table class="us-table">
+        <thead>
+          <tr>
+            <th scope="col">Client</th>
+            <th scope="col">Tokens</th>
+            <th scope="col">Requests</th>
+            <th scope="col">Keys</th>
+            <th scope="col">Services</th>
+            <th scope="col">Shared key pressure</th>
+            <th scope="col">Last seen</th>
+            <th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody id="us-client-rows"></tbody>
+      </table>
+    </div>
+    <p class="text-sm text-muted" id="us-client-nomatch" hidden>No client matches this search.</p>
+  </div>
+</section>
+
+<section class="card us-panel" id="us-panel-keys" role="tabpanel" aria-labelledby="us-tab-keys" hidden>
+  <h2>Key usage</h2>
+  <div class="us-toolbar">
+    <div class="form-group">
+      <label for="us-target">Key or key group</label>
+      <select id="us-target" data-on-change="usTarget" aria-describedby="us-target-help">
+        <option value="">Select a key or key group…</option>
+      </select>
+      <span id="us-target-help" class="text-sm text-muted">Inspect captured usage for one key or the combined members of a key group.</span>
     </div>
   </div>
-</div>
+  <div class="us-state" id="us-state-detail" role="status">Select a key or key group to view details.</div>
+  <div class="us-body" id="us-body-detail" hidden>
+    <div class="us-summary" aria-label="Selected usage summary">
+      <div class="stat-card"><div class="label">Total tokens</div><div class="value" id="us-d-tokens">—</div></div>
+      <div class="stat-card"><div class="label">Cost</div><div class="value" id="us-d-cost">—</div></div>
+      <div class="stat-card"><div class="label">Requests</div><div class="value" id="us-d-requests">—</div></div>
+      <div class="stat-card"><div class="label">Clients</div><div class="value" id="us-d-clients">—</div></div>
+    </div>
+    <h3>Clients included</h3>
+    <div id="us-d-picker" class="us-client-picker" role="group" aria-label="Clients included in totals"></div>
+    <div class="us-split">
+      <section aria-labelledby="us-models-title">
+        <h3 id="us-models-title">Models</h3>
+        <div class="table-wrap">
+          <table class="us-table-sm">
+            <thead><tr><th scope="col">Model</th><th scope="col">Input</th><th scope="col">Output</th><th scope="col">Cache</th><th scope="col">Total</th><th scope="col">Share</th><th scope="col">Cost</th></tr></thead>
+            <tbody id="us-d-models"></tbody>
+          </table>
+        </div>
+      </section>
+      <section aria-labelledby="us-heat-title">
+        <div class="us-heat-head">
+          <h3 id="us-heat-title">Daily activity</h3>
+          <div class="us-metric" role="group" aria-label="Heatmap metric">
+            <button type="button" class="btn" id="us-metric-tokens" data-action="usMetric" data-metric="tokens" aria-pressed="true">Tokens</button>
+            <button type="button" class="btn" id="us-metric-cost" data-action="usMetric" data-metric="cost" aria-pressed="false">Cost</button>
+          </div>
+        </div>
+        <div id="us-heat" class="us-heat" role="group" aria-label="Daily usage"></div>
+        <p class="us-heat-readout" id="us-heat-readout" role="status" aria-live="polite"></p>
+        <div class="us-heat-legend" id="us-heat-legend" aria-hidden="true"></div>
+        <p class="text-sm text-muted" id="us-heat-note"></p>
+      </section>
+    </div>
+  </div>
+  <h2 class="us-overview-title">Key overview</h2>
+  <div class="us-state" id="us-state-keys" role="status" hidden></div>
+  <div class="us-body" id="us-body-keys">
+    <div class="table-wrap">
+      <table class="us-table">
+        <thead><tr><th scope="col">Key</th><th scope="col">Service</th><th scope="col">Tokens</th><th scope="col">Calls</th><th scope="col">Pressure</th><th scope="col">Snapshot</th></tr></thead>
+        <tbody id="us-key-rows"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="card us-panel" id="us-panel-sessions" role="tabpanel" aria-labelledby="us-tab-sessions" hidden>
+  <h2>Agent sessions</h2>
+  <div class="us-state" id="us-state-sessions" role="status" hidden></div>
+  <div class="us-body" id="us-body-sessions">
+    <div class="table-wrap">
+      <table class="us-table-sm">
+        <thead><tr><th scope="col">Agent</th><th scope="col">Service</th><th scope="col">Requests</th><th scope="col">Errors</th><th scope="col">Last seen</th></tr></thead>
+        <tbody id="us-session-rows"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
 
 <script nonce="{{$.CSPNonce}}">
-var clientRows = [];
-var usageDetailDays = 3;
-var usageDetailData = null;
-var usageHeatmapData = null;
-var usageHeatmapMetric = 'tokens';
-var usageDetailTargetsLoaded = false;
+(function () {
+  'use strict';
+  var RANGES = {'24h': {days: 1, hours: 24, label: 'last 24 hours'}, '7d': {days: 7, hours: 168, label: 'last 7 days'}, '30d': {days: 30, hours: 720, label: 'last 30 days'}};
+  var TABS = ['clients', 'keys', 'sessions'];
+  var st = {range: '7d', tab: 'clients', target: ''};
+  var loaded = {};      // scope -> range key it was loaded for
+  var seq = {};         // scope -> request counter (drops stale responses)
+  var clientRows = [];
+  var keyRows = [];
+  var groupsLoaded = false;
+  var groupRows = [];
+  var detail = null;    // {data, heat}
+  var metric = 'tokens';
 
-DW.actions.refreshActive = function() { refreshActive(); };
-DW.actions.showUsageTab = function(el) { showUsageTab(el.dataset.tab); };
-DW.actions.reloadClientsAndUsage = function() { loadClients(); loadUsage(); };
-DW.actions.renderClients = function() { renderClients(); };
-DW.actions.loadUsageDetail = function() { loadUsageDetail(); };
-DW.actions.setDetailRange = function(el) { setDetailRange(Number(el.dataset.days), el); };
-DW.actions.setHeatmapMetric = function(el) { setHeatmapMetric(el.dataset.metric); };
-DW.actions.loadSessions = function() { loadSessions(); };
-DW.actions.toggleClient = function(el) { toggleClient(el.dataset.id); };
-DW.actions.renderSelectedUsageDetail = function() { renderSelectedUsageDetail(); };
+  function $(id) { return document.getElementById(id); }
 
-function activeDays() {
-  return document.getElementById('client-window').value || '3';
-}
-
-function activeHours() {
-  return String(Number(activeDays()) * 24);
-}
-
-function fmtInt(n) {
-  if (n === null || n === undefined) return '—';
-  return Number(n).toLocaleString();
-}
-
-function fmtReset(s) {
-  if (!s) return '—';
-  var d = new Date(s);
-  if (isNaN(d.getTime())) return s;
-  return d.toLocaleString();
-}
-
-function pctLabel(pct) {
-  if (pct === null || pct === undefined || pct < 0) return '—';
-  return Math.max(0, Math.min(100, pct)).toFixed(0) + '%';
-}
-
-function pressureBar(pct) {
-  if (pct === null || pct === undefined || pct < 0) return DW.html`<span class="text-muted">—</span>`;
-  var p = Math.max(0, Math.min(100, pct));
-  var color = p < 75 ? 'var(--success)' : (p < 90 ? 'var(--warning)' : 'var(--danger)');
-  return DW.html`<span class="usage-progress"><span style="width:${p}%;background:${color}"></span></span><span class="text-sm">${p.toFixed(0)}%</span>`;
-}
-
-function statusBadge(status) {
-  var cls = 'badge-gray';
-  if (status === 'near shared key limit') cls = 'badge-red';
-  else if (status === 'high shared key usage') cls = 'badge-yellow';
-  else if (status === 'normal') cls = 'badge-green';
-  return DW.html`<span class="badge ${cls} usage-status">${status || 'normal'}</span>`;
-}
-
-function showUsageTab(name) {
-  ['clients','keys','sessions'].forEach(function(t){
-    document.getElementById('usage-' + t).classList.toggle('active', t === name);
-    document.getElementById('tab-' + t).classList.toggle('active', t === name);
-  });
-  if (name === 'keys') loadUsage();
-  if (name === 'sessions') loadSessions();
-}
-
-function refreshActive() {
-  if (document.getElementById('usage-clients').classList.contains('active')) {
-    loadClients();
-    return;
+  /* ---------- URL state ---------- */
+  function readURL() {
+    var q = new URLSearchParams(window.location.search);
+    st.range = RANGES[q.get('range')] ? q.get('range') : '7d';
+    st.tab = TABS.indexOf(q.get('tab')) >= 0 ? q.get('tab') : 'clients';
+    st.target = q.get('key_id') ? 'key:' + q.get('key_id') : (q.get('key_group_id') ? 'group:' + q.get('key_group_id') : '');
+    if (st.target && !q.get('tab')) st.tab = 'keys';
   }
-  if (document.getElementById('usage-keys').classList.contains('active')) {
-    loadUsage();
-    return;
+  function writeURL(push) {
+    var q = new URLSearchParams();
+    q.set('range', st.range);
+    q.set('tab', st.tab);
+    if (st.target) q.set(st.target.indexOf('group:') === 0 ? 'key_group_id' : 'key_id', st.target.slice(st.target.indexOf(':') + 1));
+    var url = window.location.pathname + '?' + q.toString();
+    try { window.history[push ? 'pushState' : 'replaceState'](null, '', url); } catch (e) { /* ignore */ }
   }
-  loadSessions();
-}
 
-function loadClients() {
-  fetch('/api/usage/clients?days=' + encodeURIComponent(activeDays()), {credentials:'same-origin'})
-    .then(function(r){ return r.json(); })
-    .then(function(rows){
-      clientRows = rows || [];
-      renderClients();
+  /* ---------- formatting ---------- */
+  function fmtInt(n) { return (n === null || n === undefined) ? '—' : Number(n).toLocaleString(); }
+  function fmtUSD(n) { return '$' + Number(n || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4}); }
+  function fmtDate(s) {
+    if (!s) return '—';
+    var d = new Date(s);
+    return isNaN(d.getTime()) ? String(s) : d.toLocaleString();
+  }
+  function pctOK(p) { return p !== null && p !== undefined && !isNaN(Number(p)) && Number(p) >= 0; }
+  function bar(pct) {
+    if (!pctOK(pct)) return DW.html`<span class="text-muted">—</span>`;
+    var p = Math.max(0, Math.min(100, Number(pct)));
+    var cls = p < 75 ? 'us-bar-ok' : (p < 90 ? 'us-bar-warn' : 'us-bar-danger');
+    return DW.html`<progress class="us-bar ${cls}" max="100" value="${p}" aria-label="${'Pressure ' + p.toFixed(0) + ' percent'}"></progress><span class="text-sm">${p.toFixed(0)}%</span>`;
+  }
+  function shareBar(part, whole) {
+    var p = whole > 0 ? Math.max(0, Math.min(100, part / whole * 100)) : 0;
+    return DW.html`<progress class="us-bar" max="100" value="${p}" aria-label="${'Share ' + p.toFixed(0) + ' percent'}"></progress><span class="text-sm">${p.toFixed(0)}%</span>`;
+  }
+  function statusBadge(s) {
+    var cls = 'badge-gray';
+    if (s === 'near shared key limit') cls = 'badge-red';
+    else if (s === 'high shared key usage') cls = 'badge-yellow';
+    else if (s === 'normal') cls = 'badge-green';
+    return DW.html`<span class="badge ${cls} us-nowrap">${s || 'normal'}</span>`;
+  }
+  function keyBadges(k) {
+    return DW.html`${k.is_refreshable ? DW.html`<span class="badge badge-green">Refreshable</span>` : ''}${k.provider ? DW.html` <span class="badge badge-gray">${k.provider}</span>` : ''}`;
+  }
+
+  /* ---------- panel states ---------- */
+  function setState(scope, kind, msg) {
+    var box = $('us-state-' + scope), body = $('us-body-' + scope);
+    if (!kind) { box.hidden = true; box.classList.remove('us-state-error'); body.hidden = false; return; }
+    body.hidden = true;
+    box.hidden = false;
+    box.classList.toggle('us-state-error', kind === 'error');
+    var retry = (kind === 'error' || kind === 'empty') ?  DW.html`<button type="button" class="btn" data-action="usRetry" data-scope="${scope}">Retry</button>` : '';
+    DW.setHTML(box, DW.html`<p class="us-state-msg">${msg}</p>${retry}`);
+  }
+  function getJSON(url) {
+    return fetch(url, {credentials: 'same-origin'}).then(function (r) {
+      if (!r.ok) throw new Error('Request failed (HTTP ' + r.status + ')');
+      return r.json();
     });
-}
-
-function renderClients() {
-  var q = (document.getElementById('client-search').value || '').toLowerCase();
-  var rows = clientRows.filter(function(c){
-    return !q || String(c.client_name || c.client_id || '').toLowerCase().indexOf(q) >= 0;
-  });
-  var tb = document.getElementById('client-rows');
-  if (!rows.length) {
-    DW.setHTML(tb, DW.html`<tr><td colspan="8" class="text-muted">No captured LLM token usage in this window.</td></tr>`);
-    updateSummary(rows);
-    return;
   }
-  DW.setHTML(tb, DW.html`${rows.map(function(c){
-    var id = slugId(c.client_id || c.client_name || 'unknown');
-    var services = (c.services || []).map(function(s){ return DW.html`<span class="badge badge-blue">${s}</span>`; });
-    var servicesHTML = services.reduce(function(acc, x, i){ return i === 0 ? x : DW.html`${acc} ${x}`; }, '');
-    return DW.html`<tr data-action="toggleClient" data-id="${id}" style="cursor:pointer">
-      <td><button type="button" class="usage-toggle" data-action="toggleClient" data-id="${id}" aria-expanded="false" aria-controls="${'client-detail-' + id}"><span class="usage-caret" id="${'caret-client-' + id}" aria-hidden="true">▸</span><strong>${c.client_name || c.client_id || '(unknown)'}</strong></button></td>
-      <td>${fmtInt(c.total_tokens)}</td>
-      <td>${fmtInt(c.requests)}</td>
-      <td>${fmtInt(c.keys_used)}</td>
-      <td>${servicesHTML}</td>
-      <td>${pressureBar(c.max_key_used_pct)}</td>
-      <td class="text-sm text-muted">${fmtReset(c.last_seen)}</td>
-      <td>${statusBadge(c.status)}</td>
-      </tr><tr class="usage-expand-row" id="${'client-detail-' + id}" style="display:none"><td colspan="8">${renderClientKeys(c.keys || [])}</td></tr>`;
-  })}`);
-  updateSummary(rows);
-}
+  function rangeLabel() { return RANGES[st.range].label; }
 
-function updateSummary(rows) {
-  var tokens = 0, requests = 0, pressure = -1;
-  rows.forEach(function(c){
-    tokens += Number(c.total_tokens || 0);
-    requests += Number(c.requests || 0);
-    if (Number(c.max_key_used_pct) > pressure) pressure = Number(c.max_key_used_pct);
+  /* ---------- tabs / range ---------- */
+  function applyChrome() {
+    document.querySelectorAll('[data-action="usRange"]').forEach(function (b) {
+      b.setAttribute('aria-pressed', b.dataset.range === st.range ? 'true' : 'false');
+    });
+    TABS.forEach(function (t) {
+      var on = t === st.tab;
+      var tab = $('us-tab-' + t);
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+      tab.tabIndex = on ? 0 : -1;
+      $('us-panel-' + t).hidden = !on;
+    });
+  }
+  function ensureLoaded(force) {
+    var scope = st.tab;
+    if (!force && loaded[scope] === st.range) return;
+    loadScope(scope);
+  }
+  function loadScope(scope) {
+    if (scope === 'clients') loadClients();
+    else if (scope === 'keys' || scope === 'detail') loadKeys();
+    else if (scope === 'sessions') loadSessions();
+  }
+  function apply(push, force) {
+    applyChrome();
+    writeURL(push);
+    ensureLoaded(force);
+  }
+
+  DW.actions.usRange = function (el) {
+    if (el.dataset.range === st.range) return;
+    st.range = el.dataset.range;
+    apply(true, false);
+  };
+  DW.actions.usTab = function (el) {
+    if (el.dataset.tab === st.tab) return;
+    st.tab = el.dataset.tab;
+    apply(true, false);
+  };
+  DW.actions.usRefresh = function () { apply(false, true); };
+  DW.actions.usRetry = function (el) { loadScope(el.dataset.scope); };
+
+  document.querySelector('.us-tabs').addEventListener('keydown', function (e) {
+    var i = TABS.indexOf(st.tab), n = -1;
+    if (e.key === 'ArrowRight') n = (i + 1) % TABS.length;
+    else if (e.key === 'ArrowLeft') n = (i + TABS.length - 1) % TABS.length;
+    else if (e.key === 'Home') n = 0;
+    else if (e.key === 'End') n = TABS.length - 1;
+    if (n < 0) return;
+    e.preventDefault();
+    st.tab = TABS[n];
+    apply(true, false);
+    $('us-tab-' + st.tab).focus();
   });
-  document.getElementById('sum-clients').textContent = fmtInt(rows.length);
-  document.getElementById('sum-tokens').textContent = fmtInt(tokens);
-  document.getElementById('sum-requests').textContent = fmtInt(requests);
-  document.getElementById('sum-pressure').textContent = pctLabel(pressure);
-}
+  window.addEventListener('popstate', function () {
+    readURL();
+    applyChrome();
+    syncTargetSelect();
+    var stale = loaded[st.tab] !== st.range;
+    ensureLoaded(false);
+    if (!stale && st.tab === 'keys') loadDetail();
+  });
 
-function renderClientKeys(keys) {
-  if (!keys.length) return DW.html`<div class="text-muted text-sm">No key breakdown.</div>`;
-  return DW.html`<table class="usage-key-table"><thead><tr><th>Key</th><th>Service</th><th>Tokens</th><th>Requests</th><th>Conversations</th><th>Pressure</th><th>Reset</th></tr></thead><tbody>${keys.map(function(k){
+  /* ---------- term hints ---------- */
+  DW.actions.usHint = function (el) {
+    var id = el.dataset.hint, open = el.getAttribute('aria-expanded') !== 'true';
+    closeHints();
+    if (open) { $(id).hidden = false; el.setAttribute('aria-expanded', 'true'); }
+  };
+  function closeHints() {
+    document.querySelectorAll('.us-hint-btn').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
+    document.querySelectorAll('.us-hint-note').forEach(function (n) { n.hidden = true; });
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    var open = document.querySelector('.us-hint-btn[aria-expanded="true"]');
+    if (!open) return;
+    closeHints();
+    open.focus();
+  });
+
+  /* ---------- Clients ---------- */
+  function loadClients() {
+    var n = seq.clients = (seq.clients || 0) + 1;
+    setState('clients', 'loading', 'Loading client usage…');
+    getJSON('/api/usage/clients?days=' + RANGES[st.range].days).then(function (rows) {
+      if (n !== seq.clients) return;
+      clientRows = Array.isArray(rows) ? rows : [];
+      loaded.clients = st.range;
+      if (!clientRows.length) { setState('clients', 'empty', 'No captured LLM token usage in the ' + rangeLabel() + '.'); return; }
+      setState('clients', null);
+      renderClients();
+    }).catch(function (err) {
+      if (n !== seq.clients) return;
+      setState('clients', 'error', 'Could not load client usage. ' + err.message);
+    });
+  }
+  DW.actions.usClientFilter = function () { renderClients(); };
+  function renderClients() {
+    var q = ($('us-client-search').value || '').toLowerCase();
+    var rows = clientRows.filter(function (c) { return !q || String(c.client_name || c.client_id || '').toLowerCase().indexOf(q) >= 0; });
+    var tokens = 0, requests = 0, pressure = -1;
+    rows.forEach(function (c) {
+      tokens += Number(c.total_tokens || 0);
+      requests += Number(c.requests || 0);
+      if (Number(c.max_key_used_pct) > pressure) pressure = Number(c.max_key_used_pct);
+    });
+    $('us-sum-clients').textContent = fmtInt(rows.length);
+    $('us-sum-tokens').textContent = fmtInt(tokens);
+    $('us-sum-requests').textContent = fmtInt(requests);
+    $('us-sum-pressure').textContent = pressure >= 0 ? Math.min(100, pressure).toFixed(0) + '%' : '—';
+    $('us-client-nomatch').hidden = rows.length > 0;
+    DW.setHTML($('us-client-rows'), DW.html`${rows.map(function (c, i) {
+      var id = 'us-cd-' + i;
+      var services = (c.services || []).map(function (s) { return DW.html`<span class="badge badge-blue">${s}</span> `; });
+      return DW.html`<tr class="us-click" data-action="usToggle" data-id="${id}">
+        <td><button type="button" class="us-toggle" data-action="usToggle" data-id="${id}" aria-expanded="false" aria-controls="${id}"><span class="us-caret" aria-hidden="true">▸</span><strong>${c.client_name || c.client_id || '(unknown)'}</strong></button></td>
+        <td>${fmtInt(c.total_tokens)}</td>
+        <td>${fmtInt(c.requests)}</td>
+        <td>${fmtInt(c.keys_used)}</td>
+        <td>${services}</td>
+        <td>${bar(c.max_key_used_pct)}</td>
+        <td class="text-sm text-muted">${fmtDate(c.last_seen)}</td>
+        <td>${statusBadge(c.status)}</td>
+      </tr><tr class="us-expand" id="${id}" hidden><td colspan="8">${clientKeys(c.keys || [])}</td></tr>`;
+    })}`);
+  }
+  function clientKeys(keys) {
+    if (!keys.length) return DW.html`<div class="text-muted text-sm">No key breakdown.</div>`;
+    return DW.html`<div class="table-wrap"><table class="us-nested"><thead><tr><th scope="col">Key</th><th scope="col">Service</th><th scope="col">Tokens</th><th scope="col">Requests</th><th scope="col">Conversations</th><th scope="col">Pressure</th><th scope="col">Reset</th></tr></thead><tbody>${keys.map(function (k) {
       return DW.html`<tr>
-        <td><strong>${k.key_name || k.api_key_id}</strong> ${k.is_refreshable ? DW.html`<span class="badge badge-green">OAuth</span>` : ''}${k.provider ? DW.html` <span class="badge badge-gray">${k.provider}</span>` : ''}</td>
+        <td><strong>${k.key_name || k.api_key_id}</strong> ${keyBadges(k)}</td>
         <td><span class="badge badge-blue">${k.service || ''}</span></td>
         <td>${fmtInt(k.total_tokens)}<div class="text-sm text-muted">in ${fmtInt(k.tokens_input)} · out ${fmtInt(k.tokens_output)}</div></td>
         <td>${fmtInt(k.requests)}</td>
         <td>${fmtInt(k.conversations)}</td>
-        <td>${pressureBar(k.max_used_pct)}</td>
-        <td class="text-sm text-muted">${fmtReset(k.reset_at)}</td>
-        </tr>`;
-    })}</tbody></table>`;
-}
+        <td>${bar(k.max_used_pct)}</td>
+        <td class="text-sm text-muted">${fmtDate(k.reset_at)}</td>
+      </tr>`;
+    })}</tbody></table></div>`;
+  }
+  DW.actions.usToggle = function (el) {
+    var id = el.dataset.id, row = $(id);
+    if (!row) return;
+    var open = row.hidden;
+    row.hidden = !open;
+    var btn = row.previousElementSibling.querySelector('.us-toggle');
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.querySelector('.us-caret').textContent = open ? '▾' : '▸';
+  };
 
-function toggleClient(id) {
-  var trigger = document.querySelector('button[data-action="toggleClient"][data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
-  var row = document.getElementById('client-detail-' + id);
-  var caret = document.getElementById('caret-client-' + id);
-  if (!row) return;
-  var open = row.style.display === 'none';
-  row.style.display = open ? 'table-row' : 'none';
-  if (trigger) trigger.setAttribute('aria-expanded', String(open));
-  if (caret) caret.textContent = open ? '▾' : '▸';
-}
-
-function loadUsage() {
-  fetch('/api/usage?hours=' + encodeURIComponent(activeHours()), {credentials:'same-origin'})
-    .then(function(r){ return r.json(); })
-    .then(function(rows){
-      loadUsageDetailTargets(rows || []);
-      var box = document.getElementById('usage-cards');
-      if (!rows || rows.length === 0) {
-        DW.setHTML(box, DW.html`<p class="text-muted">No LLM API keys found.</p>`);
-        return;
-      }
-      DW.setHTML(box, DW.html`<div class="usage-table-wrap"><table><thead><tr><th>Key</th><th>Service</th><th>Tokens</th><th>Calls</th><th>Pressure</th><th>Snapshot</th></tr></thead><tbody>${rows.map(function(k){
-          var maxPct = -1;
-          (k.metrics || []).forEach(function(m){ if (Number(m.used_pct) > maxPct) maxPct = Number(m.used_pct); });
-          return DW.html`<tr>
-            <td><strong>${k.key_name}</strong> ${k.is_refreshable ? DW.html`<span class="badge badge-green">OAuth</span>` : ''}${k.provider ? DW.html` <span class="badge badge-gray">${k.provider}</span>` : ''}</td>
-            <td><span class="badge badge-blue">${k.service}</span></td>
-            <td>${fmtInt(Number(k.tokens_input || 0) + Number(k.tokens_output || 0))}<div class="text-sm text-muted">in ${fmtInt(k.tokens_input)} · out ${fmtInt(k.tokens_output)}</div></td>
-            <td>${fmtInt(k.captured_requests || k.usage_count)}</td>
-            <td>${pressureBar(maxPct)}</td>
-            <td class="text-sm text-muted">${fmtReset(k.updated_at || k.last_used_at)}</td>
-            </tr>`;
-        })}</tbody></table></div>`);
-    }).catch(function(){
-      DW.setHTML(document.getElementById('usage-cards'), DW.html`<p class="text-muted">Unable to load key overview.</p>`);
-    });
-}
-
-function loadUsageDetailTargets(keys) {
-  if (usageDetailTargetsLoaded) return;
-  usageDetailTargetsLoaded = true;
-  fetch('/api/key-groups', {credentials:'same-origin'})
-    .then(function(r){ return r.ok ? r.json() : []; })
-    .catch(function(){ return []; })
-    .then(function(groups){
-      var select = document.getElementById('usage-detail-target');
-      var keyOptions = (keys || []).map(function(k){
-        return DW.html`<option value="${'key:' + slugId(k.key_id)}">${k.key_name} · ${k.service || ''}</option>`;
+  /* ---------- Keys ---------- */
+  function loadKeys() {
+    var n = seq.keys = (seq.keys || 0) + 1;
+    setState('keys', 'loading', 'Loading key overview…');
+    getJSON('/api/usage?hours=' + RANGES[st.range].hours).then(function (rows) {
+      if (n !== seq.keys) return;
+      keyRows = Array.isArray(rows) ? rows : [];
+      loaded.keys = st.range;
+      return loadGroups().then(function () {
+        if (n !== seq.keys) return;
+        buildTargets();
+        if (!keyRows.length) setState('keys', 'empty', 'No LLM API keys found.');
+        else { setState('keys', null); renderKeyRows(); }
+        loadDetail();
       });
-      var groupRows = Array.isArray(groups) ? groups : (groups.groups || []);
-      var groupOptions = groupRows.map(function(g){
-        return DW.html`<option value="${'group:' + slugId(g.id)}">${g.name} · group</option>`;
+    }).catch(function (err) {
+      if (n !== seq.keys) return;
+      setState('keys', 'error', 'Could not load key overview. ' + err.message);
+      loadDetail();
+    });
+  }
+  function loadGroups() {
+    if (groupsLoaded) return Promise.resolve();
+    return getJSON('/api/key-groups').then(function (g) {
+      groupRows = Array.isArray(g) ? g : (g && g.groups) || [];
+      groupsLoaded = true;
+    }).catch(function () { groupRows = []; });
+  }
+  function renderKeyRows() {
+    DW.setHTML($('us-key-rows'), DW.html`${keyRows.map(function (k) {
+      var maxPct = -1;
+      (k.metrics || []).forEach(function (m) { if (Number(m.used_pct) > maxPct) maxPct = Number(m.used_pct); });
+      return DW.html`<tr>
+        <td><strong>${k.key_name}</strong> ${keyBadges(k)}</td>
+        <td><span class="badge badge-blue">${k.service}</span></td>
+        <td>${fmtInt(Number(k.tokens_input || 0) + Number(k.tokens_output || 0))}<div class="text-sm text-muted">in ${fmtInt(k.tokens_input)} · out ${fmtInt(k.tokens_output)}</div></td>
+        <td>${fmtInt(k.captured_requests || k.usage_count)}</td>
+        <td>${bar(maxPct)}</td>
+        <td class="text-sm text-muted">${fmtDate(k.updated_at || k.last_used_at)}</td>
+      </tr>`;
+    })}`);
+  }
+  function buildTargets() {
+    var sel = $('us-target');
+    var keyOpts = keyRows.map(function (k) { return DW.html`<option value="${'key:' + k.key_id}">${k.key_name} · ${k.service || ''}</option>`; });
+    var grpOpts = groupRows.map(function (g) { return DW.html`<option value="${'group:' + g.id}">${g.name} · group</option>`; });
+    DW.setHTML(sel, DW.html`<option value="">Select a key or key group…</option>${keyOpts.length ? DW.html`<optgroup label="Keys">${keyOpts}</optgroup>` : ''}${grpOpts.length ? DW.html`<optgroup label="Key groups">${grpOpts}</optgroup>` : ''}`);
+    syncTargetSelect();
+  }
+  function syncTargetSelect() {
+    var sel = $('us-target');
+    sel.value = st.target;
+    if (sel.value !== st.target) st.target = sel.value;
+  }
+  DW.actions.usTarget = function () {
+    st.target = $('us-target').value;
+    writeURL(false);
+    loadDetail();
+  };
+
+  function loadDetail() {
+    var n = seq.detail = (seq.detail || 0) + 1;
+    if (!st.target) {
+      detail = null;
+      setState('detail', 'empty-plain', 'Select a key or key group to view details.');
+      return;
+    }
+    var i = st.target.indexOf(':');
+    var param = st.target.slice(0, i) === 'group' ? 'key_group_id' : 'key_id';
+    var base = '/api/usage/detail?' + param + '=' + encodeURIComponent(st.target.slice(i + 1));
+    var days = RANGES[st.range].days, span = Math.max(days, 7);
+    setState('detail', 'loading', 'Loading usage details…');
+    var reqs = [getJSON(base + '&days=' + days)];
+    if (span !== days) reqs.push(getJSON(base + '&days=' + span));
+    Promise.all(reqs).then(function (res) {
+      if (n !== seq.detail) return;
+      detail = {data: norm(res[0]), heat: norm(res[1] || res[0]), span: span};
+      var empty = !detail.data.clients.length && !detail.data.models.length && !Number(detail.data.summary.total_tokens || 0) && !Number(detail.data.summary.requests || 0);
+      if (empty) { setState('detail', 'empty', 'No usage captured for this selection in the ' + rangeLabel() + '.'); return; }
+      setState('detail', null);
+      renderPicker();
+      renderDetail();
+    }).catch(function (err) {
+      if (n !== seq.detail) return;
+      detail = null;
+      setState('detail', 'error', 'Could not load usage details. ' + err.message);
+    });
+  }
+  function norm(d) {
+    d = d || {};
+    d.summary = d.summary || {};
+    d.clients = Array.isArray(d.clients) ? d.clients : [];
+    d.models = Array.isArray(d.models) ? d.models : [];
+    d.daily = Array.isArray(d.daily) ? d.daily : [];
+    return d;
+  }
+  function renderPicker() {
+    var box = $('us-d-picker');
+    var clients = detail.data.clients;
+    if (!clients.length) { DW.setHTML(box, DW.html`<span class="text-muted text-sm">No client breakdown available.</span>`); return; }
+    DW.setHTML(box, DW.html`${clients.map(function (c, i) {
+      var id = 'us-pick-' + i;
+      return DW.html`<label for="${id}"><input id="${id}" type="checkbox" data-index="${i}" checked data-on-change="usPick"><span>${c.client_name || c.client_id || '(unknown)'}</span></label>`;
+    })}`);
+  }
+  DW.actions.usPick = function () { renderDetail(); };
+  function selected() {
+    var out = [];
+    document.querySelectorAll('#us-d-picker input[type="checkbox"]').forEach(function (b) {
+      if (b.checked) out.push(detail.data.clients[Number(b.dataset.index)]);
+    });
+    return out;
+  }
+  function aggregate() {
+    var d = detail.data;
+    if (!d.clients.length) return {summary: d.summary, models: d.models.slice(), clientCount: Number(d.summary.clients || 0), ids: null};
+    var sum = {total_tokens: 0, cost_usd: 0, requests: 0}, models = {}, ids = {};
+    var sel = selected();
+    sel.forEach(function (c) {
+      ids[c.client_id] = true;
+      var s = c.summary || c;
+      sum.total_tokens += Number(s.total_tokens || s.tokens || 0);
+      sum.cost_usd += Number(s.cost_usd || s.cost || 0);
+      sum.requests += Number(s.requests || 0);
+      (c.models || []).forEach(function (m) {
+        var name = m.model || m.name || '(unknown)';
+        var t = models[name] || (models[name] = {model: name, input_tokens: 0, output_tokens: 0, cache_tokens: 0, total_tokens: 0, cost_usd: 0, unpriced_requests: 0});
+        t.input_tokens += Number(m.input_tokens || 0);
+        t.output_tokens += Number(m.output_tokens || 0);
+        t.cache_tokens += Number(m.cache_tokens || m.cache_read_tokens || 0) + Number(m.cache_creation_tokens || 0);
+        t.total_tokens += Number(m.total_tokens || 0);
+        t.cost_usd += Number(m.cost_usd || 0);
+        t.unpriced_requests += Number(m.unpriced_requests || 0);
       });
-      DW.setHTML(select, DW.html`<option value="">Select a key or group...</option>${keyOptions.length ? DW.html`<optgroup label="Keys">${keyOptions}</optgroup>` : ''}${groupOptions.length ? DW.html`<optgroup label="Key groups">${groupOptions}</optgroup>` : ''}`);
-      var query = new URLSearchParams(window.location.search);
-      var target = query.get('key_id') ? 'key:' + query.get('key_id') : (query.get('key_group_id') ? 'group:' + query.get('key_group_id') : '');
-      if (target) {
-        select.value = target;
-        if (select.value) {
-          showUsageTab('keys');
-          loadUsageDetail();
-        }
-      }
     });
-}
-
-function setDetailRange(days, button) {
-  usageDetailDays = days;
-  document.querySelectorAll('.usage-range button').forEach(function(b){
-    var active = b === button;
-    b.classList.toggle('active', active);
-    b.setAttribute('aria-pressed', active ? 'true' : 'false');
-  });
-  loadUsageDetail();
-}
-
-function loadUsageDetail() {
-  var value = document.getElementById('usage-detail-target').value;
-  var state = document.getElementById('usage-detail-state');
-  var detail = document.getElementById('usage-detail');
-  if (!value) {
-    usageDetailData = null;
-    detail.hidden = true;
-    state.style.display = '';
-    state.textContent = 'Select a key or key group to view details.';
-    return;
+    return {summary: sum, models: Object.keys(models).map(function (k) { return models[k]; }), clientCount: sel.length, ids: ids};
   }
-  var parts = value.split(':');
-  var param = parts[0] === 'group' ? 'key_group_id' : 'key_id';
-  state.style.display = '';
-  state.textContent = 'Loading usage details...';
-  detail.hidden = true;
-  var base = '/api/usage/detail?' + param + '=' + encodeURIComponent(parts.slice(1).join(':'));
-  Promise.all([usageDetailDays, 90].map(function(days){
-    return fetch(base + '&days=' + days, {credentials:'same-origin'}).then(function(r){
-      if (!r.ok) throw new Error('Request returned ' + r.status);
-      return r.json();
+  function heatDaily(ids) {
+    var heat = detail.heat;
+    if (!ids) return heat.daily;
+    var daily = {};
+    heat.clients.forEach(function (c) {
+      if (!ids[c.client_id]) return;
+      (c.daily || []).forEach(function (d) {
+        var date = String(d.date || '').slice(0, 10);
+        if (!date) return;
+        var t = daily[date] || (daily[date] = {date: date, total_tokens: 0, cost_usd: 0});
+        t.total_tokens += Number(d.total_tokens || d.tokens || 0);
+        t.cost_usd += Number(d.cost_usd || d.cost || 0);
+      });
     });
-  })).then(function(results){
-      usageDetailData = normalizeDetailData(results[0] || {});
-      usageHeatmapData = normalizeDetailData(results[1] || {});
-      renderDetailClients();
-      renderSelectedUsageDetail();
-      state.style.display = 'none';
-      detail.hidden = false;
-    })
-    .catch(function(err){
-      usageDetailData = null;
-      state.style.display = '';
-      state.textContent = 'Unable to load usage details. ' + err.message;
-    });
-}
-
-function normalizeDetailData(data) {
-  data.summary = data.summary || {};
-  data.clients = Array.isArray(data.clients) ? data.clients : [];
-  data.models = Array.isArray(data.models) ? data.models : [];
-  data.daily = Array.isArray(data.daily) ? data.daily : [];
-  return data;
-}
-
-function renderDetailClients() {
-  var box = document.getElementById('usage-detail-clients');
-  var clients = usageDetailData.clients || [];
-  if (!clients.length) {
-    DW.setHTML(box, DW.html`<span class="text-muted text-sm">No client breakdown available.</span>`);
-    return;
+    return Object.keys(daily).map(function (k) { return daily[k]; });
   }
-  DW.setHTML(box, DW.html`${clients.map(function(c, index){
-    var id = 'usage-client-' + index;
-    return DW.html`<label for="${id}"><input id="${id}" type="checkbox" data-client-index="${index}" checked data-on-change="renderSelectedUsageDetail"><span>${c.client_name || c.client_id || '(unknown)'}</span></label>`;
-  })}`);
-}
-
-function selectedDetailClients() {
-  if (!usageDetailData) return [];
-  var boxes = document.querySelectorAll('#usage-detail-clients input[type="checkbox"]');
-  if (!boxes.length) return [];
-  var out = [];
-  boxes.forEach(function(box){
-    if (box.checked) out.push(usageDetailData.clients[Number(box.dataset.clientIndex)]);
-  });
-  return out;
-}
-
-function addSummary(target, source) {
-  source = source || {};
-  target.total_tokens += Number(source.total_tokens || source.tokens || 0);
-  target.cost_usd += Number(source.cost_usd || source.cost || 0);
-  target.requests += Number(source.requests || 0);
-}
-
-function aggregateSelectedDetail() {
-  var selected = selectedDetailClients();
-  if (!usageDetailData.clients.length) {
-    return {summary:usageDetailData.summary, models:usageDetailData.models, daily:usageDetailData.daily, clientCount:Number(usageDetailData.summary.clients || 0)};
+  function renderDetail() {
+    if (!detail) return;
+    var a = aggregate(), s = a.summary || {};
+    $('us-d-tokens').textContent = fmtInt(s.total_tokens || s.tokens || 0);
+    $('us-d-cost').textContent = fmtUSD(s.cost_usd || s.cost || 0);
+    $('us-d-requests').textContent = fmtInt(s.requests || 0);
+    $('us-d-clients').textContent = fmtInt(a.clientCount);
+    renderModels(a.models);
+    renderHeat(heatDaily(a.ids));
   }
-  var summary = {total_tokens:0, cost_usd:0, requests:0};
-  var models = {};
-  var daily = {};
-  selected.forEach(function(client){
-    addSummary(summary, client.summary || client);
-    (client.models || []).forEach(function(m){
-      var name = m.model || m.name || '(unknown)';
-      if (!models[name]) models[name] = {model:name,input_tokens:0,output_tokens:0,cache_tokens:0,total_tokens:0,cost_usd:0};
-      ['input_tokens','output_tokens','cache_tokens','total_tokens','cost_usd'].forEach(function(k){ models[name][k] += Number(m[k] || 0); });
+  function renderModels(models) {
+    var tb = $('us-d-models');
+    if (!models.length) { DW.setHTML(tb, DW.html`<tr><td colspan="7" class="text-muted">No model usage in this selection.</td></tr>`); return; }
+    models.sort(function (a, b) { return Number(b.total_tokens || 0) - Number(a.total_tokens || 0); });
+    var rows = models.map(function (m) {
+      var cache = Number(m.cache_tokens || m.cache_read_tokens || 0) + Number(m.cache_creation_tokens || 0);
+      var total = Number(m.total_tokens || 0) || Number(m.input_tokens || 0) + Number(m.output_tokens || 0) + cache;
+      return {m: m, cache: cache, total: total};
     });
-    (client.daily || []).forEach(function(d){
-      var date = String(d.date || '').slice(0,10);
-      if (!date) return;
-      if (!daily[date]) daily[date] = {date:date,total_tokens:0,cost_usd:0};
-      daily[date].total_tokens += Number(d.total_tokens || d.tokens || 0);
-      daily[date].cost_usd += Number(d.cost_usd || d.cost || 0);
-    });
-  });
-  return {summary:summary, models:Object.keys(models).map(function(k){ return models[k]; }), daily:Object.keys(daily).map(function(k){ return daily[k]; }), clientCount:selected.length};
-}
-
-function renderSelectedUsageDetail() {
-  if (!usageDetailData) return;
-  var aggregate = aggregateSelectedDetail();
-  var summary = aggregate.summary || {};
-  document.getElementById('detail-total-tokens').textContent = fmtInt(summary.total_tokens || summary.tokens || 0);
-  document.getElementById('detail-total-cost').textContent = fmtUSD(summary.cost_usd || summary.cost || 0);
-  document.getElementById('detail-total-requests').textContent = fmtInt(summary.requests || 0);
-  document.getElementById('detail-total-clients').textContent = fmtInt(aggregate.clientCount);
-  renderDetailModels(aggregate.models || []);
-  renderUsageHeatmap(selectedHeatmapDaily());
-}
-
-function selectedHeatmapDaily() {
-  if (!usageHeatmapData) return [];
-  if (!usageDetailData.clients.length) return usageHeatmapData.daily || [];
-  var selectedIDs = {};
-  selectedDetailClients().forEach(function(c){ selectedIDs[c.client_id] = true; });
-  var daily = {};
-  (usageHeatmapData.clients || []).forEach(function(client){
-    if (!selectedIDs[client.client_id]) return;
-    (client.daily || []).forEach(function(d){
-      var date = String(d.date || '').slice(0,10);
-      if (!daily[date]) daily[date] = {date:date,total_tokens:0,cost_usd:0};
-      daily[date].total_tokens += Number(d.total_tokens || 0);
-      daily[date].cost_usd += Number(d.cost_usd || 0);
-    });
-  });
-  return Object.keys(daily).map(function(date){ return daily[date]; });
-}
-
-function renderDetailModels(models) {
-  var tb = document.getElementById('usage-detail-models');
-  if (!models.length) {
-    DW.setHTML(tb, DW.html`<tr><td colspan="6" class="text-muted">No model usage in this selection.</td></tr>`);
-    return;
+    var whole = rows.reduce(function (n, r) { return n + r.total; }, 0);
+    DW.setHTML(tb, DW.html`${rows.map(function (r) {
+      var m = r.m, un = Number(m.unpriced_requests || 0);
+      return DW.html`<tr><td><strong>${m.model || m.name || '(unknown)'}</strong></td><td>${fmtInt(m.input_tokens || 0)}</td><td>${fmtInt(m.output_tokens || 0)}</td><td>${fmtInt(r.cache)}</td><td>${fmtInt(r.total)}</td><td class="us-nowrap">${shareBar(r.total, whole)}</td><td>${fmtUSD(m.cost_usd || m.cost || 0)}${un ? DW.html` <span class="badge badge-yellow">${fmtInt(un) + ' unpriced'}</span>` : ''}</td></tr>`;
+    })}`);
   }
-  models.sort(function(a,b){ return Number(b.total_tokens || 0) - Number(a.total_tokens || 0); });
-  DW.setHTML(tb, DW.html`${models.map(function(m){
-    var cache = Number(m.cache_tokens || m.cache_read_tokens || 0) + Number(m.cache_creation_tokens || 0);
-    var total = Number(m.total_tokens || 0) || Number(m.input_tokens || 0) + Number(m.output_tokens || 0) + cache;
-    return DW.html`<tr><td><strong>${m.model || m.name || '(unknown)'}</strong></td><td>${fmtInt(m.input_tokens || 0)}</td><td>${fmtInt(m.output_tokens || 0)}</td><td>${fmtInt(cache)}</td><td>${fmtInt(total)}</td><td>${fmtUSD(m.cost_usd || m.cost || 0)}${Number(m.unpriced_requests || 0) ? DW.html` <span class="badge badge-yellow">partial</span>` : ''}</td></tr>`;
-  })}`);
-}
 
-function setHeatmapMetric(metric) {
-  usageHeatmapMetric = metric;
-  ['tokens','cost'].forEach(function(name){
-    var active = name === metric;
-    var button = document.getElementById('heatmap-' + name + '-btn');
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-pressed', active ? 'true' : 'false');
-  });
-  renderSelectedUsageDetail();
-}
-
-function renderUsageHeatmap(rows) {
-  var byDate = {};
-  rows.forEach(function(d){ if (d.date) byDate[String(d.date).slice(0,10)] = d; });
-  var days = [], now = new Date();
-  now.setHours(12,0,0,0);
-  for (var i = 89; i >= 0; i--) {
-    var date = new Date(now);
-    date.setDate(now.getDate() - i);
-    var iso = date.getFullYear() + '-' + String(date.getMonth()+1).padStart(2,'0') + '-' + String(date.getDate()).padStart(2,'0');
-    var row = byDate[iso] || {date:iso,total_tokens:0,cost_usd:0};
-    var value = usageHeatmapMetric === 'cost' ? Number(row.cost_usd || row.cost || 0) : Number(row.total_tokens || row.tokens || 0);
-    days.push({date:iso,value:value});
+  /* ---------- Heatmap ---------- */
+  DW.actions.usMetric = function (el) {
+    metric = el.dataset.metric;
+    ['tokens', 'cost'].forEach(function (k) { $('us-metric-' + k).setAttribute('aria-pressed', k === metric ? 'true' : 'false'); });
+    renderDetail();
+  };
+  function renderHeat(rows) {
+    var byDate = {};
+    rows.forEach(function (d) { if (d.date) byDate[String(d.date).slice(0, 10)] = d; });
+    var span = detail.span, days = [], now = new Date();
+    now.setHours(12, 0, 0, 0);
+    for (var i = span - 1; i >= 0; i--) {
+      var dt = new Date(now);
+      dt.setDate(now.getDate() - i);
+      var iso = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
+      var r = byDate[iso] || {};
+      days.push({date: iso, day: String(dt.getDate()), value: metric === 'cost' ? Number(r.cost_usd || r.cost || 0) : Number(r.total_tokens || r.tokens || 0)});
+    }
+    var max = days.reduce(function (n, d) { return Math.max(n, d.value); }, 0);
+    function level(v) { return max > 0 && v > 0 ? Math.max(1, Math.ceil(v / max * 4)) : 0; }
+    function text(d) { return d.date + ': ' + (metric === 'cost' ? fmtUSD(d.value) : fmtInt(d.value) + ' tokens'); }
+    $('us-heat').setAttribute('aria-label', 'Daily ' + metric + ' for the last ' + span + ' days');
+    DW.setHTML($('us-heat'), DW.html`${days.map(function (d) {
+      return DW.html`<button type="button" class="${'us-heat-cell us-heat-' + level(d.value)}" data-action="usHeatCell" data-text="${text(d)}" aria-pressed="false" aria-label="${text(d)}" title="${text(d)}">${d.day}</button>`;
+    })}`);
+    DW.setHTML($('us-heat-legend'), DW.html`<span>Less</span>${[0, 1, 2, 3, 4].map(function (l) { return DW.html`<i class="${'us-heat-' + l}"></i>`; })}<span>More</span>`);
+    $('us-heat-readout').textContent = 'Select a day for its value.';
+    $('us-heat-note').textContent = span === RANGES[st.range].days ? 'Showing the ' + rangeLabel() + '.' : 'Showing the last ' + span + ' days (the daily view needs at least a week to be readable); totals above follow the ' + rangeLabel() + '.';
   }
-  var max = days.reduce(function(n,d){ return Math.max(n,d.value); }, 0);
-  var box = document.getElementById('usage-heatmap');
-  box.setAttribute('aria-label', '90-day ' + usageHeatmapMetric + ' usage heatmap');
-  DW.setHTML(box, DW.html`${days.map(function(d){
-    var level = max > 0 && d.value > 0 ? Math.max(1, Math.ceil(d.value / max * 4)) : 0;
-    var display = usageHeatmapMetric === 'cost' ? fmtUSD(d.value) : fmtInt(d.value) + ' tokens';
-    return DW.html`<button type="button" class="usage-heatmap-cell" style="background:${heatmapColor(level)}" title="${d.date + ': ' + display}" aria-label="${d.date + ', ' + display}"></button>`;
-  })}`);
-  DW.setHTML(document.getElementById('usage-heatmap-legend'), DW.html`<span>Less</span>${[0,1,2,3,4].map(function(level){ return DW.html`<span style="background:${heatmapColor(level)}"></span>`; })}<span>More</span>`);
-}
+  DW.actions.usHeatCell = function (el) {
+    document.querySelectorAll('.us-heat-cell[aria-pressed="true"]').forEach(function (b) { b.setAttribute('aria-pressed', 'false'); });
+    el.setAttribute('aria-pressed', 'true');
+    $('us-heat-readout').textContent = el.dataset.text;
+  };
 
-function heatmapColor(level) {
-  return ['var(--border)','#bfdbfe','#60a5fa','#2563eb','#1d4ed8'][level] || 'var(--border)';
-}
-
-function fmtUSD(n) {
-  return '$' + Number(n || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:4});
-}
-
-function loadSessions() {
-  var hours = document.getElementById('session-window').value;
-  fetch('/api/usage/sessions?hours=' + encodeURIComponent(hours), {credentials:'same-origin'})
-    .then(function(r){ return r.json(); })
-    .then(function(rows){
-      var tb = document.getElementById('session-rows');
-      if (!rows || rows.length === 0) {
-        DW.setHTML(tb, DW.html`<tr><td colspan="5" class="text-muted">No requests in this window.</td></tr>`);
-        return;
-      }
-      DW.setHTML(tb, DW.html`${rows.map(function(s){
-        var errCls = s.errors > 0 ? 'badge badge-red' : 'text-muted';
-        return DW.html`<tr><td>${s.client_name || s.client_id || '(unknown)'}</td><td><span class="badge badge-blue">${s.service_name}</span></td><td>${fmtInt(s.requests)}</td><td><span class="${errCls}">${fmtInt(s.errors)}</span></td><td class="text-sm text-muted">${fmtReset(s.last_seen)}</td></tr>`;
+  /* ---------- Sessions ---------- */
+  function loadSessions() {
+    var n = seq.sessions = (seq.sessions || 0) + 1;
+    setState('sessions', 'loading', 'Loading sessions…');
+    getJSON('/api/usage/sessions?hours=' + RANGES[st.range].hours).then(function (rows) {
+      if (n !== seq.sessions) return;
+      loaded.sessions = st.range;
+      if (!Array.isArray(rows) || !rows.length) { setState('sessions', 'empty', 'No requests in the ' + rangeLabel() + '.'); return; }
+      setState('sessions', null);
+      DW.setHTML($('us-session-rows'), DW.html`${rows.map(function (s) {
+        var err = Number(s.errors) > 0 ? DW.html`<span class="badge badge-red">${fmtInt(s.errors)}</span>` : DW.html`<span class="text-muted">${fmtInt(s.errors)}</span>`;
+        return DW.html`<tr><td>${s.client_name || s.client_id || '(unknown)'}</td><td><span class="badge badge-blue">${s.service_name}</span></td><td>${fmtInt(s.requests)}</td><td>${err}</td><td class="text-sm text-muted">${fmtDate(s.last_seen)}</td></tr>`;
       })}`);
+    }).catch(function (err) {
+      if (n !== seq.sessions) return;
+      setState('sessions', 'error', 'Could not load sessions. ' + err.message);
     });
-}
+  }
 
-function slugId(s) {
-  return String(s).replace(/[^a-zA-Z0-9_-]/g, '_');
-}
-
-document.addEventListener('DOMContentLoaded', function(){ loadClients(); loadUsage(); });
+  readURL();
+  apply(false, true);
+})();
 </script>
 {{end}}
