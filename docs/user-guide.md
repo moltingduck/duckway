@@ -144,6 +144,11 @@ does not list.
 - Behind a reverse proxy that rewrites `Host`, set `DUCKWAY_PUBLIC_ORIGIN` (see
   the proxy section) or forward the original Host.
 - Changing the admin password signs out every other session.
+- The request log keeps everything until you set a limit: nothing is deleted on
+  upgrade. Settings, Gateway, "Request log retention (days)" shows "Keep forever
+  (not set)"; set 7 to 3650 days (90 is a good start) and the hourly cleanup
+  removes older rows. Held and ACL-denied requests are logged but excluded from
+  the Overview request and error totals.
 - Already-installed `duckway` clients keep working: they send no browser
   headers, and the admin API accepts such requests.
 

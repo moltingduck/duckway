@@ -82,9 +82,12 @@ func ValidateSetting(key, value string) string {
 			return "Client proxy port must be a number from 1024 to 65535"
 		}
 	case queries.SettingRequestLogRetentionDays:
+		if strings.TrimSpace(value) == "" {
+			return "" // unset: keep every row forever
+		}
 		n, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil || n < 1 || n > 3650 {
-			return "Request log retention must be a whole number of days from 1 to 3650"
+		if err != nil || n < 7 || n > 3650 {
+			return "Request log retention must be a whole number of days from 7 to 3650, or empty to keep everything"
 		}
 	case queries.SettingApprovalRequestTTL:
 		n, err := strconv.Atoi(strings.TrimSpace(value))

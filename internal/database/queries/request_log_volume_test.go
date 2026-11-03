@@ -168,3 +168,62 @@ func TestRequestLogRetentionPrunesInBatches(t *testing.T) {
 		t.Fatal("an invalid retention must never delete anything")
 	}
 }
+
+// One client probing many different paths cannot write more than 30 denial rows a minute.
+func TestACLDeniedPerClientPerMinuteCap(t *testing.T) {
+	db, q := logDB(t)
+	for i := 0; i < 100; i++ {
+		if err := q.LogACLDenied("c1", "", "s", "GET", "/probe/"+strings.Repeat("x", i%7)+string(rune('a'+i%26))+string(rune('A'+i/26))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := countWhere(t, db, `decision = 'acl_denied' AND client_id = 'c1'`); n != queries.MaxACLDeniedRowsPerMinute {
+		t.Fatalf("c1 wrote %d denial rows, want the cap %d", n, queries.MaxACLDeniedRowsPerMinute)
+	}
+	// The cap is per client: another client still logs.
+	if err := q.LogACLDenied("c2", "", "s", "GET", "/probe/other"); err != nil {
+		t.Fatal(err)
+	}
+	if n := countWhere(t, db, `decision = 'acl_denied' AND client_id = 'c2'`); n != 1 {
+		t.Fatalf("c2 rows=%d", n)
+	}
+	// Identical repeats are still coalesced under the cap.
+	for i := 0; i < 5; i++ {
+		_ = q.LogACLDenied("c2", "", "s", "GET", "/probe/other")
+	}
+	if n := countWhere(t, db, `decision = 'acl_denied' AND client_id = 'c2'`); n != 1 {
+		t.Fatalf("c2 identical repeats stored %d rows", n)
+	}
+}
+
+// Invalid UTF-8 is replaced before storing (PostgreSQL would reject it), at any length.
+func TestLogPathInvalidUTF8IsReplaced(t *testing.T) {
+	db, q := logDB(t)
+	bad := "/v1/\xff\xfe/ok\xc3"
+	if err := q.Log("c1", "", "s", "GET", bad, 200); err != nil {
+		t.Fatal(err)
+	}
+	long := "/" + strings.Repeat("a", 3000) + "\xff"
+	if err := q.Log("c1", "", "s", "GET", long, 200); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Query(`SELECT path FROM request_log ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var p string
+		_ = rows.Scan(&p)
+		got = append(got, p)
+	}
+	if got[0] != "/v1/�/ok�" {
+		t.Fatalf("path=%q", got[0])
+	}
+	for _, p := range got {
+		if p != strings.ToValidUTF8(p, "") || len(p) > queries.MaxLoggedPathBytes {
+			t.Fatalf("stored path must be valid UTF-8 and capped: %d bytes", len(p))
+		}
+	}
+}

@@ -42,9 +42,13 @@ func (q *RequestLogQueries) LogDecision(clientID, placeholderID, serviceName, me
 	return err
 }
 
-// DefaultRequestLogRetentionDays is how long request_log rows are kept when the
-// request_log_retention_days setting is unset.
-const DefaultRequestLogRetentionDays = 90
+// SuggestedRequestLogRetentionDays is the value the Settings page suggests. Nothing
+// is pruned unless request_log_retention_days is explicitly set (7-3650), so an
+// upgrade never drops history silently.
+const SuggestedRequestLogRetentionDays = 90
+
+// MaxACLDeniedRowsPerMinute caps acl_denied rows per client per UTC minute.
+const MaxACLDeniedRowsPerMinute = 30
 
 // MaxLoggedPathBytes bounds the stored path of every request_log row so a
 // client cannot bloat the table with huge URLs.
@@ -52,6 +56,9 @@ const MaxLoggedPathBytes = 2048
 
 // TruncateLogPath cuts a path to MaxLoggedPathBytes on a UTF-8 boundary.
 func TruncateLogPath(p string) string {
+	// Invalid UTF-8 would be rejected by PostgreSQL (and shown as garbage):
+	// replace it before anything is stored, whatever the length.
+	p = strings.ToValidUTF8(p, "\uFFFD")
 	if len(p) <= MaxLoggedPathBytes {
 		return p
 	}
@@ -86,6 +93,16 @@ func (q *RequestLogQueries) LogACLDenied(clientID, placeholderID, serviceName, m
 	}
 	if err != sql.ErrNoRows {
 		return err
+	}
+	// Per-client cap: a client probing many different paths cannot write more
+	// than MaxACLDeniedRowsPerMinute denial rows in one UTC minute.
+	var inMinute int
+	if err := q.db.QueryRow(`SELECT COUNT(*) FROM request_log WHERE decision = ? AND client_id = ? AND created_at >= ?`,
+		DecisionACLDenied, clientID, minuteStart).Scan(&inMinute); err != nil {
+		return err
+	}
+	if inMinute >= MaxACLDeniedRowsPerMinute {
+		return nil
 	}
 	return q.LogDecision(clientID, placeholderID, serviceName, method, path, 403, DecisionACLDenied, "")
 }

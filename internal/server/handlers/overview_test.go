@@ -85,7 +85,7 @@ func TestOverviewAttentionKinds(t *testing.T) {
 	ovExec(t, db, `INSERT INTO api_keys (id, service_id, name, key_encrypted) VALUES ('k1', 's1', 'plain', 'x')`)
 	ovExec(t, db, `INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, client_id) VALUES ('p1', 'E', 'ph', 's1', 'k1', 'c1')`)
 	ovExec(t, db, `INSERT INTO approvals (id, placeholder_id, status, created_at) VALUES ('a1', 'p1', 'pending', ?)`, ts(-10*time.Minute))
-	ovExec(t, db, `INSERT INTO approvals (id, placeholder_id, status, created_at) VALUES ('a2', 'p1', 'pending', ?)`, ts(-2*time.Minute))
+	ovExec(t, db, `INSERT INTO approvals (id, placeholder_id, status, scope, created_at) VALUES ('a2', 'p1', 'pending', 'rule:test', ?)`, ts(-2*time.Minute))
 	ovExec(t, db, `INSERT INTO approvals (id, placeholder_id, status) VALUES ('a3', 'p1', 'approved')`)
 	// credentials: expiring (non-refreshable), overdue refreshable, deactivated refreshable, healthy refreshable
 	ovExec(t, db, `INSERT INTO api_keys (id, service_id, name, key_encrypted, expires_at) VALUES ('k2', 's1', 'expiring', 'x', ?)`, time.Now().Add(24*time.Hour).UnixMilli())

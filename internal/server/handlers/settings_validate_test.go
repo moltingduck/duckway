@@ -64,17 +64,18 @@ func TestSetManyIsAtomic(t *testing.T) {
 }
 
 func TestRequestLogRetentionSettingValidation(t *testing.T) {
-	for _, ok := range []string{"1", "90", "3650", " 30 "} {
+	// 7-3650 days, or empty (unset: keep everything).
+	for _, ok := range []string{"7", "90", "3650", " 30 ", ""} {
 		if msg := ValidateSetting(queries.SettingRequestLogRetentionDays, ok); msg != "" {
 			t.Errorf("%q rejected: %s", ok, msg)
 		}
 	}
-	for _, bad := range []string{"", "0", "-5", "3651", "abc", "1.5", "9999999999999999999"} {
+	for _, bad := range []string{"0", "1", "6", "-5", "3651", "abc", "1.5", "9999999999999999999"} {
 		if ValidateSetting(queries.SettingRequestLogRetentionDays, bad) == "" {
 			t.Errorf("%q must be rejected", bad)
 		}
 	}
-	if queries.DefaultRequestLogRetentionDays != 90 {
-		t.Fatal("default retention is 90 days")
+	if queries.SuggestedRequestLogRetentionDays != 90 {
+		t.Fatal("the suggested retention is 90 days")
 	}
 }

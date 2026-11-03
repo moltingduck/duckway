@@ -191,8 +191,10 @@ func TestMigrationCollapsesDuplicatePendingScopedApprovals(t *testing.T) {
 	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_approvals_pending_scope`); err != nil {
-		t.Fatal(err)
+	for _, idx := range []string{"idx_approvals_pending_scope", "idx_approvals_pending_wide"} {
+		if _, err := db.Exec(`DROP INDEX IF EXISTS ` + idx); err != nil {
+			t.Fatal(err)
+		}
 	}
 	ins := func(id, ph, status, scope, created string) {
 		if _, err := db.Exec(`INSERT INTO approvals (id, placeholder_id, status, scope, created_at) VALUES (?,?,?,?,?)`, id, ph, status, scope, created); err != nil {
@@ -204,7 +206,7 @@ func TestMigrationCollapsesDuplicatePendingScopedApprovals(t *testing.T) {
 	ins("dup2", "p1", "pending", scopeX, "2026-01-01 00:00:09")
 	ins("other-ph", "p2", "pending", scopeX, "2026-01-01 00:00:07") // different token: kept
 	ins("other-scope", "p1", "pending", scopeY, "2026-01-01 00:00:08")
-	ins("wide1", "p1", "pending", "", "2026-01-01 00:00:01") // token-wide rows are untouched
+	ins("wide1", "p1", "pending", "", "2026-01-01 00:00:01") // duplicate token-wide pending rows: oldest stays pending
 	ins("wide2", "p1", "pending", "", "2026-01-01 00:00:02")
 	ins("done", "p1", "approved", scopeX, "2026-01-01 00:00:03")
 	for i := 0; i < 2; i++ { // second run: idempotent
@@ -217,7 +219,7 @@ func TestMigrationCollapsesDuplicatePendingScopedApprovals(t *testing.T) {
 		_ = db.QueryRow(`SELECT status FROM approvals WHERE id = ?`, id).Scan(&s)
 		return s
 	}
-	for id, want := range map[string]string{"old": "pending", "dup1": "ignored", "dup2": "ignored", "other-ph": "pending", "other-scope": "pending", "wide1": "pending", "wide2": "pending", "done": "approved"} {
+	for id, want := range map[string]string{"old": "pending", "dup1": "ignored", "dup2": "ignored", "other-ph": "pending", "other-scope": "pending", "wide1": "pending", "wide2": "ignored", "done": "approved"} {
 		if got := status(id); got != want {
 			t.Errorf("%s: status %q, want %q", id, got, want)
 		}

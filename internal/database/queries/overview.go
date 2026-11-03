@@ -217,7 +217,12 @@ func (q *OverviewQueries) Stats(now time.Time, online time.Duration) (OverviewSt
 	}
 	// Approval tokens are counted in Go over the (small) table: parsing the JSON
 	// is robust to spacing, unlike a LIKE on the raw text.
-	prow, err := q.db.Query(`SELECT requires_approval, COALESCE(permission_config, '') FROM placeholder_keys`)
+	if err := q.db.QueryRow(`SELECT COUNT(*) FROM placeholder_keys`).Scan(&s.PhantomTokens); err != nil {
+		return s, err
+	}
+	// SQL pre-filters to the few candidate rows; only those are parsed.
+	prow, err := q.db.Query(`SELECT requires_approval, COALESCE(permission_config, '') FROM placeholder_keys
+		WHERE requires_approval <> 0 OR COALESCE(permission_config, '') LIKE '%approve%'`)
 	if err != nil {
 		return s, err
 	}
@@ -228,7 +233,6 @@ func (q *OverviewQueries) Stats(now time.Time, online time.Duration) (OverviewSt
 			prow.Close()
 			return s, err
 		}
-		s.PhantomTokens++
 		if req != 0 || configHasApproveRule(cfg) {
 			s.ApprovalTokens++
 		}

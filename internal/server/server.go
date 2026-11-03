@@ -351,12 +351,7 @@ func (s *Server) startUsageRetentionSweeper() {
 	reqLogQ := queries.NewRequestLogQueries(s.db)
 	settingsQ := queries.NewSettingsQueries(s.db)
 	pruneRequestLog := func() {
-		days := queries.DefaultRequestLogRetentionDays
-		if n, err := strconv.Atoi(strings.TrimSpace(settingsQ.Get(queries.SettingRequestLogRetentionDays))); err == nil && n >= 1 && n <= 3650 {
-			days = n
-		}
-		// Batches of 1000, at most 100 per sweep, so a huge backlog never holds a long lock.
-		if n, err := reqLogQ.PruneOlderThan(days, 1000, 100); err != nil {
+		if n, days, err := pruneRequestLogIfConfigured(settingsQ, reqLogQ); err != nil {
 			log.Printf("request log retention sweeper: %v", err)
 		} else if n > 0 {
 			log.Printf("request log retention: pruned %d rows older than %dd", n, days)
@@ -377,6 +372,19 @@ func (s *Server) startUsageRetentionSweeper() {
 			}
 		}
 	}()
+}
+
+// pruneRequestLogIfConfigured deletes request_log rows older than the admin's
+// request_log_retention_days (7-3650). When the setting is unset or invalid
+// nothing is deleted: upgrading never drops history silently. Batches of 1000,
+// at most 100 per sweep, so a huge backlog never holds a long lock.
+func pruneRequestLogIfConfigured(settingsQ *queries.SettingsQueries, reqLogQ *queries.RequestLogQueries) (removed int64, days int, err error) {
+	days, convErr := strconv.Atoi(strings.TrimSpace(settingsQ.Get(queries.SettingRequestLogRetentionDays)))
+	if convErr != nil || days < 7 || days > 3650 {
+		return 0, 0, nil
+	}
+	removed, err = reqLogQ.PruneOlderThan(days, 1000, 100)
+	return removed, days, err
 }
 
 func (s *Server) startApprovalListeners() {

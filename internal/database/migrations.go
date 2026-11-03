@@ -595,6 +595,13 @@ func runMigrations(db *sql.DB) error {
 			SELECT a.id FROM approvals a WHERE a.status = 'pending' AND a.scope <> '' AND EXISTS (
 				SELECT 1 FROM approvals b WHERE b.status = 'pending' AND b.placeholder_id = a.placeholder_id AND b.scope = a.scope
 				AND (b.created_at < a.created_at OR (b.created_at = a.created_at AND b.id < a.id))))`,
+		// The same for pending token-wide approvals (empty scope): one per token.
+		// Duplicates left by older versions are collapsed first (keep the oldest).
+		`UPDATE approvals SET status = 'ignored' WHERE status = 'pending' AND scope = '' AND id IN (
+			SELECT a.id FROM approvals a WHERE a.status = 'pending' AND a.scope = '' AND EXISTS (
+				SELECT 1 FROM approvals b WHERE b.status = 'pending' AND b.scope = '' AND b.placeholder_id = a.placeholder_id
+				AND (b.created_at < a.created_at OR (b.created_at = a.created_at AND b.id < a.id))))`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_pending_wide ON approvals(placeholder_id) WHERE status = 'pending' AND scope = ''`,
 		// One pending approval per (token, request signature): concurrent
 		// retries of the same gated request collapse onto it. Partial unique
 		// index syntax is shared by SQLite and PostgreSQL.

@@ -50,6 +50,7 @@ func TestOverviewApprovalTokenCountIsJSONRobust(t *testing.T) {
 		"d": `{"rules":[{"endpoints":[{"method":"GET","path":"/x","allow":true}]}]}`,
 		"e": `{"rules":[{"endpoints":[{"method":"GET","path":"/x","approve":false}]}]}`,
 		"f": `not json`,
+		"g": `{"rules":[{"endpoints":[{"method":"GET","path":"/approve/me","allow":true}]}]}`, // matches the SQL pre-filter, not the JSON parse
 	}
 	n := 0
 	for id, cfg := range cfgs {
@@ -70,5 +71,5 @@ func TestRequestLogPhIndexExists(t *testing.T) {
 	if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_request_log_ph_time'`).Scan(&name); err != nil {
 		t.Fatalf("idx_request_log_ph_time missing: %v", err)
 	}
-	_ = queries.DefaultRequestLogRetentionDays
+	_ = queries.SuggestedRequestLogRetentionDays
 }

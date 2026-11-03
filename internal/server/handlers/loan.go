@@ -114,6 +114,12 @@ func (h *LoanHandler) Issue(w http.ResponseWriter, r *http.Request) {
 	// loan_proxy, so we only check at the loan level — not per request.
 	if result.NeedApproval {
 		approvalID, err := CreatePendingApproval(h.approvals, result.PlaceholderID, "LOAN", "/proxy/"+serviceName, "", "")
+		if err != nil && queries.IsUniqueViolation(err) {
+			// A token-wide approval is already pending for this token: reuse it.
+			if p, perr := h.approvals.GetPendingTokenWide(result.PlaceholderID); perr == nil {
+				approvalID, err = p.ID, nil
+			}
+		}
 		if err != nil {
 			log.Printf("failed to create loan approval: %v", err)
 			jsonError(w, "failed to create approval request", http.StatusInternalServerError)

@@ -104,7 +104,7 @@ func TestTokensSinceAggregatesWindowInOneQuery(t *testing.T) {
 
 func TestRequestCountsSinceAggregatesWindowInOneQuery(t *testing.T) {
 	db, n := openCountingDB(t)
-	if _, err := db.Exec(`CREATE TABLE request_log (id INTEGER PRIMARY KEY AUTOINCREMENT, placeholder_id TEXT, client_id TEXT, service_name TEXT NOT NULL DEFAULT '', method TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', status_code INTEGER, created_at TEXT NOT NULL)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE request_log (id INTEGER PRIMARY KEY AUTOINCREMENT, placeholder_id TEXT, client_id TEXT, service_name TEXT NOT NULL DEFAULT '', method TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', status_code INTEGER, decision TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -123,6 +123,15 @@ func TestRequestCountsSinceAggregatesWindowInOneQuery(t *testing.T) {
 	ins("p2", "c1", now.Add(-3*24*time.Hour))
 	ins("p3", "c2", now.Add(-time.Hour))
 	ins("", "c1", now.Add(-time.Hour)) // no phantom token
+	// Same predicate as the Overview totals: held, ACL-denied rows and client cancels are not counted.
+	for _, x := range []struct {
+		decision string
+		status   int
+	}{{"held", 403}, {"acl_denied", 403}, {"allowed", 0}} {
+		if _, err := db.Exec(`INSERT INTO request_log (placeholder_id, client_id, decision, status_code, created_at) VALUES ('p1', 'c1', ?, ?, ?)`, x.decision, x.status, ts(now.Add(-time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+	}
 	q := NewPlaceholderQueries(db)
 
 	before := n.Load()

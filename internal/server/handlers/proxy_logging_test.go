@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -151,5 +152,60 @@ func TestTokenWideHoldRetriesReuseThePendingApproval(t *testing.T) {
 	}
 	if len(pending) != 1 || held != 1 || len(notif.all()) != 1 {
 		t.Fatalf("pending=%d held rows=%d notifications=%d, want 1 each", len(pending), held, len(notif.all()))
+	}
+}
+
+// Many concurrent holds of one token-wide request end with exactly one pending
+// approval and one notification (partial unique index + reuse on violation).
+func TestConcurrentTokenWideHoldsMakeOneApproval(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	t.Cleanup(up.Close)
+	f := newProxyFixture(t, up.URL)
+	ph, _ := f.placeholderQ.GetByID(f.placeholderID)
+	ph.RequiresApproval = true
+	if err := f.placeholderQ.Update(ph); err != nil {
+		t.Fatal(err)
+	}
+	notif := &countNotifier{}
+	h := newProxyHandler(f).WithApprovalNotifier(notif)
+	var wg sync.WaitGroup
+	bad := make(chan int, 40)
+	for i := 0; i < 40; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if code, _ := doProxy(h, withClient(httptest.NewRequest("GET", "/proxy/anthropic/v1/models", nil), f.client)); code != http.StatusForbidden {
+				bad <- code
+			}
+		}()
+	}
+	wg.Wait()
+	close(bad)
+	for code := range bad {
+		t.Errorf("a concurrent hold answered %d, want 403 (never a 500)", code)
+	}
+	pending, _ := f.approvalQ.ListPending()
+	if len(pending) != 1 || len(notif.all()) != 1 {
+		t.Fatalf("pending approvals=%d notifications=%d, want 1 each", len(pending), len(notif.all()))
+	}
+}
+
+func TestOnlyOnePendingTokenWideApprovalPerToken(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	t.Cleanup(up.Close)
+	f := newProxyFixture(t, up.URL)
+	if _, err := f.rawDB.Exec(`INSERT INTO approvals (id, placeholder_id, status) VALUES ('w1', ?, 'pending')`, f.placeholderID); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.rawDB.Exec(`INSERT INTO approvals (id, placeholder_id, status) VALUES ('w2', ?, 'pending')`, f.placeholderID)
+	if err == nil || !queries.IsUniqueViolation(err) {
+		t.Fatalf("a second pending token-wide approval must violate the unique index: %v", err)
+	}
+	// A decided one and a scoped one do not conflict.
+	if _, err := f.rawDB.Exec(`INSERT INTO approvals (id, placeholder_id, status) VALUES ('w3', ?, 'approved')`, f.placeholderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.rawDB.Exec(`INSERT INTO approvals (id, placeholder_id, status, scope) VALUES ('s1', ?, 'pending', 'rule:x')`, f.placeholderID); err != nil {
+		t.Fatal(err)
 	}
 }

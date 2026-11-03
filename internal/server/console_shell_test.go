@@ -107,7 +107,11 @@ func TestAdminShellShowsPendingApprovalsBadge(t *testing.T) {
 	}
 	aq := queries.NewApprovalQueries(s.db)
 	for _, id := range []string{"a1", "a2"} {
-		if err := aq.Create(&models.Approval{ID: id, PlaceholderID: "p", Status: "pending"}); err != nil {
+		ph := "p" // one pending token-wide approval per token: use two tokens
+		if id == "a2" {
+			ph = "p2"
+		}
+		if err := aq.Create(&models.Approval{ID: id, PlaceholderID: ph, Status: "pending"}); err != nil {
 			t.Fatal(err)
 		}
 	}

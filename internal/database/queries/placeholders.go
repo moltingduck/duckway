@@ -184,12 +184,13 @@ func (q *PlaceholderQueries) UpdatePlaceholder(id, newPlaceholder string) error 
 	return err
 }
 
-// RequestCountsSince returns, per phantom token id, the number of request_log
-// rows at or after since. When clientID is set only that client's rows are
+// RequestCountsSince returns, per phantom token id, the number of handled
+// request_log rows at or after since (the same predicate as the Overview totals:
+// held and ACL-denied rows and client cancels, status 0, are not counted). When clientID is set only that client's rows are
 // counted. One aggregate query with a Go-computed cutoff; tokens without
 // requests are absent from the map.
 func (q *PlaceholderQueries) RequestCountsSince(since time.Time, clientID string) (map[string]int64, error) {
-	query := `SELECT placeholder_id, COUNT(*) FROM request_log WHERE placeholder_id IS NOT NULL AND created_at >= ?`
+	query := `SELECT placeholder_id, COUNT(*) FROM request_log WHERE placeholder_id IS NOT NULL AND created_at >= ? AND decision NOT IN ('held', 'acl_denied') AND (status_code IS NULL OR status_code <> 0)`
 	args := []interface{}{since.UTC().Format(OverviewTimeFormat)}
 	if clientID != "" {
 		query += ` AND client_id = ?`

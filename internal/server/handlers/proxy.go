@@ -1881,34 +1881,31 @@ func (h *ProxyHandler) logGatewayDecision(client *models.Client, placeholderID, 
 func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, client *models.Client, serviceName, placeholderID, method, path, query, bodyHash, scope, rule string) (forward bool) {
 	var approvalID string
 	var created bool
-	if scope == "" {
-		// Token-wide hold: a retry while an approval is already pending reuses it
-		// (no new approval, no new notification, no new held log row).
-		if p, perr := h.approvals.GetPendingTokenWide(placeholderID); perr == nil {
-			approvalID = p.ID
-		}
-	}
-	if scope == "" && approvalID != "" {
-		// reuse: created stays false
-	} else if scope == "" {
-		id, err := CreatePendingApprovalFor(h.approvals, placeholderID, method, path, query, bodyHash, scope, rule)
-		if err != nil {
-			log.Printf("failed to create approval: %v", err)
-			jsonError(w, "failed to create approval request", http.StatusInternalServerError)
-			return false
-		}
-		approvalID, created = id, true
-	} else {
+	{
 		ops := scopedApprovalOps{
+			// Token-wide holds (scope "") and rule holds share one resolution:
+			// reuse the pending approval, create one, and on a lost insert race
+			// (partial unique indexes) reuse the winner or forward if it was approved.
 			pending: func() (string, error) {
-				p, err := h.approvals.GetPendingScoped(placeholderID, scope)
+				var p *models.Approval
+				var err error
+				if scope == "" {
+					p, err = h.approvals.GetPendingTokenWide(placeholderID)
+				} else {
+					p, err = h.approvals.GetPendingScoped(placeholderID, scope)
+				}
 				if err != nil {
 					return "", err
 				}
 				return p.ID, nil
 			},
 			valid: func() error {
-				_, err := h.approvals.GetValidScopedApproval(placeholderID, scope)
+				var err error
+				if scope == "" {
+					_, err = h.approvals.GetValidApproval(placeholderID)
+				} else {
+					_, err = h.approvals.GetValidScopedApproval(placeholderID, scope)
+				}
 				return err
 			},
 			create: func() (string, error) {
@@ -1929,6 +1926,14 @@ func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, c
 			jsonError(w, "failed to create approval request", http.StatusInternalServerError)
 			return false
 		case fwd:
+			if scope == "" {
+				// A token-wide approval was granted while racing: nothing to forward here,
+				// the client's retry will pass.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]string{"error": "duckway_approval_pending", "message": "The approval was just granted. Retry the request.", "approval_id": ""})
+				return false
+			}
 			return true
 		}
 		approvalID, created = id, wasCreated
