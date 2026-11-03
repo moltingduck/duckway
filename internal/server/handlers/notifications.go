@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	svc "github.com/hackerduck/duckway/internal/server/services"
@@ -26,7 +27,7 @@ func (h *NotificationHandler) List(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []queries.NotificationChannel{}
 	}
-	jsonResponse(w, list)
+	jsonResponse(w, NotificationViews(list))
 }
 
 func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -52,10 +53,12 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate config is valid JSON
-	var configMap map[string]interface{}
-	if err := json.Unmarshal([]byte(req.Config), &configMap); err != nil {
-		jsonError(w, "config must be valid JSON", http.StatusBadRequest)
+	if msg := validateNotificationConfig(req.ChannelType, req.Config); msg != "" {
+		jsonError(w, msg, http.StatusBadRequest)
+		return
+	}
+	if configHasMaskSentinel(req.ChannelType, req.Config) {
+		jsonError(w, "secret fields must contain a real value when creating a channel", http.StatusBadRequest)
 		return
 	}
 
@@ -78,7 +81,7 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	jsonResponse(w, ch)
+	jsonResponse(w, notificationView(*ch))
 }
 
 func (h *NotificationHandler) Test(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +107,8 @@ func (h *NotificationHandler) Test(w http.ResponseWriter, r *http.Request) {
 
 	// Test the specific channel with round-trip verification
 	result := h.notifier.TestChannel(*target)
+	// Transport errors can echo the request URL (bot token, webhook token).
+	result.Message = scrubSecrets(target.ChannelType, target.Config, result.Message)
 	jsonResponse(w, result)
 }
 
@@ -117,15 +122,48 @@ func (h *NotificationHandler) Update(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
+	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" || req.Config == "" {
 		jsonError(w, "name and config required", http.StatusBadRequest)
 		return
 	}
-	if err := h.channels.UpdateFull(id, req.Name, req.Config); err != nil {
+	stored, err := h.channels.GetByID(id)
+	if err != nil {
+		jsonError(w, "channel not found", http.StatusNotFound)
+		return
+	}
+	// A masked secret keeps the stored value; a new value replaces it.
+	config := restoreNotificationConfig(stored.ChannelType, req.Config, stored.Config)
+	if msg := validateNotificationConfig(stored.ChannelType, config); msg != "" {
+		jsonError(w, msg, http.StatusBadRequest)
+		return
+	}
+	if err := h.channels.UpdateFull(id, req.Name, config); err != nil {
 		jsonError(w, "failed to update", http.StatusInternalServerError)
 		return
 	}
 	jsonResponse(w, map[string]string{"status": "ok"})
+}
+
+// SetActive enables or disables delivery to a channel without touching its config.
+func (h *NotificationHandler) SetActive(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Active *bool `json:"active"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Active == nil {
+		jsonError(w, "active (boolean) is required", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.channels.GetByID(id); err != nil {
+		jsonError(w, "channel not found", http.StatusNotFound)
+		return
+	}
+	if err := h.channels.Update(id, *req.Active); err != nil {
+		jsonError(w, "failed to update", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{"status": "ok", "is_active": *req.Active})
 }
 
 func (h *NotificationHandler) Get(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +173,7 @@ func (h *NotificationHandler) Get(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "channel not found", http.StatusNotFound)
 		return
 	}
-	jsonResponse(w, ch)
+	jsonResponse(w, notificationView(*ch))
 }
 
 func (h *NotificationHandler) Delete(w http.ResponseWriter, r *http.Request) {

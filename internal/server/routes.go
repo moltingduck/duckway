@@ -279,6 +279,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/notifications", notifH.Create)
 	adminAPIMux.HandleFunc("GET /api/notifications/{id}", notifH.Get)
 	adminAPIMux.HandleFunc("PUT /api/notifications/{id}", notifH.Update)
+	adminAPIMux.HandleFunc("POST /api/notifications/{id}/active", notifH.SetActive)
 	adminAPIMux.HandleFunc("DELETE /api/notifications/{id}", notifH.Delete)
 	adminAPIMux.HandleFunc("POST /api/notifications/{id}/test", notifH.Test)
 
@@ -297,20 +298,9 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/supply-chain/min-age", supplyChainH.SetMinAge)
 	adminAPIMux.HandleFunc("POST /api/supply-chain/{id}", supplyChainH.Toggle)
 
-	adminAPIMux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
-		handlers.JsonResponsePublic(w, settingsQ.GetAll())
-	})
-	adminAPIMux.HandleFunc("POST /api/settings", func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			handlers.JsonErrorPublic(w, "invalid request", 400)
-			return
-		}
-		for k, v := range req {
-			settingsQ.Set(k, v)
-		}
-		handlers.JsonResponsePublic(w, map[string]string{"status": "ok"})
-	})
+	settingsH := handlers.NewSettingsHandler(settingsQ)
+	adminAPIMux.HandleFunc("GET /api/settings", settingsH.Get)
+	adminAPIMux.HandleFunc("POST /api/settings", settingsH.Update)
 
 	oauthH := handlers.NewOAuthHandler(ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.Crypto)
 	oauthH.SetRefresher(ss.Refresher)
