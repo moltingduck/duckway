@@ -169,3 +169,19 @@ func TestRound3FrontendContracts(t *testing.T) {
 		t.Error("layout needs the single term status region")
 	}
 }
+
+// The Overview "Security posture" card header links to the first Security page.
+func TestOverviewPostureCardLinksToSecurity(t *testing.T) {
+	d := readWeb(t, "templates/dashboard.html")
+	i := strings.Index(d, `id="ov-pos-h"`)
+	if i < 0 {
+		t.Fatal("posture heading missing")
+	}
+	head := d[i : i+strings.Index(d[i:], "</div>")]
+	if !strings.Contains(head, `<a class="ov-link" href="/admin/canary">Review security settings</a>`) {
+		t.Errorf("posture card header lacks the Review security settings link: %s", head)
+	}
+	if !strings.Contains(readWeb(t, "static/style.css"), ".ov-link, .ov-pos-label a { display: inline-flex; align-items: center; min-height: 44px; }") {
+		t.Error("ov-link must keep a 44px target on narrow screens")
+	}
+}
