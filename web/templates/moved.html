@@ -1,0 +1,14 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Page moved</h1>
+</div>
+<section class="card mv-card" role="status" aria-labelledby="mv-title">
+  <span class="mv-pill">Moved</span>
+  <div class="mv-body">
+    <h2 id="mv-title" class="mv-title">This page has a new address</h2>
+    <p><code class="mono mv-old">{{.Moved.OldPath}}</code> no longer exists. It is now <a class="mv-link" href="{{.Moved.NewPath}}">{{.Moved.NewName}}</a>. Update your bookmark.</p>
+    <p class="text-muted text-sm">Old URLs are not redirected. They return this page (HTTP 404) inside the console, with a link to the new location.</p>
+    <p><a class="btn btn-primary mv-cta" href="{{.Moved.NewPath}}">Open {{.Moved.NewName}}</a></p>
+  </div>
+</section>
+{{end}}

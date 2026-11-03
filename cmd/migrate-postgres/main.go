@@ -24,7 +24,7 @@ var tableOrder = []string{
 	"api_key_group_members", "key_groups", "key_group_members", "key_suites",
 	"placeholder_keys", "codex_remote_enrollments", "approvals", "request_log", "request_log_detail",
 	"notification_channels", "canary_settings", "canary_tokens",
-	"client_runtime_status", "client_update_rollouts", "client_update_jobs",
+	"client_runtime_status", "client_update_rollouts", "client_update_jobs", "client_drafts",
 	"oauth_credentials", "settings", "control_channels", "cc_channels",
 	"discord_inbox", "cc_message_deliveries", "cc_agent_tests", "schema_version", "conversation_usage",
 	"model_pricing", "key_suite_assignments", "key_suite_entries",

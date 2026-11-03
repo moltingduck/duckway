@@ -14,7 +14,9 @@ func TestClientUpdatesTemplateContainsRolloutControls(t *testing.T) {
 	for _, want := range []string{
 		"/api/client-updates", "rollout-concurrency", "rollout-interval", "rollout-failure-threshold",
 		"retry-failed", "skipped_manual", "manual_required", "managed_update_v1", "runtimeFresh",
-		`class="client-tab active"`, `href="/admin/clients"`, "Updates",
+		`class="cl-subtabs"`, `href="/admin/clients"`, `href="/admin/clients/rollouts"`, "Rollouts",
+		`role="progressbar"`, "askCancel", "ro-drawer", "DW.live.on('rollouts'",
+		`href="/admin/clients?status=offline"`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("client updates template missing %q", want)

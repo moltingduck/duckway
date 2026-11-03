@@ -515,6 +515,11 @@ func runMigrations(db *sql.DB) error {
 		}
 	}
 	required := []string{
+		`CREATE TABLE IF NOT EXISTS client_drafts (
+			client_id TEXT PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
+			step INTEGER NOT NULL DEFAULT 1, suite_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')))`,
 		`CREATE TABLE IF NOT EXISTS cc_message_deliveries (
 			cc_id TEXT NOT NULL REFERENCES control_channels(id) ON DELETE CASCADE,
 			channel_handle TEXT NOT NULL REFERENCES cc_channels(handle) ON DELETE CASCADE,

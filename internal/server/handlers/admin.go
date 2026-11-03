@@ -87,7 +87,7 @@ func NewAdminHandler(
 	// Parse each page template paired with the layout
 	pageNames := []string{
 		"dashboard", "services", "api_keys", "usage", "oauth", "placeholders",
-		"clients", "client_updates", "plugins", "groups", "key_groups", "key_group_detail", "key_suites", "approvals", "logs", "notifications", "canary", "supplychain", "settings", "docs", "cc", "onboarding",
+		"clients", "client_updates", "plugins", "groups", "key_groups", "key_group_detail", "key_suites", "approvals", "logs", "notifications", "canary", "supplychain", "settings", "docs", "cc", "onboarding", "moved",
 	}
 
 	pages := make(map[string]*template.Template)
@@ -199,6 +199,8 @@ type pageData struct {
 	Logs         interface{}
 	Channels     interface{}
 	CanaryTokens interface{}
+	// Moved is set on the page-moved 404 notice (see moved.go).
+	Moved *MovedNotice
 }
 
 func (h *AdminHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +304,7 @@ func (h *AdminHandler) ClientsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminHandler) ClientUpdatesPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, r, "client_updates", pageData{Title: "Client Updates", Active: "clients"})
+	h.render(w, r, "client_updates", pageData{Title: "Rollouts", Active: "clients"})
 }
 
 func (h *AdminHandler) GroupsPage(w http.ResponseWriter, r *http.Request) {
@@ -420,8 +422,8 @@ func (h *AdminHandler) CCPage(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminHandler) OnboardingPage(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "onboarding", pageData{
-		Title:  "Onboard Client",
-		Active: "onboarding",
+		Title:  "Add client",
+		Active: "clients",
 	})
 }
 
