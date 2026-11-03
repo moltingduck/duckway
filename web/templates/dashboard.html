@@ -1,55 +1,77 @@
 {{define "content"}}
-<div class="page-header">
-  <h1>Overview</h1>
+<div class="page-header ov-header">
+  <div>
+    <h1>Overview</h1>
+    <p class="ov-sub">What needs you now, then how the gateway is doing.</p>
+  </div>
+  <a class="btn btn-primary" href="/admin/onboarding">Add client</a>
 </div>
 
-<div class="stats">
-  <div class="stat-card">
-    <div class="label">Services</div>
-    <div class="value" id="c-services">{{.ServiceCount}}</div>
+<section class="card ov-attention" aria-labelledby="ov-att-h">
+  <div class="ov-card-head">
+    <h2 id="ov-att-h">Needs attention</h2>
+    <span class="ov-pill ov-pill-mute" id="ov-att-count">&hellip;</span>
   </div>
-  <div class="stat-card">
-    <div class="label">API Keys</div>
-    <div class="value" id="c-keys">{{.KeyCount}}</div>
-  </div>
-  <div class="stat-card">
-    <div class="label">Clients</div>
-    <div class="value" id="c-clients">{{.ClientCount}}</div>
-  </div>
-  <div class="stat-card">
-    <div class="label">Pending approvals</div>
-    <div class="value"><a href="/admin/approvals" id="c-pending">{{.PendingApprovals}}</a></div>
-  </div>
-  <div class="stat-card">
-    <div class="label">Phantom Tokens</div>
-    <div class="value" id="c-phantoms">{{.PlaceholderCount}}</div>
-  </div>
-</div>
+  <div id="ov-att-list" aria-live="polite"><p class="ov-empty text-muted">Checking&hellip;</p></div>
+</section>
 
-<div class="card">
-  <h3>Recent Requests</h3>
-  <div class="table-wrap">
-  <table>
-    <caption class="sr-only">Recent requests</caption>
-    <thead>
-      <tr><th>Time</th><th>Client</th><th>Service</th><th>Method</th><th>Path</th><th>Status</th></tr>
-    </thead>
-    <tbody id="recent-body">
-      {{range .RecentLogs}}
-      <tr>
-        <td class="text-muted text-sm">{{.CreatedAt}}</td>
-        <td>{{if .ClientName}}{{.ClientName}}{{else}}<span class="text-muted">—</span>{{end}}</td>
-        <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
-        <td><span class="badge badge-blue">{{.Method}}</span></td>
-        <td class="mono text-sm">{{.Path}}</td>
-        <td>{{if .StatusCode}}<span class="badge {{if lt (deref .StatusCode) 400}}badge-green{{else}}badge-red{{end}}">{{deref .StatusCode}}</span>{{end}}</td>
-      </tr>
-      {{else}}
-      <tr><td colspan="6" class="text-muted">No requests yet</td></tr>
-      {{end}}
-    </tbody>
-  </table>
-  </div>
+<section class="ov-stats" aria-label="Key numbers">
+  <a class="ov-stat" href="/admin/clients">
+    <span class="ov-stat-label">Clients online</span>
+    <span class="ov-stat-value" id="ov-s-clients">&mdash;</span>
+    <span class="ov-stat-sub" id="ov-s-clients-sub">&nbsp;</span>
+  </a>
+  <a class="ov-stat" href="/admin/keys">
+    <span class="ov-stat-label">Credentials</span>
+    <span class="ov-stat-value" id="ov-s-creds">&mdash;</span>
+    <span class="ov-stat-sub" id="ov-s-creds-sub">&nbsp;</span>
+  </a>
+  <a class="ov-stat" href="/admin/placeholders">
+    <span class="ov-stat-label">Phantom tokens</span>
+    <span class="ov-stat-value" id="ov-s-phantoms">&mdash;</span>
+    <span class="ov-stat-sub">&nbsp;</span>
+  </a>
+  <a class="ov-stat" href="/admin/logs">
+    <span class="ov-stat-label">Requests &middot; 24h</span>
+    <span class="ov-stat-value" id="ov-s-reqs">&mdash;</span>
+    <span class="ov-stat-sub">&nbsp;</span>
+  </a>
+</section>
+
+<div class="ov-grid">
+  <section class="card ov-recent" aria-labelledby="ov-rr-h">
+    <div class="ov-card-head">
+      <h2 id="ov-rr-h">Recent requests</h2>
+      <a class="ov-link" href="/admin/logs">Open request log</a>
+    </div>
+    <div class="table-wrap">
+    <table>
+      <caption class="sr-only">Recent requests</caption>
+      <thead>
+        <tr><th>Time</th><th>Client</th><th>Service</th><th>Method</th><th>Path</th><th>Status</th></tr>
+      </thead>
+      <tbody id="recent-body">
+        {{range .RecentLogs}}
+        <tr>
+          <td class="text-muted text-sm">{{.CreatedAt}}</td>
+          <td>{{if .ClientName}}{{.ClientName}}{{else}}<span class="text-muted">—</span>{{end}}</td>
+          <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
+          <td><span class="badge badge-blue">{{.Method}}</span></td>
+          <td class="mono text-sm">{{.Path}}</td>
+          <td>{{if .StatusCode}}<span class="badge {{if lt (deref .StatusCode) 400}}badge-green{{else}}badge-red{{end}}">{{deref .StatusCode}}</span>{{end}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6" class="text-muted">No requests yet</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="card ov-posture" aria-labelledby="ov-pos-h">
+    <div class="ov-card-head"><h2 id="ov-pos-h">Security posture</h2></div>
+    <ul class="ov-posture-list" id="ov-posture"><li class="text-muted">Checking&hellip;</li></ul>
+  </section>
 </div>
 
 <script nonce="{{$.CSPNonce}}">
@@ -60,10 +82,12 @@
       return r.ok ? r.json() : null;
     }).catch(function() { return null; });
   }
-  var dash = DW.raw('<span class="text-muted">\u2014</span>');
+  var dash = DW.raw('<span class="text-muted">—</span>');
+  var fmt = new Intl.NumberFormat();
+  function byId(id) { return document.getElementById(id); }
 
   function renderRecent(list) {
-    var body = document.getElementById('recent-body');
+    var body = byId('recent-body');
     var rows = list.slice(0, 10);
     if (!rows.length) { DW.setHTML(body, DW.raw('<tr><td colspan="6" class="text-muted">No requests yet</td></tr>')); return; }
     DW.setHTML(body, DW.html`${rows.map(function(l) {
@@ -72,29 +96,69 @@
       return DW.html`<tr><td class="text-muted text-sm">${l.created_at}</td><td>${l.client_name || dash}</td><td><span class="badge badge-blue">${l.service_name}</span></td><td><span class="badge badge-blue">${l.method}</span></td><td class="mono text-sm">${l.path}</td><td>${status}</td></tr>`;
     })}`);
   }
+
+  var SEV = {critical: 'ov-pill-bad', warn: 'ov-pill-warn', info: 'ov-pill-info'};
+  var SEVTXT = {critical: 'Urgent', warn: 'Soon', info: 'Info'};
+  function safeHref(h) { return typeof h === 'string' && h.charAt(0) === '/' && h.charAt(1) !== '/' ? h : '/admin/'; }
+  function renderAttention(a) {
+    var cnt = byId('ov-att-count');
+    var items = (a && a.items) || [];
+    cnt.textContent = items.length ? String(items.length) + (items.length === 1 ? ' item' : ' items') : 'All clear';
+    cnt.className = 'ov-pill ' + (items.length ? 'ov-pill-warn' : 'ov-pill-ok');
+    var list = byId('ov-att-list');
+    if (!items.length) {
+      DW.setHTML(list, DW.raw('<p class="ov-empty"><strong>Nothing needs you right now</strong><span class="text-muted"> Approvals, credentials, clients and rollouts are all in order.</span></p>'));
+      return;
+    }
+    DW.setHTML(list, DW.html`<ul class="ov-att-items">${items.map(function(it) {
+      return DW.html`<li class="ov-att-item"><span class="ov-pill ${SEV[it.severity] || 'ov-pill-mute'} ov-kind">${it.label}<span class="sr-only"> (${SEVTXT[it.severity] || ''})</span></span><div class="ov-att-body"><div class="ov-att-title">${it.title}</div><div class="ov-att-meta">${it.meta}</div></div><a class="btn" href="${safeHref(it.href)}">${it.cta}</a></li>`;
+    })}</ul>`);
+  }
+
+  function renderStats(s) {
+    byId('ov-s-clients').textContent = fmt.format(s.clients.online) + ' / ' + fmt.format(s.clients.total);
+    byId('ov-s-clients-sub').textContent = 'online in the last 5 min';
+    byId('ov-s-creds').textContent = fmt.format(s.credentials.total);
+    var cs = byId('ov-s-creds-sub');
+    cs.textContent = s.credentials.expiring ? s.credentials.expiring + ' need attention' : 'none expiring';
+    cs.className = 'ov-stat-sub' + (s.credentials.expiring ? ' ov-warn' : '');
+    byId('ov-s-phantoms').textContent = fmt.format(s.phantom_tokens);
+    byId('ov-s-reqs').textContent = fmt.format(s.requests_24h);
+  }
+
+  function renderPosture(p) {
+    var cls = {ok: 'ov-pill-ok', warn: 'ov-pill-warn', info: 'ov-pill-info'};
+    DW.setHTML(byId('ov-posture'), DW.html`${(p || []).map(function(x) {
+      var label = x.href ? DW.html`<a href="${safeHref(x.href)}">${x.label}</a>` : x.label;
+      return DW.html`<li class="ov-pos-row"><span class="ov-pill ${cls[x.state] || 'ov-pill-mute'} ov-pos-state">${x.status}</span><div><div class="ov-pos-label">${label}</div><div class="ov-pos-detail">${x.detail}</div></div></li>`;
+    })}`);
+  }
+
   // Latest-wins per target: drop responses that arrive out of order.
   var seqs = {};
-  function latest(key, url, apply) {
+  function latest(key, url, valid, apply) {
     var n = (seqs[key] || 0) + 1;
     seqs[key] = n;
-    getJSON(url).then(function(d) { if (seqs[key] === n && Array.isArray(d)) apply(d); });
+    getJSON(url).then(function(d) { if (seqs[key] === n && valid(d)) apply(d); });
   }
-  function refreshRecent() { latest('recent', '/api/logs', renderRecent); }
-  function refreshPending() {
-    latest('pending', '/api/approvals', function(d) { document.getElementById('c-pending').textContent = String(d.length); });
-  }
-  var lastCounts = 0;
-  // force bypasses the throttle (polling / reconnect catch-up, approvals).
-  function refreshCounts(force) {
-    var now = Date.now();
-    if (now - lastCounts < (force ? 2000 : 30000)) return; // these lists are heavier; throttle
-    lastCounts = now;
-    [['/api/services', 'c-services'], ['/api/keys', 'c-keys'], ['/api/clients', 'c-clients'], ['/api/placeholders', 'c-phantoms']].forEach(function(p) {
-      latest(p[1], p[0], function(d) { document.getElementById(p[1]).textContent = String(d.length); });
+  function refreshRecent() { latest('recent', '/api/logs', Array.isArray, renderRecent); }
+  var lastOverview = 0, ovTimer = null;
+  function refreshOverview(force) {
+    var wait = (force ? 0 : 1500) - (Date.now() - lastOverview);
+    if (wait > 0) { // coalesce bursts of topic events
+      if (!ovTimer) ovTimer = setTimeout(function() { ovTimer = null; refreshOverview(true); }, wait);
+      return;
+    }
+    lastOverview = Date.now();
+    latest('overview', '/api/overview', function(d) { return d && d.attention && d.stats; }, function(d) {
+      renderAttention(d.attention); renderStats(d.stats); renderPosture(d.posture);
     });
   }
-  DW.live.on('logs', function(d) { refreshRecent(); refreshCounts(!!(d && d.synthetic)); }, {defer: true});
-  DW.live.on('approvals', function(d) { refreshPending(); refreshCounts(!!(d && d.synthetic)); }, {defer: true});
+  refreshOverview(true);
+  DW.live.on('logs', function() { refreshRecent(); refreshOverview(false); }, {defer: true});
+  ['approvals', 'rollouts', 'badge'].forEach(function(t) {
+    DW.live.on(t, function() { refreshOverview(false); }, {defer: true});
+  });
 })();
 </script>
 {{end}}

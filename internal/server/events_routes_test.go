@@ -130,3 +130,19 @@ func TestHTTPServerShutdownClosesOpenEventStreamPromptly(t *testing.T) {
 		t.Fatalf("shutdown took %s", d)
 	}
 }
+
+func TestOverviewEndpointRequiresAdminAuth(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/overview", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous status=%d", rec.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/overview", nil)
+	req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"attention"`) {
+		t.Fatalf("authed status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
