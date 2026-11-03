@@ -290,6 +290,9 @@ func (h *ControlChannelHandler) List(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []models.ControlChannel{}
 	}
+	for i := range list {
+		maskCC(&list[i])
+	}
 	jsonResponse(w, list)
 }
 
@@ -305,6 +308,7 @@ func (h *ControlChannelHandler) Get(w http.ResponseWriter, r *http.Request) {
 	if c.Channels == nil {
 		c.Channels = []models.CCChannel{}
 	}
+	maskCC(c)
 	jsonResponse(w, c)
 }
 
@@ -512,6 +516,7 @@ func (h *ControlChannelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		full = c
 	}
 	full.Channels, _ = h.cc.ListChannels(ccID)
+	maskCC(full)
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, full)
 }
@@ -575,7 +580,7 @@ func (h *ControlChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	configStr := cur.Config
 	if len(req.Config) > 0 {
-		configStr = string(req.Config)
+		configStr = restoreCCMaskedConfig(string(req.Config), cur.Config)
 	}
 	configStr, err = normalizeCCConfigForAgent(agentType, configStr)
 	if err != nil {

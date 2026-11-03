@@ -14,9 +14,8 @@ func TestCCTemplateShowsCodexSandboxOutsideEdit(t *testing.T) {
 	source := string(template)
 
 	checks := []string{
-		"function codexSandboxBadge(c)",
-		"(${agentLabel(c.agent_type)})</span>${codexSandboxBadge(c)}",
-		"(${c.agent_type})</span>${codexSandboxBadge(c)}",
+		"function sandboxBadge(sandbox)",
+		"${agentLabel(c.agent_type)}${sandboxBadge(sb)}",
 	}
 	for _, check := range checks {
 		if !strings.Contains(source, check) {

@@ -1,832 +1,702 @@
 {{define "content"}}
+<div id="cc-main">
 <div class="page-header">
-  <h1>Control Channels</h1>
-  <button class="btn btn-primary" data-action="openCreate">New CC</button>
+  <h1>Control channels</h1>
+  <button type="button" class="btn btn-primary" id="cc-new" data-action="openCreate">New control channel</button>
 </div>
 
-<div class="card">
-  <p class="text-sm text-muted mb-1">
-    A <strong>Control Channel (CC)</strong> binds a bot token to a service-specific scope (e.g. a Discord category).
-    Clients assigned to a CC each get a home channel auto-provisioned under that scope, and their agent gets
-    an MCP/skill bundle written by <code>duckway sync</code>.
-    Bot token = security boundary — clients sharing one CC can interact with each other&rsquo;s channels.
-  </p>
+<div class="cc-security" role="note">
+  <span class="cc-security-tag">Security</span>
+  <p class="text-sm">Bot tokens stay on the Duckway server. They are never shown in the console or sent to your browser; a control channel only references a stored credential. Every client that uses the same bot can reach every channel under its category, so give each client its own category.</p>
+</div>
+
+<section class="card cc-list-card" aria-label="Control channels">
+  <div class="cc-count text-muted text-sm" id="cc-count" role="status"></div>
   <div class="table-wrap">
-  <table>
-    <thead><tr><th>Name</th><th>Client (agent)</th><th>Bot Token</th><th>Config</th><th>Active</th><th></th></tr></thead>
-    <tbody id="cc-list"><tr><td colspan="6" class="text-muted">Loading…</td></tr></tbody>
-  </table>
-  </div>
-</div>
-
-<!-- Create modal -->
-<div id="create-modal" class="modal-backdrop" style="display:none">
-  <div class="modal" style="max-width:560px">
-    <h2>New Control Channel</h2>
-    <form id="create-form">
-      <div class="form-group">
-        <label>Name</label>
-        <input type="text" id="cc-name" placeholder="Project Alpha CC" required>
-      </div>
-      <div class="form-group">
-        <label>Client</label>
-        <select id="cc-client" required data-on-change="onCCClientChange"></select>
-        <span class="text-muted text-sm">CC v2: 1:1 client↔CC. Pick a client that doesn't already have a CC.</span>
-      </div>
-      <div class="form-group">
-        <label>Agent type</label>
-        <select id="cc-agent" data-on-change="renderCreateAgentOptions">
-          <option value="claude_code">claude_code</option>
-          <option value="codex">codex</option>
-          <option value="openclaw">openclaw</option>
-        </select>
-        <span class="text-muted text-sm">Only agents implemented by <code>duckway cc watch</code> are shown.</span>
-      </div>
-      <div id="cc-agent-options"></div>
-      <div class="form-group">
-        <label>Service</label>
-        <select id="cc-service" required data-on-change="renderConfigFields"></select>
-        <span class="text-muted text-sm">Only message-channel services are shown. Discord is fully provisioned; Telegram support is message-service scoped.</span>
-      </div>
-      <div class="form-group">
-        <label>Bot Token (API Key)</label>
-        <select id="cc-key" required data-on-change="onCCKeyChange"></select>
-        <span class="text-muted text-sm">Pick an existing API key for the chosen service. Add one in API Keys first if missing.</span>
-      </div>
-      <div id="config-fields"></div>
-      <div class="modal-actions">
-        <button type="button" class="btn" data-action="modal-close">Cancel</button>
-        <button type="submit" class="btn btn-primary">Create</button>
-      </div>
-    </form>
-  </div>
-</div>
-
-<!-- Detail modal -->
-<div id="detail-modal" class="modal-backdrop" style="display:none">
-  <div class="modal" style="max-width:640px">
-    <h2 id="d-title">CC Detail</h2>
-    <table class="detail-table">
-      <tr><td class="text-muted">ID</td><td id="d-id" class="mono text-sm"></td></tr>
-      <tr><td class="text-muted">Name</td><td id="d-name"></td></tr>
-      <tr><td class="text-muted">Agent Type</td><td id="d-agent"></td></tr>
-      <tr><td class="text-muted">Service</td><td id="d-service"></td></tr>
-      <tr><td class="text-muted">Bot Token</td><td id="d-key"></td></tr>
-      <tr><td class="text-muted">Config</td><td id="d-config" class="mono text-sm" style="white-space:pre-wrap"></td></tr>
-      <tr><td class="text-muted">Active</td><td id="d-active"></td></tr>
-      <tr><td class="text-muted">Created</td><td id="d-created"></td></tr>
+    <table class="cc-table">
+      <thead><tr><th scope="col">Name</th><th scope="col">Agent</th><th scope="col">Bound client</th><th scope="col">Platform</th><th scope="col">Status</th></tr></thead>
+      <tbody id="cc-list"><tr><td colspan="5" class="text-muted">Loading&hellip;</td></tr></tbody>
     </table>
-    <div class="mt-1">
-      <strong class="text-sm">Channels</strong>
-      <div class="table-wrap">
-      <table class="mt-1">
-        <thead><tr><th>Kind</th><th>Name</th><th>Handle</th><th>Session id</th></tr></thead>
-        <tbody id="d-channels"><tr><td colspan="4" class="text-muted">None</td></tr></tbody>
-      </table>
-      </div>
-    </div>
-    <div id="d-test-result" class="mt-1"></div>
-    <div class="modal-actions mt-1">
-      <button type="button" class="btn" data-action="modal-close">Close</button>
-      <button type="button" class="btn" data-action="openEditFromDetail">Edit</button>
-      <button type="button" class="btn" id="d-agent-test-btn" data-action="testAgent">Test agent (hi)</button>
-      <button type="button" class="btn" id="d-test-btn" data-action="testCC">Test (create + delete channel)</button>
-      <button type="button" class="btn btn-danger" id="d-delete-btn" data-action="deleteCC">Delete CC</button>
-    </div>
   </div>
+</section>
 </div>
 
-<!-- Edit modal -->
-<div id="edit-modal" class="modal-backdrop" style="display:none">
-  <div class="modal" style="max-width:560px">
-    <h2>Edit Control Channel</h2>
-    <form id="edit-form">
-      <input type="hidden" id="edit-cc-id">
-      <div class="form-group">
-        <label>Name</label>
-        <input type="text" id="edit-cc-name" required>
-      </div>
-      <div class="form-group">
-        <label>Binding</label>
-        <div id="edit-cc-binding" class="text-sm text-muted"></div>
-      </div>
-      <div class="form-group">
-        <label><input type="checkbox" id="edit-cc-active"> Active</label>
-      </div>
-      <div id="edit-config-fields"></div>
-      <div id="edit-test-result" class="mt-1"></div>
-      <div class="modal-actions">
-        <button type="button" class="btn" data-action="modal-close">Cancel</button>
-        <button type="submit" class="btn btn-primary">Save</button>
-      </div>
-    </form>
+<div class="cc-scrim" id="cc-scrim" data-action="closeDrawer" hidden></div>
+<aside class="cc-drawer" id="cc-drawer" aria-labelledby="cc-h" aria-hidden="true" tabindex="-1">
+  <div class="cc-drawer-head">
+    <h2 id="cc-h" tabindex="-1">Control channel</h2>
+    <span id="cc-head-status"></span>
+    <button type="button" class="btn btn-sm cc-close" id="cc-close" data-action="closeDrawer" aria-label="Close drawer">Close</button>
+  </div>
+  <div class="cc-drawer-body" id="cc-body"></div>
+</aside>
+
+<div id="cc-confirm" class="modal-backdrop" hidden>
+  <div class="modal" role="alertdialog" aria-labelledby="cc-confirm-h" aria-describedby="cc-confirm-text">
+    <h2 id="cc-confirm-h">Delete control channel?</h2>
+    <div id="cc-confirm-text" class="text-sm"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="modal-close">Cancel</button>
+      <button type="button" class="btn btn-danger" id="cc-confirm-ok" data-action="confirmDelete">Delete control channel</button>
+    </div>
   </div>
 </div>
 
 <script nonce="{{$.CSPNonce}}">
-var allKeys = [];
-var allServices = [];
-var allClients = [];
-var allCCs = [];
-var currentCC = null;
-var discordSetup = {apiKeyId:'', guilds:[], categories:[]};
+(function() {
+'use strict';
 
-DW.actions.openCreate = function() { openCreate(); };
-DW.actions.onCCClientChange = function() { renderDiscordSetup(); };
-DW.actions.onCCKeyChange = function() {
-  discordSetup = {apiKeyId:'', guilds:[], categories:[]};
-  renderDiscordSetup();
-};
-DW.actions.renderCreateAgentOptions = function() { renderCreateAgentOptions(); };
-DW.actions.renderConfigFields = function() { renderConfigFields(); };
-DW.actions.openEditFromDetail = function() { openEditFromDetail(); };
-DW.actions.testAgent = function() { testAgent(); };
-DW.actions.testCC = function() { testCC(); };
-DW.actions.openDetail = function(el) { openDetail(el.dataset.id); };
-DW.actions.openEdit = function(el) { openEdit(el.dataset.id); };
-DW.actions.loadDiscordCategories = function() { loadDiscordCategories(); };
-DW.actions.preflightDiscordCategory = function() { preflightDiscordCategory(); };
-DW.actions.grantDiscordCategoryAccess = function() { grantDiscordCategoryAccess(); };
-DW.actions.createDiscordCategory = function() { createDiscordCategory(); };
-DW.actions.loadDiscordSetup = function() { loadDiscordSetup(); };
-DW.actions.renderEditAgentOptions = function() { renderEditAgentOptions(); };
-DW.actions.preflightEditDiscordCategory = function() { preflightEditDiscordCategory(); };
-DW.actions.grantEditDiscordCategoryAccess = function() { grantEditDiscordCategoryAccess(); };
-DW.actions.deleteCC = function() {
-  var c = currentCC;
-  if (!c) return;
-  if (!confirm('Delete CC "'+c.name+'"? Assigned clients will lose access; channels are archived.')) return;
-  fetch('/api/cc/'+encodeURIComponent(c.id), {method:'DELETE', credentials:'same-origin'})
-    .then(function(r){return r.json();}).then(function(d){
-      if (d.error) { showToast(d.error,'error'); return; }
-      DW.modal.close('#detail-modal');
-      loadCCs();
-      showToast('Deleted','success');
-    });
-};
+var AGENTS = [['claude_code', 'Claude Code'], ['codex', 'Codex'], ['openclaw', 'OpenClaw']];
+var SANDBOXES = ['workspace-write', 'read-only', 'danger-full-access', 'none'];
+var MASK = '********';
+var SECRET_RE = /token|secret|password|passwd|apikey|api_key|credential|authorization|bearer|private|signing|_key$|^key$/i;
 
-document.addEventListener('DOMContentLoaded', function() {
-  fetch('/api/services', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s){
-    allServices = (s || []).filter(isMessageChannelService);
-    var sel = document.getElementById('cc-service');
-    sel.replaceChildren();
-    allServices.forEach(function(svc) {
-      var opt = document.createElement('option');
-      opt.value = svc.id;
-      opt.textContent = svc.display_name + ' (' + svc.name + ')';
-      if (svc.name === 'discord') opt.selected = true;
-      sel.appendChild(opt);
-    });
-    renderConfigFields();
-  });
-  fetch('/api/keys', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(k){
-    allKeys = k || [];
-    renderConfigFields();
-  });
-  fetch('/api/clients', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(c){
-    allClients = c || [];
-    repopulateClientPicker();
-  });
-  loadCCs();
-});
+var allKeys = [], allServices = [], allClients = [], allCCs = [];
+var cur = null;        // CC detail (view/edit)
+var mode = '';         // '', 'view', 'edit', 'create'
+var form = null;       // form state while editing/creating
+var setup = {apiKeyId: '', guilds: [], categories: [], bot: null, invite: '', setupInvite: '', err: ''};
+var opener = null;
+var seq = 0;           // invalidates async work when the drawer content changes
+var busy = false;
 
-function repopulateClientPicker() {
-  var sel = document.getElementById('cc-client');
-  sel.replaceChildren();
-  var assigned = {};
-  allCCs.forEach(function(c){ assigned[c.client_id] = c.name; });
-  allClients.forEach(function(cl) {
-    var opt = document.createElement('option');
-    opt.value = cl.id;
-    if (assigned[cl.id]) {
-      opt.disabled = true;
-      opt.textContent = cl.name + '  (already in CC: ' + assigned[cl.id] + ')';
-    } else {
-      opt.textContent = cl.name;
-    }
-    sel.appendChild(opt);
-  });
+function $(id) { return document.getElementById(id); }
+function sel(b) { return b ? DW.raw('selected') : ''; }
+function dis(b) { return b ? DW.raw('disabled') : ''; }
+function agentLabel(a) {
+  for (var i = 0; i < AGENTS.length; i++) if (AGENTS[i][0] === a) return AGENTS[i][1];
+  return a || 'Unknown';
 }
-
-function selectedClientName() {
-  var sel = document.getElementById('cc-client');
-  if (!sel || !sel.value) return '';
-  var match = allClients.filter(function(c){ return c.id === sel.value; })[0];
-  return match ? match.name : '';
+function parseCfg(c) {
+  try { var v = JSON.parse((c && c.config) || '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch (e) { return {}; }
 }
-
-function isMessageChannelService(svc) {
-  return svc && (svc.name === 'discord' || svc.name === 'telegram');
-}
-
-function loadCCs() {
-  fetch('/api/cc', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(list) {
-    allCCs = Array.isArray(list) ? list : [];
-    repopulateClientPicker();
-    var tbody = document.getElementById('cc-list');
-    if (allCCs.length === 0) {
-      DW.setHTML(tbody, DW.raw('<tr><td colspan="6" class="text-muted">No control channels.</td></tr>'));
-      return;
-    }
-    tbody.replaceChildren();
-    allCCs.forEach(function(c) {
-      var cfgPreview = '';
-      try {
-        var cfg = JSON.parse(c.config || '{}');
-        cfgPreview = Object.keys(cfg).filter(function(k){return k !== 'agent_options';})
-          .map(function(k){return k+'='+truncate(cfg[k]);}).join(', ');
-      } catch(e) { cfgPreview = '(invalid)'; }
-      var tr = document.createElement('tr');
-      var needsKey = ccNeedsKey(c);
-      var keyBadge = needsKey ? DW.raw('<span class="badge badge-red">reassign key</span> ') : '';
-      var activeBadge = c.is_active ? DW.raw('<span class="badge badge-green">Active</span>')
-        : (needsKey ? DW.raw('<span class="badge badge-red">Disabled: reassign key</span>') : DW.raw('<span class="badge badge-gray">Inactive</span>'));
-      DW.setHTML(tr, DW.html`<td><a href="#" data-action="openDetail" data-id="${c.id}"><strong>${c.name}</strong></a></td><td>${c.client_name||'?'}  <span class="text-muted text-sm">(${agentLabel(c.agent_type)})</span>${codexSandboxBadge(c)}</td><td class="text-sm">${keyBadge}${c.api_key_name}</td><td class="text-sm mono">${cfgPreview}</td><td>${activeBadge}</td><td class="text-right"><button class="btn btn-sm" data-action="openEdit" data-id="${c.id}">Edit</button> <button class="btn btn-sm" data-action="openDetail" data-id="${c.id}">Detail</button></td>`);
-      tbody.appendChild(tr);
-    });
-  });
-}
-
-function truncate(v) {
-  v = String(v||'');
-  if (v.length > 20) v = v.substring(0,16)+'…';
-  return v;
-}
-function ccNeedsKey(c) {
-  return !c.is_active && /^Deleted (refreshable token|API key):/.test(String(c.api_key_name || ''));
-}
-function agentLabel(agentType) {
-  switch (agentType) {
-  case 'claude_code': return 'Claude Code';
-  case 'codex': return 'Codex';
-  case 'openclaw': return 'OpenClaw';
-  default: return agentType || '?';
-  }
-}
-function parseCCConfig(c) {
-  try { return JSON.parse(c.config || '{}') || {}; } catch(e) { return {}; }
-}
-function codexSandbox(c) {
-  if (!c || c.agent_type !== 'codex') return '';
-  var sandbox = (parseCCConfig(c).agent_options || {}).sandbox || 'workspace-write';
-  return ['workspace-write','read-only','danger-full-access','none'].indexOf(sandbox) >= 0
-    ? sandbox : 'workspace-write';
-}
-function codexSandboxBadge(c) {
-  var sandbox = codexSandbox(c);
+function sandboxBadge(sandbox) {
   if (!sandbox) return '';
-  var badgeClass = sandbox === 'danger-full-access' ? 'badge-red'
-    : (sandbox === 'none' ? 'badge-yellow' : (sandbox === 'read-only' ? 'badge-green' : 'badge-blue'));
+  var cls = sandbox === 'danger-full-access' ? 'badge-red' : (sandbox === 'none' ? 'badge-yellow' : (sandbox === 'read-only' ? 'badge-green' : 'badge-blue'));
   var label = sandbox === 'none' ? 'none (local config)' : sandbox;
-  return DW.html`<br><span class="badge ${badgeClass}">configured sandbox: ${label}</span>`;
+  return DW.html` <span class="badge ${cls}">configured sandbox: ${label}</span>`;
 }
-
-function renderConfigFields() {
-  var svcId = document.getElementById('cc-service').value;
-  var svc = allServices.filter(function(s){return s.id === svcId;})[0];
-  var div = document.getElementById('config-fields');
-  if (!svc) { div.replaceChildren(); return; }
-  // Filter the API key dropdown to keys of this service
-  var keySel = document.getElementById('cc-key');
-  keySel.replaceChildren();
-  var matches = allKeys.filter(function(k){return k.service_id === svcId;});
-  if (matches.length === 0) {
-    var opt = document.createElement('option');
-    opt.value = ''; opt.textContent = '(no keys for this service — add one first)';
-    keySel.appendChild(opt);
-  } else {
-    matches.forEach(function(k){
-      var opt = document.createElement('option');
-      opt.value = k.id; opt.textContent = k.name;
-      keySel.appendChild(opt);
-    });
-  }
-  if (svc.name === 'discord') {
-    DW.setHTML(div, DW.raw('<div id="discord-setup"></div>'));
-    renderDiscordSetup();
-  } else {
-    DW.setHTML(div, DW.raw('<div class="text-muted text-sm">No service-specific config required.</div>'));
-  }
+function needsKey(c) { return !c.is_active && /^Deleted (refreshable token|API key):/.test(String(c.api_key_name || '')); }
+function statusOf(c) {
+  if (needsKey(c)) return {cls: 'badge-red', text: 'Needs credential'};
+  return c.is_active ? {cls: 'badge-green', text: 'Active'} : {cls: 'badge-gray', text: 'Inactive'};
 }
-
-// Only allow http(s) URLs in server-provided hrefs (blocks script-scheme URLs).
+function statusPill(c) { var s = statusOf(c); return DW.html`<span class="badge ${s.cls}">${s.text}</span>`; }
+function isDiscord(name) { return name === 'discord'; }
+function svcById(id) { return allServices.filter(function(s) { return s.id === id; })[0]; }
+function clientName(id) { var m = allClients.filter(function(c) { return c.id === id; })[0]; return m ? m.name : ''; }
+function sandboxOf(c) {
+  if (!c || c.agent_type !== 'codex') return '';
+  var s = (parseCfg(c).agent_options || {}).sandbox || 'workspace-write';
+  return SANDBOXES.indexOf(s) >= 0 ? s : 'workspace-write';
+}
+function fetchJSON(url, opts) {
+  opts = opts || {};
+  opts.credentials = 'same-origin';
+  return fetch(url, opts).then(function(r) {
+    if (r.status === 401) { window.location = '/admin/login'; throw new Error('signed out'); }
+    return r.json().catch(function() { return {error: 'unexpected response (' + r.status + ')'}; });
+  });
+}
+function postJSON(url, body) {
+  return fetchJSON(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+}
+// Only http(s) URLs in server-provided hrefs.
 function safeHref(u) {
   var v = String(u == null ? '' : u).trim();
   return /^https?:\/\//i.test(v) ? v : '#';
 }
 
-function renderDiscordSetup() {
-  var box = document.getElementById('discord-setup');
-  if (!box) return;
-  var keyID = document.getElementById('cc-key').value;
-  if (!keyID) {
-    DW.setHTML(box, DW.raw('<div class="text-muted text-sm">Add and select a Discord bot token first.</div>'));
-    return;
-  }
-  var guildOptions = (discordSetup.guilds || []).map(function(g) {
-    return DW.html`<option value="${g.id}">${g.name} (${g.id})</option>`;
-  });
-  var catOptions = (discordSetup.categories || []).map(function(c) {
-    return DW.html`<option value="${c.id}">${c.name} (${c.id})</option>`;
-  });
-  var loaded = discordSetup.apiKeyId === keyID;
-  var hasGuilds = loaded && (discordSetup.guilds || []).length > 0;
-  var categoryName = selectedClientName() || 'duckway';
-  var disabledAttr = !loaded ? DW.raw('disabled') : '';
-  var guildsErr = discordSetup.guilds_error ? DW.html`<span class="text-muted text-sm">Could not list servers: ${discordSetup.guilds_error}</span>` : '';
-  var destinationFields = hasGuilds
-    ? DW.html`<div class="form-group"><label>Server</label><select id="cc-cfg-guild" data-on-change="loadDiscordCategories">${guildOptions}</select></div><div class="form-group"><label>Category</label><select id="cc-cfg-category">${catOptions.length ? catOptions : DW.raw('<option value="">No categories loaded</option>')}</select><div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-top:0.5rem"><button type="button" class="btn btn-sm" data-action="preflightDiscordCategory">Check permissions</button><button type="button" class="btn btn-sm" data-action="grantDiscordCategoryAccess">Grant bot access</button><span class="text-muted text-sm">Grant writes a category permission override; check creates and deletes a temporary channel.</span></div><div id="cc-preflight-result" class="mt-1"></div><span class="text-muted text-sm">If Grant fails, use Setup invite to add temporary Manage Roles permission, or add the bot in Discord category Permissions manually.</span></div><div class="form-group"><label>Create category</label><div style="display:flex;gap:0.5rem;align-items:center"><input type="text" id="cc-new-category" value="${categoryName}" placeholder="${categoryName}"><button type="button" class="btn btn-sm" data-action="createDiscordCategory">Create</button></div></div>`
-    : DW.html`<div class="form-group"><label>Server ID</label><input type="text" id="cc-cfg-guild" placeholder="Load setup, or paste server id as fallback" ${disabledAttr}>${guildsErr}</div><div class="form-group"><label>Category ID</label><input type="text" id="cc-cfg-category" placeholder="Paste category id as fallback" ${disabledAttr}><span class="text-muted text-sm">Fallback only. Prefer inviting the bot, refreshing setup, and creating/selecting a category here.</span></div>`;
-  var inviteBtn = discordSetup.invite_url ? DW.html`<a class="btn btn-sm" target="_blank" rel="noopener" href="${safeHref(discordSetup.invite_url)}">Invite bot</a>` : '';
-  var setupInviteBtn = discordSetup.setup_invite_url ? DW.html`<a class="btn btn-sm" target="_blank" rel="noopener" href="${safeHref(discordSetup.setup_invite_url)}">Setup invite</a>` : '';
-  var botInfo = discordSetup.bot ? DW.html`<div class="text-sm text-muted mb-1">Bot: <strong>${discordSetup.bot.username||discordSetup.bot.id}</strong></div>` : '';
-  DW.setHTML(box, DW.html`<div class="form-group"><label>Discord setup</label><div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center"><button type="button" class="btn btn-sm" data-action="loadDiscordSetup">${loaded ? 'Refresh servers' : 'Load Discord setup'}</button>${inviteBtn}${setupInviteBtn}</div><span class="text-muted text-sm">Invite bot uses Duckway runtime permissions. Setup invite additionally grants Manage Roles so Duckway can write category permission overrides.</span></div>${botInfo}${destinationFields}`);
-}
-
-function loadDiscordSetup() {
-  var keyID = document.getElementById('cc-key').value;
-  if (!keyID) { showToast('Select a Discord bot token first', 'error'); return; }
-  fetch('/api/cc/discord/setup?api_key_id=' + encodeURIComponent(keyID), {credentials:'same-origin'})
-    .then(function(r){return r.json();})
-    .then(function(d) {
-      if (d.error) { showToast(d.error, 'error'); return; }
-      discordSetup = {apiKeyId:keyID, bot:d.bot, invite_url:d.invite_url, setup_invite_url:d.setup_invite_url, guilds:d.guilds || [], guilds_error:d.guilds_error || '', categories:[]};
-      renderDiscordSetup();
-      if ((discordSetup.guilds || []).length > 0) loadDiscordCategories();
-      else showToast('Bot loaded. Invite it to a server, then refresh.', 'success');
-    });
-}
-
-function loadDiscordCategories() {
-  var keyID = document.getElementById('cc-key').value;
-  var guildEl = document.getElementById('cc-cfg-guild');
-  var guildID = guildEl ? guildEl.value : '';
-  if (!keyID || !guildID) return;
-  fetch('/api/cc/discord/categories?api_key_id=' + encodeURIComponent(keyID) + '&guild_id=' + encodeURIComponent(guildID), {credentials:'same-origin'})
-    .then(function(r){return r.json();})
-    .then(function(d) {
-      if (d.error) { showToast(d.error, 'error'); return; }
-      discordSetup.categories = d.categories || [];
-      renderDiscordSetup();
-      var guild = document.getElementById('cc-cfg-guild');
-      if (guild) guild.value = guildID;
-    });
-}
-
-function createDiscordCategory() {
-  var keyID = document.getElementById('cc-key').value;
-  var guildID = document.getElementById('cc-cfg-guild').value;
-  var name = document.getElementById('cc-new-category').value.trim() || selectedClientName() || 'duckway';
-  if (!keyID || !guildID) { showToast('Load Discord setup and choose a server first', 'error'); return; }
-  fetch('/api/cc/discord/categories', {
-    method:'POST', credentials:'same-origin',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({api_key_id:keyID, guild_id:guildID, name:name})
-  }).then(function(r){return r.json();}).then(function(d) {
-    if (d.error) { showToast(d.error, 'error'); return; }
-    showToast(d.permission_warning || 'Category created and bot access granted', d.permission_warning ? 'error' : 'success');
-    discordSetup.categories = (discordSetup.categories || []).concat([d]);
-    renderDiscordSetup();
-    var guild = document.getElementById('cc-cfg-guild');
-    var cat = document.getElementById('cc-cfg-category');
-    if (guild) guild.value = guildID;
-    if (cat) {
-      cat.value = d.id;
-      preflightDiscordCategory();
-    }
-  });
-}
-
-function grantDiscordCategoryAccess() {
-  var keyID = document.getElementById('cc-key').value;
-  var catID = document.getElementById('cc-cfg-category').value;
-  var panel = document.getElementById('cc-preflight-result');
-  if (!keyID || !catID) { showToast('Choose a category first', 'error'); return; }
-  if (panel) DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Granting bot access on the category...</div>'));
-  fetch('/api/cc/discord/category-permissions', {
-    method:'POST', credentials:'same-origin',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({api_key_id:keyID, category_id:catID})
-  }).then(function(r){return r.json();}).then(function(d) {
-    if (d.error) {
-      if (panel) DW.setHTML(panel, DW.html`<div class="text-sm" style="color:#ef4444">${d.error}<br>In Discord: Category Settings → Permissions → add the bot → allow Manage Channels, View Channel, Send Messages, Add Reactions, Read Message History.</div>`);
-      return;
-    }
-    showToast('Bot access granted', 'success');
-    preflightDiscordCategory();
-  });
-}
-
-function preflightDiscordCategory() {
-  var keyID = document.getElementById('cc-key').value;
-  var guildID = document.getElementById('cc-cfg-guild').value;
-  var catID = document.getElementById('cc-cfg-category').value;
-  var panel = document.getElementById('cc-preflight-result');
-  if (!keyID || !guildID || !catID) { showToast('Choose a server and category first', 'error'); return; }
-  if (panel) DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Checking Discord permissions...</div>'));
-  fetch('/api/cc/discord/preflight', {
-    method:'POST', credentials:'same-origin',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({api_key_id:keyID, guild_id:guildID, category_id:catID})
-  }).then(function(r){return r.json();}).then(function(d) {
-    if (d.error) { if (panel) DW.setHTML(panel, DW.html`<div class="text-sm" style="color:#ef4444">${d.error}</div>`); return; }
-    if (panel) DW.setHTML(panel, renderPreflightResult(d));
-  });
-}
-
-function renderPreflightResult(d) {
-  var ok = !!d.ok;
-  var rows = (d.steps || []).map(function(s) {
-    var icon = s.ok ? DW.raw('<span style="color:#22c55e">✓</span>') : DW.raw('<span style="color:#ef4444">✗</span>');
-    return DW.html`<tr><td style="width:1.5rem">${icon}</td><td>${s.name}</td><td class="text-muted text-sm">${s.note || ''}</td></tr>`;
-  });
-  var border = ok ? '#22c55e' : '#ef4444';
-  var head = ok ? DW.raw('<strong style="color:#22c55e">Permissions OK</strong>') : DW.raw('<strong style="color:#ef4444">Permission check failed</strong>');
-  return DW.html`<div class="card" style="background:var(--bg-input);border-left:3px solid ${border};padding:0.75rem">${head}<table class="mt-1" style="width:100%">${rows}</table></div>`;
-}
-
-function openCreate() {
-  document.getElementById('cc-name').value = '';
-  discordSetup = {apiKeyId:'', guilds:[], categories:[]};
-  document.getElementById('create-form').querySelector('button[type="submit"]').disabled = false;
-  renderCreateAgentOptions();
-  renderConfigFields();
-  DW.modal.open('#create-modal');
-}
-
-function codexSandboxField(id, value) {
-  value = value || 'workspace-write';
-  var opts = ['workspace-write','read-only','danger-full-access','none'].map(function(v) {
-    var label = v === 'none' ? 'none (use client Codex config)' : v;
-    return DW.html`<option value="${v}" ${v === value ? DW.raw('selected') : ''}>${label}</option>`;
-  });
-  return DW.html`<div class="form-group"><label>Codex sandbox</label><select id="${id}">${opts}</select><span class="text-muted text-sm">Use danger-full-access only for trusted Discord categories. Changes affect existing channels after <code>duckway cc watch restart</code>; sessions are preserved.</span></div>`;
-}
-
-function renderCreateAgentOptions() {
-  var box = document.getElementById('cc-agent-options');
-  if (!box) return;
-  if (document.getElementById('cc-agent').value === 'codex') DW.setHTML(box, codexSandboxField('cc-codex-sandbox', 'workspace-write'));
-  else box.replaceChildren();
-}
-
-function applyAgentOptions(config, agentType, selectID) {
-  if (agentType === 'codex') {
-    config.agent_options = {sandbox: document.getElementById(selectID).value};
-  } else if (config.agent_options) {
-    delete config.agent_options;
-  }
-  return config;
-}
-
-document.getElementById('create-form').addEventListener('submit', function(e) {
-  e.preventDefault();
-  var svcId = document.getElementById('cc-service').value;
-  var svc = allServices.filter(function(s){return s.id === svcId;})[0];
-  var config = {};
-  if (svc && svc.name === 'discord') {
-    config.guild_id = document.getElementById('cc-cfg-guild').value.trim();
-    config.category_id = document.getElementById('cc-cfg-category').value.trim();
-    if (!config.guild_id || !config.category_id) {
-      showToast('Load Discord setup and choose or create a category first', 'error');
-      return;
-    }
-  }
-  config = applyAgentOptions(config, document.getElementById('cc-agent').value, 'cc-codex-sandbox');
-  fetch('/api/cc', {
-    method: 'POST', credentials: 'same-origin',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      name: document.getElementById('cc-name').value.trim(),
-      client_id: document.getElementById('cc-client').value,
-      agent_type: document.getElementById('cc-agent').value,
-      service_id: svcId,
-      api_key_id: document.getElementById('cc-key').value,
-      config: config
-    })
-  })
-  .then(function(r){return r.json();})
-  .then(function(d) {
-    if (d.error) { showToast(d.error, 'error'); return; }
-    showToast('CC created', 'success');
-    DW.modal.close('#create-modal');
-    loadCCs();
-  });
-});
-
-function openDetail(id) {
-  fetch('/api/cc/'+encodeURIComponent(id), {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(c) {
-    if (c.error) { showToast(c.error, 'error'); return; }
-    currentCC = c;
-    document.getElementById('d-title').textContent = c.name;
-    document.getElementById('d-id').textContent = c.id;
-    document.getElementById('d-name').textContent = c.name;
-    DW.setHTML(document.getElementById('d-agent'), DW.html`<span class="badge badge-gray">${agentLabel(c.agent_type)}</span> <span class="text-muted text-sm">(${c.agent_type})</span>${codexSandboxBadge(c)}`);
-    DW.setHTML(document.getElementById('d-service'), DW.html`<span class="badge badge-blue">${c.service_name}</span>`);
-    var needsKey = ccNeedsKey(c);
-    DW.setHTML(document.getElementById('d-key'), DW.html`${needsKey ? DW.raw('<span class="badge badge-red">reassign key</span> ') : ''}${c.api_key_name}`);
-    var pretty = c.config;
-    try { pretty = JSON.stringify(JSON.parse(c.config), null, 2); } catch(e) {}
-    document.getElementById('d-config').textContent = pretty;
-    DW.setHTML(document.getElementById('d-active'), c.is_active
-      ? DW.raw('<span class="badge badge-green">Active</span>')
-      : (needsKey ? DW.raw('<span class="badge badge-red">Disabled: reassign key</span>') : DW.raw('<span class="badge badge-gray">Inactive</span>')));
-    document.getElementById('d-created').textContent = c.created_at;
-
-    var tbody = document.getElementById('d-channels');
-    var chans = c.channels || [];
-    if (chans.length === 0) {
-      DW.setHTML(tbody, DW.raw('<tr><td colspan="4" class="text-muted">No channels yet</td></tr>'));
-    } else {
-      tbody.replaceChildren();
-      chans.forEach(function(ch) {
-        var kindBadge = ch.kind === 'management'
-          ? DW.raw('<span class="badge badge-blue">management</span>')
-          : DW.raw('<span class="badge badge-gray">task</span>');
-        var archived = ch.archived ? DW.raw('  <span class="text-muted text-sm">(archived)</span>') : '';
-        var tr = document.createElement('tr');
-        DW.setHTML(tr, DW.html`<td>${kindBadge}</td><td>${ch.name||'?'}${archived}</td><td class="mono text-sm">${ch.handle||''}</td><td class="mono text-sm">${ch.session_id||'<none>'}</td>`);
-        tbody.appendChild(tr);
-      });
-    }
-
-    document.getElementById('d-test-result').replaceChildren();
-    DW.modal.open('#detail-modal');
-  });
-}
-
-function openEditFromDetail() {
-  if (!currentCC) return;
-  openEdit(currentCC.id);
-}
-
-function openEdit(id) {
-  fetch('/api/cc/'+encodeURIComponent(id), {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(c) {
-    if (c.error) { showToast(c.error, 'error'); return; }
-    currentCC = c;
-    populateEdit(c);
-    DW.modal.open('#edit-modal');
-  });
-}
-
-function populateEdit(c) {
-  document.getElementById('edit-cc-id').value = c.id;
-  document.getElementById('edit-cc-name').value = c.name || '';
-  document.getElementById('edit-cc-active').checked = !!c.is_active;
-  DW.setHTML(document.getElementById('edit-cc-binding'), DW.html`${c.client_name || '?'} / ${c.service_name || '?'}<br><span class="text-muted">Client and message service are immutable. Reassign the bot token here when the previous key was deleted.</span>`);
-  document.getElementById('edit-test-result').replaceChildren();
-  var cfg = parseCCConfig(c);
-  var box = document.getElementById('edit-config-fields');
-  var agentOptions = ['claude_code', 'codex', 'openclaw'].map(function(a) {
-    return DW.html`<option value="${a}" ${a === c.agent_type ? DW.raw('selected') : ''}>${agentLabel(a)} (${a})</option>`;
-  });
-  if (c.agent_type && ['claude_code', 'codex', 'openclaw'].indexOf(c.agent_type) < 0) {
-    agentOptions.unshift(DW.html`<option value="${c.agent_type}" selected disabled>${c.agent_type} (unsupported by cc watch)</option>`);
-  }
-  var agentField = DW.html`<div class="form-group"><label>Agent type</label><select id="edit-cc-agent" required data-on-change="renderEditAgentOptions">${agentOptions}</select><span class="text-muted text-sm">Pick the agent installed on the assigned client. Codex should be used with OpenAI/Codex credentials; Claude Code with Anthropic/Claude credentials.</span></div>`;
-  var keyOptions = allKeys
-    .filter(function(k){ return k.service_id === c.service_id && k.is_active; })
-    .map(function(k) {
-      return DW.html`<option value="${k.id}" ${k.id === c.api_key_id ? DW.raw('selected') : ''}>${k.name}</option>`;
-    });
-  var needsKeyNote = ccNeedsKey(c) ? DW.raw('<span class="text-sm" style="color:var(--danger)">This CC was disabled because its key was deleted. Pick a replacement key and activate it.</span>') : '';
-  var keyField = DW.html`<div class="form-group"><label>Bot Token</label><select id="edit-cc-key" required>${keyOptions.length ? keyOptions : DW.raw('<option value="">No active keys for this service</option>')}</select>${needsKeyNote}</div>`;
-  if (c.service_name === 'discord') {
-    DW.setHTML(box, DW.html`${agentField}<div id="edit-agent-options"></div>${keyField}<div class="form-group"><label>Server ID</label><input type="text" id="edit-cfg-guild" value="${cfg.guild_id || ''}" placeholder="Discord server id"></div><div class="form-group"><label>Category ID</label><input type="text" id="edit-cfg-category" value="${cfg.category_id || ''}" placeholder="Discord category id"><span class="text-muted text-sm">Changing this affects future test/provision operations. Existing Discord channels are not moved automatically.</span></div><div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap"><button type="button" class="btn btn-sm" data-action="preflightEditDiscordCategory">Check permissions</button><button type="button" class="btn btn-sm" data-action="grantEditDiscordCategoryAccess">Grant bot access</button></div>`);
-    renderEditAgentOptions();
-    return;
-  }
-  DW.setHTML(box, DW.html`${agentField}<div id="edit-agent-options"></div>${keyField}<div class="form-group"><label>Config JSON</label><textarea id="edit-cfg-json" style="min-height:90px;font-family:monospace;font-size:0.75rem">${JSON.stringify(cfg, null, 2)}</textarea></div>`);
-  renderEditAgentOptions();
-}
-
-function renderEditAgentOptions() {
-  var box = document.getElementById('edit-agent-options');
-  if (!box) return;
-  var agent = document.getElementById('edit-cc-agent').value;
-  var cfg = parseCCConfig(currentCC || {});
-  var opts = cfg.agent_options || {};
-  if (agent === 'codex') DW.setHTML(box, codexSandboxField('edit-codex-sandbox', opts.sandbox || 'workspace-write'));
-  else box.replaceChildren();
-}
-
-function readEditConfig() {
-  if (!currentCC) return {};
-  var agentType = document.getElementById('edit-cc-agent').value;
-  if (currentCC.service_name === 'discord') {
-    var guildID = document.getElementById('edit-cfg-guild').value.trim();
-    var categoryID = document.getElementById('edit-cfg-category').value.trim();
-    if (!guildID || !categoryID) throw new Error('Server ID and Category ID are required');
-    return applyAgentOptions({guild_id:guildID, category_id:categoryID}, agentType, 'edit-codex-sandbox');
-  }
-  var raw = document.getElementById('edit-cfg-json').value.trim();
-  var config = raw ? JSON.parse(raw) : {};
-  return applyAgentOptions(config, agentType, 'edit-codex-sandbox');
-}
-
-document.getElementById('edit-form').addEventListener('submit', function(e) {
-  e.preventDefault();
-  if (!currentCC) return;
-  var config;
-  try {
-    config = readEditConfig();
-  } catch(err) {
-    showToast('Invalid config: ' + err.message, 'error');
-    return;
-  }
-  fetch('/api/cc/' + encodeURIComponent(currentCC.id), {
-    method: 'PUT', credentials: 'same-origin',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      name: document.getElementById('edit-cc-name').value.trim(),
-      api_key_id: document.getElementById('edit-cc-key').value,
-      agent_type: document.getElementById('edit-cc-agent').value,
-      is_active: document.getElementById('edit-cc-active').checked,
-      config: config
-    })
-  }).then(function(r){return r.json();}).then(function(d) {
-    if (d.error) { showToast(d.error, 'error'); return; }
-    showToast('CC updated', 'success');
-    DW.modal.close('#edit-modal');
-    loadCCs();
-    if (document.getElementById('detail-modal').style.display !== 'none') {
-      openDetail(currentCC.id);
-    }
+/* ---------- list ---------- */
+function loadCCs() {
+  return fetchJSON('/api/cc').then(function(list) {
+    allCCs = Array.isArray(list) ? list : [];
+    renderList();
   }).catch(function(err) {
-    showToast('Update failed: ' + err.message, 'error');
+    DW.setHTML($('cc-list'), DW.html`<tr><td colspan="5" class="cc-err" role="alert">Could not load control channels: ${err.message}</td></tr>`);
   });
+}
+function renderList() {
+  var body = $('cc-list');
+  $('cc-count').textContent = allCCs.length + (allCCs.length === 1 ? ' control channel' : ' control channels');
+  if (!allCCs.length) {
+    DW.setHTML(body, DW.raw('<tr><td colspan="5" class="cc-empty"><strong>No control channels yet.</strong><span class="text-muted text-sm">A control channel lets you drive a client&rsquo;s agent from Discord. Create one to get started.</span></td></tr>'));
+    return;
+  }
+  DW.setHTML(body, DW.html`${allCCs.map(function(c) {
+    var svc = c.service_name || (svcById(c.service_id) || {}).name || '?';
+    var sb = sandboxOf(c);
+    return DW.html`<tr class="cc-row${selectedId() === c.id ? ' is-selected' : ''}" data-id="${c.id}">
+      <td data-label="Name"><button type="button" class="cc-rowbtn" data-action="openCC" data-id="${c.id}"><strong>${c.name}</strong></button></td>
+      <td data-label="Agent">${agentLabel(c.agent_type)}${sandboxBadge(sb)}</td>
+      <td data-label="Bound client">${c.client_name || c.client_id || '?'}</td>
+      <td data-label="Platform">${svc}</td>
+      <td data-label="Status">${statusPill(c)}</td>
+    </tr>`;
+  })}`);
+}
+function selectedId() { return mode && cur ? cur.id : ''; }
+
+/* ---------- drawer chrome ---------- */
+function drawerOpen() { return $('cc-drawer').classList.contains('open'); }
+function openDrawer() {
+  if (!drawerOpen()) {
+    opener = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+  }
+  $('cc-drawer').classList.add('open');
+  $('cc-drawer').setAttribute('aria-hidden', 'false');
+  $('cc-scrim').hidden = false;
+  $('cc-main').inert = true;
+}
+function closeDrawer(restore) {
+  if (!drawerOpen()) return;
+  seq++;
+  mode = ''; cur = null; form = null; busy = false;
+  $('cc-drawer').classList.remove('open');
+  $('cc-drawer').setAttribute('aria-hidden', 'true');
+  $('cc-scrim').hidden = true;
+  $('cc-main').inert = false;
+  DW.setHTML($('cc-body'), DW.raw(''));
+  DW.setHTML($('cc-head-status'), DW.raw(''));
+  renderList();
+  var o = opener; opener = null;
+  if (o && !o.isConnected && o.dataset && o.dataset.id) o = document.querySelector('.cc-rowbtn[data-id="' + o.dataset.id.replace(/["\\]/g, '') + '"]');
+  if (restore !== false && o && o.isConnected && o.focus) o.focus();
+  else if (restore !== false) $('cc-new').focus();
+}
+DW.actions.closeDrawer = function() { closeDrawer(true); };
+
+document.addEventListener('keydown', function(e) {
+  if (!drawerOpen() || (DW.live && DW.live.modalOpen && DW.live.modalOpen())) return;
+  if (e.key === 'Escape') { e.preventDefault(); closeDrawer(true); return; }
+  if (e.key === 'Tab') {
+    var panel = $('cc-drawer');
+    var f = Array.prototype.filter.call(panel.querySelectorAll('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex]:not([tabindex="-1"])'), function(x) { return x.offsetParent !== null; });
+    f.unshift($('cc-h'));
+    var first = f[0], last = f[f.length - 1];
+    if (!panel.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
 });
 
-function grantEditDiscordCategoryAccess() {
-  if (!currentCC) return;
-  var keyID = document.getElementById('edit-cc-key').value;
-  var catID = document.getElementById('edit-cfg-category').value.trim();
-  var panel = document.getElementById('edit-test-result');
-  if (!keyID || !catID) { showToast('Choose a bot token and category first', 'error'); return; }
-  DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Granting bot access on the category...</div>'));
-  fetch('/api/cc/discord/category-permissions', {
-    method:'POST', credentials:'same-origin',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({api_key_id:keyID, category_id:catID})
-  }).then(function(r){return r.json();}).then(function(d) {
-    if (d.error) {
-      DW.setHTML(panel, DW.html`<div class="text-sm" style="color:#ef4444">${d.error}</div>`);
-      return;
-    }
-    showToast('Bot access granted', 'success');
-    preflightEditDiscordCategory();
+function setHead(title, c) {
+  $('cc-h').textContent = title;
+  DW.setHTML($('cc-head-status'), c ? statusPill(c) : DW.raw(''));
+}
+
+/* ---------- view ---------- */
+DW.actions.openCC = function(el) { showCC(el.dataset.id, false); };
+function showCC(id, keepFocus) {
+  var my = ++seq;
+  if (!drawerOpen()) opener = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+  var wasOpen = drawerOpen();
+  openDrawer();
+  if (!wasOpen) {
+    setHead('Control channel', null);
+    DW.setHTML($('cc-body'), DW.raw('<p class="text-muted text-sm" role="status">Loading&hellip;</p>'));
+    $('cc-h').focus();
+  }
+  return fetchJSON('/api/cc/' + encodeURIComponent(id)).then(function(c) {
+    if (my !== seq) return;
+    if (c.error) { DW.toast(c.error, 'error'); closeDrawer(true); return; }
+    cur = c; mode = 'view'; form = null;
+    renderView();
+    renderList();
+    if (!keepFocus) $('cc-h').focus();
+  }).catch(function(err) {
+    if (my !== seq) return;
+    DW.setHTML($('cc-body'), DW.html`<p class="cc-err" role="alert">Could not load: ${err.message}</p>`);
   });
 }
 
-function preflightEditDiscordCategory() {
-  if (!currentCC) return;
-  var keyID = document.getElementById('edit-cc-key').value;
-  var guildID = document.getElementById('edit-cfg-guild').value.trim();
-  var catID = document.getElementById('edit-cfg-category').value.trim();
-  var panel = document.getElementById('edit-test-result');
-  if (!keyID || !guildID || !catID) { showToast('Choose a bot token, server, and category first', 'error'); return; }
-  DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Checking Discord permissions...</div>'));
-  fetch('/api/cc/discord/preflight', {
-    method:'POST', credentials:'same-origin',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({api_key_id:keyID, guild_id:guildID, category_id:catID})
-  }).then(function(r){return r.json();}).then(function(d) {
-    if (d.error) { DW.setHTML(panel, DW.html`<div class="text-sm" style="color:#ef4444">${d.error}</div>`); return; }
-    DW.setHTML(panel, renderPreflightResult(d));
-  });
+function cfgRows(c) {
+  var cfg = parseCfg(c);
+  var keys = Object.keys(cfg).filter(function(k) { return k !== 'agent_options'; }).sort();
+  if (!keys.length) return DW.raw('<p class="text-muted text-sm">No platform settings.</p>');
+  return DW.html`<dl class="cc-dl">${keys.map(function(k) {
+    var v = cfg[k];
+    var shown;
+    if (SECRET_RE.test(k)) shown = DW.raw('<span class="cc-masked">Stored on server &middot; hidden</span>');
+    else if (v !== null && typeof v === 'object') shown = DW.html`<code>${JSON.stringify(v)}</code>`;
+    else shown = DW.html`<span class="mono">${String(v)}</span>`;
+    return DW.html`<dt>${k}</dt><dd>${shown}</dd>`;
+  })}</dl>`;
 }
 
-function testAgent() {
-  if (!currentCC) return;
-  var btn = document.getElementById('d-agent-test-btn');
-  var panel = document.getElementById('d-test-result');
-  var orig = btn.textContent;
-  btn.textContent = 'Sending...';
-  btn.disabled = true;
-  DW.setHTML(panel, DW.html`<div class="text-muted text-sm">Publishing <code>hi</code> to the management channel for ${agentLabel(currentCC.agent_type)}.</div>`);
+function renderView() {
+  var c = cur;
+  var disc = isDiscord(c.service_name);
+  var cfg = parseCfg(c);
+  var sb = sandboxOf(c);
+  setHead(c.name, c);
+  var chans = c.channels || [];
+  var warn = needsKey(c) ? DW.raw('<div class="cc-callout cc-callout-bad" role="note"><strong>Needs a credential.</strong> This control channel was disabled because its bot credential was deleted. Edit it to pick a replacement.</div>') : '';
+  var tests = DW.html`<h3>Test</h3>
+    <div class="cc-actions">
+      <button type="button" class="btn" id="cc-act-msg" data-action="sendTestMessage">Send test message</button>
+      ${disc ? DW.html`<button type="button" class="btn" id="cc-act-verify" data-action="verifyChannel">Verify channel permissions</button><button type="button" class="btn" id="cc-act-fix" data-action="checkFixView">Check &amp; fix</button>` : ''}
+    </div>
+    <p class="text-muted text-sm">Send test message posts <code>hi</code> to the management channel and waits for the agent to reply. Verify channel permissions creates and deletes a temporary channel under the category. Check &amp; fix also grants the bot access when it is missing.</p>
+    <div id="cc-result" class="cc-result" role="status" aria-live="polite"></div>`;
+  DW.setHTML($('cc-body'), DW.html`${warn}
+    <dl class="cc-dl">
+      <dt>Agent</dt><dd>${agentLabel(c.agent_type)}${sandboxBadge(sb)}</dd>
+      <dt>Bound client</dt><dd>${c.client_id ? DW.html`<a href="/admin/clients/${encodeURIComponent(c.client_id)}">${c.client_name || c.client_id}</a>` : '?'}</dd>
+      <dt>Platform</dt><dd>${c.service_name || '?'}</dd>
+      <dt>Bot credential</dt><dd>${c.api_key_name || '?'} <span class="text-muted text-sm">(token hidden)</span></dd>
+      <dt>Status</dt><dd>${statusPill(c)}</dd>
+      ${disc ? DW.html`<dt>Server ID</dt><dd class="mono">${cfg.guild_id || '-'}</dd><dt>Category ID</dt><dd class="mono">${cfg.category_id || '-'}</dd>` : ''}
+      <dt>Created</dt><dd>${c.created_at || ''}</dd>
+      <dt>ID</dt><dd class="mono">${c.id}</dd>
+    </dl>
+    ${disc ? '' : DW.html`<h3>Settings</h3>${cfgRows(c)}`}
+    ${tests}
+    <h3>Channels</h3>
+    ${chans.length ? DW.html`<div class="table-wrap"><table class="cc-chtable"><thead><tr><th scope="col">Kind</th><th scope="col">Name</th><th scope="col">Session</th></tr></thead><tbody>${chans.map(function(ch) {
+      return DW.html`<tr><td>${ch.kind === 'management' ? 'management' : 'task'}</td><td>${ch.name || '?'}${ch.archived ? DW.raw(' <span class="text-muted text-sm">(archived)</span>') : ''}<div class="mono text-sm text-muted">${ch.handle || ''}</div></td><td class="mono text-sm">${ch.session_id || 'none'}</td></tr>`;
+    })}</tbody></table></div>` : DW.raw('<p class="text-muted text-sm">No channels yet.</p>')}
+    <div class="cc-footer">
+      <button type="button" class="btn btn-primary" data-action="startEdit">Edit</button>
+      <button type="button" class="btn btn-danger" data-action="askDelete">Delete&hellip;</button>
+    </div>`);
+}
 
-  fetch('/api/cc/' + encodeURIComponent(currentCC.id) + '/test-agent', {method:'POST', credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      btn.textContent = orig;
-      btn.disabled = false;
-      if (d.error) {
-        btn.textContent = orig;
-        btn.disabled = false;
-        DW.setHTML(panel, DW.html`<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid #ef4444;padding:0.75rem"><strong style="color:#ef4444">Agent test failed</strong><br><span class="text-sm">${d.error}</span></div>`);
+/* ---------- result list ---------- */
+function stepList(steps) {
+  return DW.html`<ul class="cc-steps">${(steps || []).map(function(s) {
+    return DW.html`<li class="cc-step ${s.ok ? 'is-ok' : 'is-bad'}"><span class="cc-step-st">${s.ok ? 'Pass' : 'Fail'}</span><span class="cc-step-name">${s.name}</span>${s.note ? DW.html`<span class="cc-step-note">${s.note}</span>` : ''}</li>`;
+  })}</ul>`;
+}
+function resultCard(ok, title, detail, steps, extra) {
+  return DW.html`<div class="cc-card ${ok ? 'is-ok' : 'is-bad'}"><div class="cc-card-head"><span class="badge ${ok ? 'badge-green' : 'badge-red'}">${ok ? 'Ready' : 'Needs attention'}</span><strong>${title}</strong></div>${detail ? DW.html`<p class="text-sm">${detail}</p>` : ''}${steps && steps.length ? stepList(steps) : ''}${extra || ''}</div>`;
+}
+function pending(text) { return DW.html`<div class="cc-card"><div class="cc-card-head"><span class="badge badge-gray">Working</span><strong>${text}</strong></div></div>`; }
+function setBusy(ids, on) {
+  ids.forEach(function(id) { var b = $(id); if (b) b.disabled = on; });
+}
+var MANUAL = DW.raw('<p class="text-sm">In Discord: Category Settings &rarr; Permissions &rarr; add the bot and allow Manage Channels, View Channel, Send Messages, Add Reactions and Read Message History. Or use Setup invite to give the bot Manage Roles temporarily, then run Check &amp; fix again.</p>');
+
+// One action: check -> grant access when failing -> check again.
+function runCheckFix(keyID, guildID, catID, panel, my) {
+  var out = [];
+  DW.setHTML(panel, pending('Checking permissions'));
+  return postJSON('/api/cc/discord/preflight', {api_key_id: keyID, guild_id: guildID, category_id: catID}).then(function(r1) {
+    if (my !== seq) return;
+    if (r1.error) { DW.setHTML(panel, resultCard(false, 'Check failed', r1.error, [], MANUAL)); return; }
+    if (r1.ok) { DW.setHTML(panel, resultCard(true, 'Bot can create channels and post in this category', '', r1.steps)); return; }
+    var failed = (r1.steps || []).filter(function(s) { return !s.ok; })[0];
+    out.push({ok: false, name: 'Initial check', note: failed ? failed.name + (failed.note ? ': ' + failed.note : '') : 'failed'});
+    DW.setHTML(panel, pending('Granting bot access to the category'));
+    return postJSON('/api/cc/discord/category-permissions', {api_key_id: keyID, category_id: catID}).then(function(g) {
+      if (my !== seq) return;
+      if (g.error) {
+        out.push({ok: false, name: 'Grant bot access', note: g.error});
+        DW.setHTML(panel, resultCard(false, 'Could not fix automatically', '', out, MANUAL));
         return;
       }
-      if (d.test_id) {
-        pollAgentTest(currentCC.id, d.test_id, d.handle || '', btn, orig, panel);
-        return;
-      }
-      btn.textContent = orig;
-      btn.disabled = false;
-      var delivered = Number(d.subscribers || 0) > 0;
-      var queued = Number(d.inbox_id || 0) > 0;
-      var title = delivered ? 'Agent test delivered' : (queued ? 'Agent test queued' : 'Agent watcher offline');
-      var note = delivered
-        ? 'Delivered to ' + d.subscribers + ' connected watcher(s).'
-        : (queued
-          ? 'Queued in the control channel inbox; the assigned client watcher will pick it up by polling.'
-          : 'No connected duckway cc watch daemon was listening for ' + (currentCC.client_name || 'this client') + '.');
-      var commands = (delivered || queued) ? '' :
-        DW.raw('<div class="mt-1 text-sm text-muted">On the assigned client, run:</div><pre class="mt-1" style="white-space:pre-wrap;margin-bottom:0"><code>duckway sync\nduckway cc watch status\nduckway cc watch restart</code></pre>');
-      var borderColor = delivered ? '#22c55e' : '#f59e0b';
-      DW.setHTML(panel, DW.html`<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ${borderColor};padding:0.75rem"><strong>${title}</strong><br><span class="text-sm">Sent <code>hi</code> to <code>${d.handle || ''}</code>. ${note}</span>${commands}</div>`);
-    })
-    .catch(function(err) {
-      btn.textContent = orig;
-      btn.disabled = false;
-      DW.setHTML(panel, DW.html`<div class="text-muted text-sm" style="color:#ef4444">Agent test request failed: ${err.message}</div>`);
+      out.push({ok: true, name: 'Grant bot access'});
+      DW.setHTML(panel, pending('Checking permissions again'));
+      return postJSON('/api/cc/discord/preflight', {api_key_id: keyID, guild_id: guildID, category_id: catID}).then(function(r2) {
+        if (my !== seq) return;
+        if (r2.error) { out.push({ok: false, name: 'Check again', note: r2.error}); DW.setHTML(panel, resultCard(false, 'Check failed', '', out, MANUAL)); return; }
+        var all = out.concat(r2.steps || []);
+        DW.setHTML(panel, r2.ok
+          ? resultCard(true, 'Fixed: the bot now has access', '', all)
+          : resultCard(false, 'Access granted, but a check still fails', '', all, MANUAL));
+      });
     });
+  }).catch(function(err) {
+    if (my === seq) DW.setHTML(panel, resultCard(false, 'Request failed', err.message, [], ''));
+  });
 }
 
-function renderAgentTestStatus(test, handle) {
-  var status = test.status || 'queued';
-  var labels = {
-    queued: 'Queued in inbox',
-    received: 'Watcher received',
-    started: 'Agent started',
-    replied: 'Agent replied',
-    failed: 'Agent test failed'
-  };
-  var final = status === 'replied' || status === 'failed';
-  var color = status === 'replied' ? '#22c55e' : (status === 'failed' ? '#ef4444' : '#f59e0b');
-  var text = labels[status] || status;
-  var extra = status === 'failed' && test.error ? DW.html`<br><span class="text-sm" style="color:#ef4444">${test.error}</span>` : '';
-  var note = final
-    ? (status === 'replied' ? 'The watcher ran the agent and posted a reply.' : 'The watcher reported an error.')
-    : 'Waiting for the assigned client watcher to finish.';
-  return DW.html`<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ${color};padding:0.75rem"><strong>${text}</strong><br><span class="text-sm">Test message <code>hi</code> on <code>${handle || test.handle || ''}</code>. ${note}</span>${extra}</div>`;
-}
+DW.actions.checkFixView = function() {
+  if (!cur || busy) return;
+  var cfg = parseCfg(cur);
+  var panel = $('cc-result');
+  if (!cfg.guild_id || !cfg.category_id) { DW.setHTML(panel, resultCard(false, 'Server and category are not set', 'Edit this control channel and choose a server and category.', [], '')); return; }
+  var ids = ['cc-act-msg', 'cc-act-verify', 'cc-act-fix'];
+  setBusy(ids, true); busy = true;
+  var my = seq;
+  runCheckFix(cur.api_key_id, cfg.guild_id, cfg.category_id, panel, my).then(function() { if (my === seq) { busy = false; setBusy(ids, false); } });
+};
 
-function pollAgentTest(ccID, testID, handle, btn, orig, panel) {
+DW.actions.verifyChannel = function() {
+  if (!cur || busy) return;
+  var ids = ['cc-act-msg', 'cc-act-verify', 'cc-act-fix'];
+  var panel = $('cc-result'), my = seq;
+  setBusy(ids, true); busy = true;
+  DW.setHTML(panel, pending('Verifying: creating and deleting a temporary channel'));
+  fetchJSON('/api/cc/' + encodeURIComponent(cur.id) + '/test', {method: 'POST'}).then(function(d) {
+    if (my !== seq) return;
+    busy = false; setBusy(ids, false);
+    if (d.error) { DW.setHTML(panel, resultCard(false, 'Verification failed', d.error, [], '')); return; }
+    DW.setHTML(panel, resultCard(!!d.ok, d.ok ? 'Bot token, server, category and channel permissions all work' : 'A permission check failed', '', d.steps, d.ok ? '' : DW.raw('<p class="text-sm">Run Check &amp; fix to try granting the missing access.</p>')));
+  }).catch(function(err) {
+    if (my !== seq) return;
+    busy = false; setBusy(ids, false);
+    DW.setHTML(panel, resultCard(false, 'Request failed', err.message, [], ''));
+  });
+};
+
+DW.actions.sendTestMessage = function() {
+  if (!cur || busy) return;
+  var ids = ['cc-act-msg', 'cc-act-verify', 'cc-act-fix'];
+  var panel = $('cc-result'), my = seq, c = cur;
+  setBusy(ids, true); busy = true;
+  DW.setHTML(panel, pending('Sending test message to the ' + agentLabel(c.agent_type) + ' agent'));
+  function done() { if (my === seq) { busy = false; setBusy(ids, false); } }
+  fetchJSON('/api/cc/' + encodeURIComponent(c.id) + '/test-agent', {method: 'POST'}).then(function(d) {
+    if (my !== seq) return;
+    if (d.error) { done(); DW.setHTML(panel, resultCard(false, 'Test message failed', d.error, [], '')); return; }
+    if (d.test_id) { pollTest(c.id, d.test_id, d.handle || '', panel, my, done); return; }
+    done();
+    var delivered = Number(d.subscribers || 0) > 0, queued = Number(d.inbox_id || 0) > 0;
+    var title = delivered ? 'Test message delivered' : (queued ? 'Test message queued' : 'Agent watcher offline');
+    var note = delivered ? 'Delivered to ' + d.subscribers + ' connected watcher(s).'
+      : (queued ? 'Queued in the control channel inbox; the client watcher will pick it up by polling.'
+        : 'No connected duckway cc watch daemon was listening for ' + (c.client_name || 'this client') + '.');
+    var cmds = (delivered || queued) ? '' : DW.raw('<p class="text-sm text-muted">On the assigned client, run:</p><pre class="cc-pre"><code>duckway sync\nduckway cc watch status\nduckway cc watch restart</code></pre>');
+    DW.setHTML(panel, resultCard(delivered || queued, title, note, [], cmds));
+  }).catch(function(err) { done(); if (my === seq) DW.setHTML(panel, resultCard(false, 'Request failed', err.message, [], '')); });
+};
+
+var TEST_LABEL = {queued: 'Queued in inbox', received: 'Watcher received it', started: 'Agent started', replied: 'Agent replied', failed: 'Test failed'};
+function pollTest(ccID, testID, handle, panel, my, done) {
   var started = Date.now();
   function tick() {
-    fetch('/api/cc/' + encodeURIComponent(ccID) + '/test-agent/' + encodeURIComponent(testID), {credentials:'same-origin'})
-      .then(function(r){ return r.json(); })
-      .then(function(test) {
-        if (test.error) throw new Error(test.error);
-        DW.setHTML(panel, renderAgentTestStatus(test, handle));
-        if (test.status === 'replied' || test.status === 'failed') {
-          btn.textContent = orig;
-          btn.disabled = false;
-          return;
-        }
-        if (Date.now() - started > 120000) {
-          btn.textContent = orig;
-          btn.disabled = false;
-          var waitNote = document.createElement('div');
-          waitNote.className = 'mt-1 text-sm text-muted';
-          DW.setHTML(waitNote, DW.raw('Still waiting after 120s. Check <code>duckway cc watch status</code> and <code>cc-watch.log</code> on the assigned client.'));
-          panel.appendChild(waitNote);
-          return;
-        }
-        setTimeout(tick, 1000);
-      })
-      .catch(function(err) {
-        btn.textContent = orig;
-        btn.disabled = false;
-        DW.setHTML(panel, DW.html`<div class="text-muted text-sm" style="color:#ef4444">Agent test status failed: ${err.message}</div>`);
-      });
+    if (my !== seq) return;
+    fetchJSON('/api/cc/' + encodeURIComponent(ccID) + '/test-agent/' + encodeURIComponent(testID)).then(function(t) {
+      if (my !== seq) return;
+      if (t.error) throw new Error(t.error);
+      var st = t.status || 'queued';
+      var fin = st === 'replied' || st === 'failed';
+      var steps = [{ok: st !== 'failed', name: TEST_LABEL[st] || st, note: st === 'failed' && t.error ? t.error : ''}];
+      var title = st === 'replied' ? 'The agent replied' : (st === 'failed' ? 'Test message failed' : 'Waiting for the agent');
+      if (fin) {
+        done();
+        DW.setHTML(panel, resultCard(st === 'replied', title, 'Test message hi on ' + (handle || t.handle || 'the management channel') + '.', steps, ''));
+        return;
+      }
+      if (Date.now() - started > 120000) {
+        done();
+        DW.setHTML(panel, resultCard(false, 'Still waiting after 120s', '', steps, DW.raw('<p class="text-sm">Check <code>duckway cc watch status</code> and <code>cc-watch.log</code> on the client.</p>')));
+        return;
+      }
+      DW.setHTML(panel, DW.html`<div class="cc-card"><div class="cc-card-head"><span class="badge badge-gray">Working</span><strong>${title}</strong></div>${stepList(steps)}</div>`);
+      setTimeout(tick, 1000);
+    }).catch(function(err) { done(); if (my === seq) DW.setHTML(panel, resultCard(false, 'Status request failed', err.message, [], '')); });
   }
   tick();
 }
 
-function testCC() {
-  if (!currentCC) return;
-  var btn = document.getElementById('d-test-btn');
-  var panel = document.getElementById('d-test-result');
-  var orig = btn.textContent;
-  btn.textContent = 'Testing…';
+/* ---------- delete ---------- */
+DW.actions.askDelete = function() {
+  if (!cur) return;
+  var n = (cur.channels || []).filter(function(c) { return !c.archived; }).length;
+  DW.setHTML($('cc-confirm-text'), DW.html`<p>Delete <strong>${cur.name}</strong>? This cannot be undone.</p><ul class="cc-impact"><li>${n} channel${n === 1 ? '' : 's'} will be archived in the platform.</li><li>The bot access token issued to ${cur.client_name || 'the client'} is revoked.</li><li>The client loses its control channel.</li></ul>`);
+  DW.modal.open('#cc-confirm');
+};
+DW.actions.confirmDelete = function() {
+  var c = cur;
+  if (!c) return;
+  var btn = $('cc-confirm-ok');
   btn.disabled = true;
-  DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Calling Discord — this opens then immediately closes a channel under the configured category.</div>'));
+  fetchJSON('/api/cc/' + encodeURIComponent(c.id), {method: 'DELETE'}).then(function(d) {
+    btn.disabled = false;
+    DW.modal.close('#cc-confirm');
+    if (d.error) { DW.toast(d.error, 'error'); return; }
+    DW.toast('Control channel deleted', 'success');
+    closeDrawer(false);
+    loadCCs().then(function() { $('cc-new').focus(); });
+  }).catch(function(err) { btn.disabled = false; DW.modal.close('#cc-confirm'); DW.toast('Delete failed: ' + err.message, 'error'); });
+};
 
-  fetch('/api/cc/' + encodeURIComponent(currentCC.id) + '/test', {method:'POST', credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      btn.textContent = orig;
-      btn.disabled = false;
-      if (d.error) {
-        DW.setHTML(panel, DW.html`<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid var(--red,#ef4444);padding:0.75rem"><strong>Test failed</strong><br><span class="text-sm">${d.error}</span></div>`);
-        return;
-      }
-      var rows = (d.steps || []).map(function(s) {
-        var icon = s.ok ? DW.raw('<span style="color:#22c55e">✓</span>') : DW.raw('<span style="color:#ef4444">✗</span>');
-        return DW.html`<tr><td style="width:1.5rem">${icon}</td><td>${s.name}</td><td class="text-muted text-sm mono" style="word-break:break-all">${s.note || ''}</td></tr>`;
-      });
-      var border = d.ok ? '#22c55e' : '#ef4444';
-      var summary = d.ok
-        ? DW.raw('<strong style="color:#22c55e">All steps passed</strong> — bot token, guild + category access, and create/delete permissions all work.')
-        : DW.raw('<strong style="color:#ef4444">Test failed</strong> — see the failing step below.');
-      DW.setHTML(panel, DW.html`<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ${border};padding:0.75rem">${summary}<table class="mt-1" style="width:100%">${rows}</table></div>`);
-    })
-    .catch(function(err) {
-      btn.textContent = orig;
-      btn.disabled = false;
-      DW.setHTML(panel, DW.html`<div class="text-muted text-sm" style="color:#ef4444">Test request failed: ${err.message}</div>`);
-    });
+/* ---------- edit / create form ---------- */
+function blankSetup() { setup = {apiKeyId: '', guilds: [], categories: [], bot: null, invite: '', setupInvite: '', err: ''}; }
+function kvFromConfig(cfg) {
+  return Object.keys(cfg).filter(function(k) { return k !== 'agent_options'; }).sort().map(function(k) {
+    var v = cfg[k];
+    var complex = v !== null && typeof v === 'object';
+    var masked = v === MASK;
+    return {k: k, v: complex || masked ? '' : String(v), orig: v, masked: masked, complex: complex, existing: true};
+  });
 }
+DW.actions.openCreate = function() {
+  seq++;
+  if (!drawerOpen()) opener = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+  var disc = allServices.filter(function(s) { return s.name === 'discord'; })[0] || allServices[0] || {};
+  var free = allClients.filter(function(c) { return !allCCs.some(function(x) { return x.client_id === c.id; }); })[0];
+  cur = null; mode = 'create'; blankSetup();
+  form = {name: '', client_id: free ? free.id : '', agent_type: 'claude_code', sandbox: 'workspace-write', service_id: disc.id || '', api_key_id: '', active: true, guild_id: '', category_id: '', newCat: free ? free.name : '', kv: [], adv: '', advDirty: false, error: ''};
+  syncKey();
+  openDrawer();
+  renderForm();
+  $('cc-h').focus();
+};
+DW.actions.startEdit = function() {
+  if (!cur) return;
+  seq++; blankSetup();
+  var cfg = parseCfg(cur);
+  var sandbox = sandboxOf(cur) || 'workspace-write';
+  mode = 'edit';
+  form = {name: cur.name, client_id: cur.client_id, agent_type: cur.agent_type, sandbox: sandbox, service_id: cur.service_id, api_key_id: cur.api_key_id, active: !!cur.is_active, guild_id: cfg.guild_id || '', category_id: cfg.category_id || '', newCat: '', kv: kvFromConfig(cfg), adv: JSON.stringify(cfg, null, 2), advDirty: false, error: '', baseCfg: cfg};
+  renderForm();
+  $('cc-h').focus();
+};
+DW.actions.cancelForm = function() {
+  if (mode === 'edit' && cur) { seq++; mode = 'view'; form = null; renderView(); $('cc-h').focus(); }
+  else closeDrawer(true);
+};
+
+function keysForService(svcId) { return allKeys.filter(function(k) { return k.service_id === svcId && k.is_active; }); }
+function syncKey() {
+  var ks = keysForService(form.service_id);
+  if (!ks.some(function(k) { return k.id === form.api_key_id; })) form.api_key_id = ks.length ? ks[0].id : '';
+}
+function formSvc() { return svcById(form.service_id) || {name: cur ? cur.service_name : ''}; }
+function formIsDiscord() { return isDiscord(formSvc().name); }
+
+function renderForm() {
+  var creating = mode === 'create';
+  setHead(creating ? 'New control channel' : 'Edit ' + (cur ? cur.name : ''), creating ? null : cur);
+  var svcs = allServices.map(function(s) { return DW.html`<option value="${s.id}" ${sel(s.id === form.service_id)}>${s.display_name || s.name}</option>`; });
+  var clientOpts = allClients.map(function(c) {
+    var taken = allCCs.filter(function(x) { return x.client_id === c.id; })[0];
+    return DW.html`<option value="${c.id}" ${sel(c.id === form.client_id)} ${dis(!!taken)}>${c.name}${taken ? ' (already has: ' + taken.name + ')' : ''}</option>`;
+  });
+  var agentOpts = AGENTS.map(function(a) { return DW.html`<option value="${a[0]}" ${sel(a[0] === form.agent_type)}>${a[1]}</option>`; });
+  var ks = keysForService(form.service_id);
+  var keyOpts = ks.length ? ks.map(function(k) { return DW.html`<option value="${k.id}" ${sel(k.id === form.api_key_id)}>${k.name}</option>`; })
+    : DW.raw('<option value="">No credentials for this platform</option>');
+  var needs = cur && needsKey(cur);
+  DW.setHTML($('cc-body'), DW.html`<form id="cc-form" data-on-submit="saveForm" novalidate>
+    <div class="cc-callout" role="note"><strong>The bot token is never shown.</strong> Pick a stored credential; the token stays on the server and cannot be read back.</div>
+    <div class="form-group"><label for="cf-name">Name</label><input type="text" id="cf-name" data-field="name" data-on-input="fieldInput" value="${form.name}" placeholder="Project Alpha" autocomplete="off" required></div>
+    <div class="form-group"><label for="cf-client">Bound client</label>
+      ${creating ? DW.html`<select id="cf-client" data-field="client_id" data-on-change="fieldChange">${clientOpts}</select><span class="text-muted text-sm">One control channel per client.</span>`
+        : DW.html`<input type="text" id="cf-client" value="${cur.client_name || cur.client_id}" readonly><span class="text-muted text-sm">The client and platform cannot be changed after creation.</span>`}
+    </div>
+    <div class="form-group"><label for="cf-agent">Agent</label><select id="cf-agent" data-field="agent_type" data-on-change="fieldChange">${agentOpts}</select><span class="text-muted text-sm">The agent that <code>duckway cc watch</code> runs on the client.</span></div>
+    ${form.agent_type === 'codex' ? DW.html`<div class="form-group"><label for="cf-sandbox">Codex sandbox</label><select id="cf-sandbox" data-field="sandbox" data-on-change="fieldChange">${SANDBOXES.map(function(v) { return DW.html`<option value="${v}" ${sel(v === form.sandbox)}>${v === 'none' ? 'none (use client Codex config)' : v}</option>`; })}</select><span class="text-muted text-sm">Use danger-full-access only for trusted categories. Existing channels pick it up after <code>duckway cc watch restart</code>.</span></div>` : ''}
+    <div class="form-group"><label for="cf-service">Platform</label>
+      ${creating ? DW.html`<select id="cf-service" data-field="service_id" data-on-change="fieldChange">${svcs}</select>` : DW.html`<input type="text" id="cf-service" value="${cur.service_name}" readonly>`}
+    </div>
+    <div class="form-group"><label for="cf-key">Bot credential</label><select id="cf-key" data-field="api_key_id" data-on-change="fieldChange">${keyOpts}</select>
+      <span class="text-muted text-sm">${needs ? 'The previous credential was deleted. Pick a replacement and set the channel active.' : 'Select a stored credential. Add one under Credentials if it is missing.'}</span></div>
+    ${creating ? '' : DW.html`<div class="form-group"><label class="cc-check"><input type="checkbox" id="cf-active" data-field="active" data-on-change="fieldChange" ${form.active ? DW.raw('checked') : ''}> Active</label></div>`}
+    <div id="cc-platform">${platformFields()}</div>
+    <details class="cc-adv" id="cc-adv"${form.advDirty ? DW.raw(' open') : ''}>
+      <summary>Advanced (JSON)</summary>
+      <p class="text-muted text-sm">Raw platform settings. Secret values appear as ${MASK} and are kept unless you replace them. When you edit this box it replaces the fields above.</p>
+      <textarea id="cf-adv" class="cc-json" rows="6" spellcheck="false" aria-label="Advanced JSON settings" data-on-input="advInput">${advText()}</textarea>
+    </details>
+    <div id="cc-form-error" class="cc-err" role="alert">${form.error}</div>
+    <div class="cc-footer">
+      <button type="submit" class="btn btn-primary" id="cc-save">${creating ? 'Create control channel' : 'Save changes'}</button>
+      <button type="button" class="btn" data-action="cancelForm">Cancel</button>
+    </div>
+  </form>`);
+}
+function advText() {
+  if (form.advDirty) return form.adv;
+  return mode === 'edit' ? form.adv : '{}';
+}
+function renderPlatform() { DW.setHTML($('cc-platform'), platformFields()); }
+
+function platformFields() {
+  if (formIsDiscord()) return discordFields();
+  return DW.html`<fieldset class="cc-set"><legend>Platform settings</legend>
+    ${mode === 'create' ? DW.raw('<p class="cc-callout cc-callout-warn text-sm" role="note">Creating control channels on this platform is not supported by the server yet. Existing ones can still be edited.</p>') : ''}
+    <div class="cc-kv">${form.kv.length ? form.kv.map(function(r, i) {
+      var secret = r.masked || SECRET_RE.test(r.k);
+      return DW.html`<div class="cc-kv-row"><label class="cc-sr" for="kv-k${i}">Setting name ${i + 1}</label><input type="text" id="kv-k${i}" data-kv="k" data-idx="${i}" data-on-input="kvInput" value="${r.k}" placeholder="name" ${dis(r.existing)} autocomplete="off">
+        <label class="cc-sr" for="kv-v${i}">Value ${i + 1}</label>${r.complex ? DW.html`<input type="text" id="kv-v${i}" value="structured value (edit in Advanced JSON)" disabled>`
+          : DW.html`<input type="${secret ? 'password' : 'text'}" id="kv-v${i}" data-kv="v" data-idx="${i}" data-on-input="kvInput" value="${r.v}" placeholder="${r.masked ? 'Stored on server, leave blank to keep' : 'value'}" autocomplete="off">`}
+        <button type="button" class="btn btn-sm" data-action="kvRemove" data-idx="${i}" aria-label="Remove setting ${r.k || i + 1}">Remove</button></div>`;
+    }) : DW.raw('<p class="text-muted text-sm">No settings yet.</p>')}</div>
+    <button type="button" class="btn btn-sm" data-action="kvAdd">Add setting</button>
+  </fieldset>`;
+}
+DW.actions.kvAdd = function() { form.kv.push({k: '', v: '', existing: false}); renderPlatform(); var i = form.kv.length - 1; var n = $('kv-k' + i); if (n) n.focus(); };
+DW.actions.kvRemove = function(el) { form.kv.splice(parseInt(el.dataset.idx, 10), 1); renderPlatform(); };
+DW.actions.kvInput = function(el) {
+  var r = form.kv[parseInt(el.dataset.idx, 10)];
+  if (!r) return;
+  r[el.dataset.kv] = el.value;
+};
+DW.actions.advInput = function(el) { form.adv = el.value; form.advDirty = true; };
+DW.actions.fieldInput = function(el) { form[el.dataset.field] = el.value; };
+DW.actions.fieldChange = function(el) {
+  var f = el.dataset.field;
+  form[f] = el.type === 'checkbox' ? el.checked : el.value;
+  if (f === 'service_id') { form.kv = []; form.guild_id = ''; form.category_id = ''; blankSetup(); syncKey(); renderForm(); $('cf-service').focus(); }
+  else if (f === 'agent_type') { renderForm(); $('cf-agent').focus(); }
+  else if (f === 'api_key_id') { blankSetup(); renderPlatform(); }
+  else if (f === 'client_id') { var n = clientName(form.client_id); if (n) form.newCat = n; if (formIsDiscord()) renderPlatform(); }
+};
+
+/* ---------- Discord setup inside the form ---------- */
+function discordFields() {
+  var loaded = setup.apiKeyId === form.api_key_id && form.api_key_id;
+  var hasG = loaded && setup.guilds.length > 0;
+  var gOpts = setup.guilds.map(function(g) { return DW.html`<option value="${g.id}" ${sel(g.id === form.guild_id)}>${g.name} (${g.id})</option>`; });
+  var cOpts = setup.categories.map(function(c) { return DW.html`<option value="${c.id}" ${sel(c.id === form.category_id)}>${c.name} (${c.id})</option>`; });
+  var guildField = hasG
+    ? DW.html`<div class="form-group"><label for="cf-guild">Server</label><select id="cf-guild" data-field="guild_id" data-on-change="guildChange"><option value="">Choose a server</option>${gOpts}</select></div>`
+    : DW.html`<div class="form-group"><label for="cf-guild">Server ID</label><input type="text" id="cf-guild" data-field="guild_id" data-on-input="fieldInput" value="${form.guild_id}" placeholder="Load Discord setup, or paste the server id" autocomplete="off">${setup.err ? DW.html`<span class="cc-err text-sm">Could not list servers: ${setup.err}</span>` : ''}</div>`;
+  var catField = hasG && setup.categories.length
+    ? DW.html`<div class="form-group"><label for="cf-cat">Category</label><select id="cf-cat" data-field="category_id" data-on-change="catChange"><option value="">Choose a category</option>${cOpts}</select></div>`
+    : DW.html`<div class="form-group"><label for="cf-cat">Category ID</label><input type="text" id="cf-cat" data-field="category_id" data-on-input="fieldInput" value="${form.category_id}" placeholder="Paste the category id" autocomplete="off"><span class="text-muted text-sm">Changing the category does not move existing channels.</span></div>`;
+  var bot = setup.bot ? DW.html`<p class="text-sm text-muted">Bot: <strong>${setup.bot.username || setup.bot.id}</strong></p>` : '';
+  return DW.html`<fieldset class="cc-set"><legend>Discord</legend>
+    <div class="cc-actions">
+      <button type="button" class="btn btn-sm" id="cc-load" data-action="loadSetup">${loaded ? 'Refresh servers' : 'Load Discord setup'}</button>
+      ${setup.invite ? DW.html`<a class="btn btn-sm" target="_blank" rel="noopener noreferrer" href="${safeHref(setup.invite)}">Invite bot</a>` : ''}
+      ${setup.setupInvite ? DW.html`<a class="btn btn-sm" target="_blank" rel="noopener noreferrer" href="${safeHref(setup.setupInvite)}">Setup invite</a>` : ''}
+    </div>
+    <p class="text-muted text-sm">Invite bot uses the runtime permissions. Setup invite also grants Manage Roles so Duckway can write the category permission override.</p>
+    ${bot}${guildField}${catField}
+    ${hasG ? DW.html`<div class="form-group"><label for="cf-newcat">Create category</label><div class="cc-inline"><input type="text" id="cf-newcat" data-field="newCat" data-on-input="fieldInput" value="${form.newCat}" placeholder="${clientName(form.client_id) || 'duckway'}" autocomplete="off"><button type="button" class="btn btn-sm" data-action="createCategory">Create</button></div></div>` : ''}
+    <div class="cc-status-row"><button type="button" class="btn btn-sm" id="cc-checkfix" data-action="checkFixForm">Check &amp; fix</button><span class="text-muted text-sm">Checks the bot can create channels, post and react in the category, and grants access if it cannot.</span></div>
+    <div id="cc-form-result" class="cc-result" role="status" aria-live="polite"></div>
+  </fieldset>`;
+}
+DW.actions.guildChange = function(el) { form.guild_id = el.value; form.category_id = ''; setup.categories = []; if (form.guild_id) loadCategories(); else renderPlatform(); };
+DW.actions.catChange = function(el) { form.category_id = el.value; };
+
+DW.actions.loadSetup = function() {
+  if (!form.api_key_id) { DW.toast('Select a Discord credential first', 'error'); return; }
+  var my = seq, keyID = form.api_key_id;
+  var b = $('cc-load'); if (b) b.disabled = true;
+  fetchJSON('/api/cc/discord/setup?api_key_id=' + encodeURIComponent(keyID)).then(function(d) {
+    if (my !== seq || !form) return;
+    if (d.error) { var b2 = $('cc-load'); if (b2) b2.disabled = false; DW.toast(d.error, 'error'); return; }
+    setup = {apiKeyId: keyID, bot: d.bot, invite: d.invite_url || '', setupInvite: d.setup_invite_url || '', guilds: d.guilds || [], categories: [], err: d.guilds_error || ''};
+    if (setup.guilds.length === 1 && !form.guild_id) form.guild_id = setup.guilds[0].id;
+    renderPlatform();
+    if (setup.guilds.length && form.guild_id) loadCategories();
+    else if (!setup.guilds.length) DW.toast('Bot loaded. Invite it to a server, then refresh.', 'success');
+    var n = $('cc-load'); if (n) n.focus();
+  }).catch(function(err) { var b3 = $('cc-load'); if (b3) b3.disabled = false; DW.toast(err.message, 'error'); });
+};
+function loadCategories() {
+  var my = seq, keyID = form.api_key_id, gid = form.guild_id;
+  if (!keyID || !gid) return;
+  fetchJSON('/api/cc/discord/categories?api_key_id=' + encodeURIComponent(keyID) + '&guild_id=' + encodeURIComponent(gid)).then(function(d) {
+    if (my !== seq || !form) return;
+    if (d.error) { DW.toast(d.error, 'error'); return; }
+    setup.categories = d.categories || [];
+    renderPlatform();
+  }).catch(function(err) { DW.toast(err.message, 'error'); });
+}
+DW.actions.createCategory = function() {
+  var name = (form.newCat || '').trim() || clientName(form.client_id) || 'duckway';
+  if (!form.api_key_id || !form.guild_id) { DW.toast('Load Discord setup and choose a server first', 'error'); return; }
+  var my = seq;
+  postJSON('/api/cc/discord/categories', {api_key_id: form.api_key_id, guild_id: form.guild_id, name: name}).then(function(d) {
+    if (my !== seq || !form) return;
+    if (d.error) { DW.toast(d.error, 'error'); return; }
+    setup.categories = setup.categories.concat([d]);
+    form.category_id = d.id;
+    renderPlatform();
+    DW.toast(d.permission_warning || 'Category created', d.permission_warning ? 'error' : 'success');
+    DW.actions.checkFixForm();
+  }).catch(function(err) { DW.toast(err.message, 'error'); });
+};
+DW.actions.checkFixForm = function() {
+  if (!form || busy) return;
+  var panel = $('cc-form-result');
+  if (!form.api_key_id || !form.guild_id || !form.category_id) {
+    DW.setHTML(panel, resultCard(false, 'Choose a credential, server and category first', '', [], ''));
+    return;
+  }
+  var my = seq; busy = true;
+  var b = $('cc-checkfix'); if (b) b.disabled = true;
+  runCheckFix(form.api_key_id, form.guild_id, form.category_id, panel, my).then(function() {
+    if (my !== seq) return;
+    busy = false;
+    var b2 = $('cc-checkfix'); if (b2) b2.disabled = false;
+  });
+};
+
+/* ---------- save ---------- */
+function buildConfig() {
+  if (form.advDirty) {
+    var parsed;
+    try { parsed = JSON.parse(form.adv || '{}'); } catch (e) { throw new Error('Advanced JSON is not valid: ' + e.message); }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Advanced JSON must be an object');
+    return parsed;
+  }
+  var cfg = {};
+  var base = mode === 'edit' ? (form.baseCfg || {}) : {};
+  Object.keys(base).forEach(function(k) { cfg[k] = base[k]; }); // masked secrets stay masked, server restores them
+  if (formIsDiscord()) {
+    cfg.guild_id = (form.guild_id || '').trim();
+    cfg.category_id = (form.category_id || '').trim();
+    if (!cfg.guild_id || !cfg.category_id) throw new Error('Choose or enter a server and a category.');
+  } else {
+    var seen = {};
+    form.kv.forEach(function(r) {
+      var k = (r.k || '').trim();
+      if (!k) return;
+      if (seen[k]) throw new Error('Duplicate setting name: ' + k);
+      seen[k] = true;
+      if (r.complex) { cfg[k] = r.orig; return; }
+      if (r.masked && r.v === '') { cfg[k] = MASK; return; }
+      var v = r.v;
+      if (r.existing && typeof r.orig === 'number' && v.trim() !== '' && !isNaN(Number(v))) cfg[k] = Number(v);
+      else if (r.existing && typeof r.orig === 'boolean' && (v === 'true' || v === 'false')) cfg[k] = v === 'true';
+      else cfg[k] = v;
+    });
+    Object.keys(cfg).forEach(function(k) { if (k !== 'agent_options' && !seen[k]) delete cfg[k]; });
+  }
+  return cfg;
+}
+function formError(msg) {
+  var e = $('cc-form-error');
+  if (e) { e.textContent = msg; }
+  form.error = msg;
+}
+DW.actions.saveForm = function() {
+  if (!form || busy) return;
+  var name = (form.name || '').trim();
+  if (!name) { formError('Name is required.'); $('cf-name').focus(); return; }
+  if (!form.api_key_id) { formError('Choose a bot credential.'); $('cf-key').focus(); return; }
+  if (mode === 'create' && !form.client_id) { formError('Choose a client.'); $('cf-client').focus(); return; }
+  var config;
+  try { config = buildConfig(); } catch (err) { formError(err.message); return; }
+  if (form.agent_type === 'codex') config.agent_options = {sandbox: form.sandbox};
+  else delete config.agent_options;
+  formError('');
+  var creating = mode === 'create', my = seq;
+  var body = {name: name, api_key_id: form.api_key_id, agent_type: form.agent_type, config: config};
+  if (creating) { body.client_id = form.client_id; body.service_id = form.service_id; }
+  else body.is_active = !!form.active;
+  var btn = $('cc-save');
+  btn.disabled = true; busy = true;
+  var label = btn.textContent;
+  btn.textContent = creating ? 'Creating…' : 'Saving…';
+  fetchJSON(creating ? '/api/cc' : '/api/cc/' + encodeURIComponent(cur.id), {method: creating ? 'POST' : 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(function(d) {
+    busy = false;
+    if (my !== seq) return;
+    if (d.error) { btn.disabled = false; btn.textContent = label; formError(d.error); return; }
+    DW.toast(creating ? 'Control channel created' : 'Control channel updated', 'success');
+    var id = creating ? d.id : cur.id;
+    loadCCs();
+    showCC(id, false);
+  }).catch(function(err) { busy = false; if (my === seq) { btn.disabled = false; btn.textContent = label; formError('Request failed: ' + err.message); } });
+};
+
+/* ---------- boot ---------- */
+document.addEventListener('DOMContentLoaded', function() {
+  Promise.all([fetchJSON('/api/services'), fetchJSON('/api/keys'), fetchJSON('/api/clients')]).then(function(r) {
+    allServices = (Array.isArray(r[0]) ? r[0] : []).filter(function(s) { return s && (s.name === 'discord' || s.name === 'telegram'); });
+    allKeys = Array.isArray(r[1]) ? r[1] : [];
+    allClients = Array.isArray(r[2]) ? r[2] : [];
+  }).catch(function() {}).then(loadCCs);
+});
+})();
 </script>
 {{end}}
