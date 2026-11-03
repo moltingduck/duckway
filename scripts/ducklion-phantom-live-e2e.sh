@@ -134,12 +134,12 @@ echo '[live-e2e] importing OAuth credentials and registering client'
 "$RUNTIME" exec -i "$SERVER" sh -eu -s -- "$SAFE_ID" "$ADMIN_PASS" <<'SERVER_SEED'
 run_id="$1"; admin_pass="$2"; base=http://127.0.0.1:19090; cookie=/tmp/cookie
 jq -n --arg password "$admin_pass" '{username:"duckway",password:$password}' >/tmp/login.json
-curl -fsS -c "$cookie" -X POST "$base/api/auth/login" -H 'Content-Type: application/json' --data-binary @/tmp/login.json >/dev/null
+curl -fsS -c "$cookie" -X POST "$base/api/auth/login" -H "Origin: $base" -H 'Content-Type: application/json' --data-binary @/tmp/login.json >/dev/null
 python3 - "$base" "$cookie" "$run_id" <<'PY'
 import base64, json, subprocess, sys, time
 base, cookie, run_id = sys.argv[1:]
 def curl(method, path, payload=None):
-    cmd=["curl","-fsS","-b",cookie,"-X",method,base+path]
+    cmd=["curl","-fsS","-b",cookie,"-H","Origin: "+base,"-X",method,base+path]
     if payload is not None: cmd += ["-H","Content-Type: application/json","--data-binary",json.dumps(payload)]
     return json.loads(subprocess.check_output(cmd))
 services={x["name"]:x["id"] for x in curl("GET","/api/services")}
@@ -173,8 +173,8 @@ os.chmod('/shared/provision.json.tmp',0o600); os.replace('/shared/provision.json
 PY
 new_pass="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 jq -n --arg old "$admin_pass" --arg new "$new_pass" '{current_password:$old,new_password:$new}' >/tmp/change.json
-curl -fsS -b "$cookie" -X POST "$base/api/auth/change-password" -H 'Content-Type: application/json' --data-binary @/tmp/change.json >/dev/null
-curl -fsS -b "$cookie" -X POST "$base/api/auth/logout" >/dev/null
+curl -fsS -b "$cookie" -X POST "$base/api/auth/change-password" -H "Origin: $base" -H 'Content-Type: application/json' --data-binary @/tmp/change.json >/dev/null
+curl -fsS -b "$cookie" -X POST "$base/api/auth/logout" -H "Origin: $base" >/dev/null
 SERVER_SEED
 
 # The retained/running server must not keep access to host credential files.
@@ -204,7 +204,7 @@ test ! -e /run/secrets/codex-auth.json
 test ! -e /run/secrets/claude-credentials.json
 home=/root; cfg=$home/.duckway; base=http://server:19090
 mkdir -p "$cfg" /workspace
-status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$base/api/auth/login" -H 'Content-Type: application/json' -d '{"username":"duckway","password":"duckway"}')
+status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$base/api/auth/login" -H "Origin: $base" -H 'Content-Type: application/json' -d '{"username":"duckway","password":"duckway"}')
 test "$status" = 401
 status=$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-Duckway-Token: invalid-e2e-token' "$base/client/sync")
 test "$status" = 401

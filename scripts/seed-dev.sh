@@ -5,6 +5,8 @@ set -e
 # Run after server is up: ./scripts/seed-dev.sh
 
 BASE="${DUCKWAY_URL:-http://127.0.0.1:9090}"
+# Admin API mutations must be same-origin (CSRF guard): send Origin like a browser.
+curl() { command curl -H "Origin: $BASE" "$@"; }
 PW="${DUCKWAY_ADMIN_PW:-duckway}"
 
 # Discord dev bot (from env)

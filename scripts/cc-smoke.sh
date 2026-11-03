@@ -109,6 +109,8 @@ if [ "${1:-}" = "--check-credentials" ]; then
 fi
 
 BASE="${CC_SMOKE_BASE:-http://localhost:9090}"
+# Admin API mutations must be same-origin (CSRF guard): send Origin like a browser.
+curl() { command curl -H "Origin: $BASE" "$@"; }
 USER="${CC_SMOKE_ADMIN_USER:-duckway}"
 PASS="${CC_SMOKE_ADMIN_PASS:-duckway}"
 SMOKE_TMP=$(mktemp -d -t dw-cc-smoke-XXXXXX)

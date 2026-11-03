@@ -1013,6 +1013,7 @@ func RegisterClient(baseURL, adminSession, clientName string) (clientID, token s
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", "duckway_session="+adminSession)
+	req.Header.Set("Origin", baseURL) // admin API requires a same-origin mutation
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1038,7 +1039,13 @@ func RegisterClient(baseURL, adminSession, clientName string) (clientID, token s
 // AdminLogin gets a session cookie for admin API access.
 func AdminLogin(baseURL, username, password string) (session string, err error) {
 	body, _ := json.Marshal(map[string]string{"username": username, "password": password})
-	resp, err := http.Post(baseURL+"/api/auth/login", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", baseURL+"/api/auth/login", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", baseURL) // admin API requires a same-origin mutation
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
 	}
