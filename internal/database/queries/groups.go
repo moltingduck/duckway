@@ -133,3 +133,10 @@ func (q *GroupQueries) IncrementLastIndex(groupID string, memberCount int) (int,
 	}
 	return old % memberCount, nil
 }
+
+// KeyServiceID returns the service id of an API key (sql.ErrNoRows if absent).
+func (q *GroupQueries) KeyServiceID(apiKeyID string) (string, error) {
+	var id string
+	err := q.db.QueryRow(`SELECT service_id FROM api_keys WHERE id = ?`, apiKeyID).Scan(&id)
+	return id, err
+}

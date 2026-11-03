@@ -126,6 +126,21 @@ func (h *KeyGroupHandler) AddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	grp, err := queries.GetKeyGroup(h.db, groupID)
+	if err != nil {
+		jsonError(w, "pool not found", http.StatusNotFound)
+		return
+	}
+	var keySvc string
+	if err := h.db.QueryRow(`SELECT s.name FROM api_keys k JOIN services s ON s.id = k.service_id WHERE k.id = ?`, req.APIKeyID).Scan(&keySvc); err != nil {
+		jsonError(w, "key not found", http.StatusBadRequest)
+		return
+	}
+	if keySvc != grp.ServiceName {
+		jsonError(w, "key belongs to a different service than this pool", http.StatusBadRequest)
+		return
+	}
+
 	if err := queries.AddKeyToGroup(h.db, groupID, req.APIKeyID, req.Position); err != nil {
 		jsonError(w, "failed to add key to group: "+err.Error(), http.StatusInternalServerError)
 		return

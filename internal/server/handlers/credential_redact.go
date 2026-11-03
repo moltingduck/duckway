@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 
 	"github.com/hackerduck/duckway/internal/models"
 )
@@ -13,11 +14,68 @@ import (
 // field from that JSON and merges the stored values back on update so an
 // edit round-trip cannot erase them.
 
+// visibleMetadataFields are provider metadata names (separators removed,
+// lower-cased) that look secret-like but never hold a secret.
+var visibleMetadataFields = map[string]bool{
+	"tokentype": true, "tokenendpoint": true, "tokensremaining": true, "tokenslimit": true,
+	"subscriptiontype": true, "ratelimittier": true, "scopes": true, "accountid": true, "clientid": true,
+}
+
+// secretWords mark a field secret when they appear as a whole word in a
+// snake_case, kebab-case or camelCase name.
+var secretWords = map[string]bool{
+	"authorization": true, "cookie": true, "cookies": true, "session": true, "bearer": true, "jwt": true,
+	"credential": true, "credentials": true, "passphrase": true, "pem": true, "secret": true, "secrets": true,
+	"password": true, "passwd": true,
+}
+
+// nameWords splits snake, kebab, dotted and camelCase names into lower-case words.
+func nameWords(name string) []string {
+	var words []string
+	var cur []rune
+	flush := func() {
+		if len(cur) > 0 {
+			words = append(words, strings.ToLower(string(cur)))
+			cur = cur[:0]
+		}
+	}
+	rs := []rune(name)
+	for i, r := range rs {
+		switch {
+		case r == '_' || r == '-' || r == '.' || r == ' ':
+			flush()
+		case unicode.IsUpper(r):
+			prevLower := i > 0 && (unicode.IsLower(rs[i-1]) || unicode.IsDigit(rs[i-1]))
+			acronymEnd := i > 0 && unicode.IsUpper(rs[i-1]) && i+1 < len(rs) && unicode.IsLower(rs[i+1])
+			if prevLower || acronymEnd {
+				flush()
+			}
+			cur = append(cur, r)
+		default:
+			cur = append(cur, r)
+		}
+	}
+	flush()
+	return words
+}
+
 func isSecretFieldName(name string) bool {
 	n := strings.ToLower(name)
-	switch n {
-	case "token_type", "token_endpoint", "tokens_remaining", "tokens_limit":
+	flat := strings.NewReplacer("_", "", "-", "", ".", "", " ", "").Replace(n)
+	if visibleMetadataFields[flat] {
 		return false
+	}
+	words := nameWords(name)
+	for _, w := range words {
+		if secretWords[w] {
+			return true
+		}
+	}
+	if len(words) > 0 {
+		switch words[len(words)-1] {
+		case "token", "tokens", "key", "keys":
+			return true
+		}
 	}
 	return strings.HasSuffix(n, "token") ||
 		strings.Contains(n, "secret") ||

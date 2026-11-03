@@ -219,3 +219,35 @@ func TestKeyBundleEntryEditAndAssignConflict(t *testing.T) {
 		t.Fatalf("forced assign: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestPoolAddMemberRejectsOtherServiceKey(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	exec := func(q string, a ...interface{}) {
+		t.Helper()
+		if _, err := s.db.Exec(q, a...); err != nil {
+			t.Fatalf("%q: %v", q, err)
+		}
+	}
+	exec(`INSERT INTO services (id, name, display_name, upstream_url, host_pattern) VALUES ('svc-a', 'svc-a', 'A', 'https://a.example', 'a.example')`)
+	exec(`INSERT INTO services (id, name, display_name, upstream_url, host_pattern) VALUES ('svc-b', 'svc-b', 'B', 'https://b.example', 'b.example')`)
+	exec(`INSERT INTO api_keys (id, service_id, name, key_encrypted) VALUES ('ka', 'svc-a', 'ka', 'x')`)
+	exec(`INSERT INTO api_keys (id, service_id, name, key_encrypted) VALUES ('kb', 'svc-b', 'kb', 'x')`)
+	exec(`INSERT INTO api_key_groups (id, service_id, name, strategy) VALUES ('g-rot', 'svc-a', 'rot', 'round_robin')`)
+	exec(`INSERT INTO key_groups (id, name, description, service_name, rotation_strategy) VALUES ('g-lease', 'lease', '', 'svc-a', 'score')`)
+	for _, c := range []struct{ path, body string }{
+		{"/api/groups/g-rot/members", `{"api_key_id":"kb","priority":0}`},
+		{"/api/key-groups/g-lease/members", `{"api_key_id":"kb","position":0}`},
+	} {
+		if rec := credAdminRequest(t, s, shared, http.MethodPost, c.path, c.body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s other-service key: %d %s", c.path, rec.Code, rec.Body.String())
+		}
+	}
+	for _, c := range []struct{ path, body string }{
+		{"/api/groups/g-rot/members", `{"api_key_id":"ka","priority":0}`},
+		{"/api/key-groups/g-lease/members", `{"api_key_id":"ka","position":0}`},
+	} {
+		if rec := credAdminRequest(t, s, shared, http.MethodPost, c.path, c.body); rec.Code != http.StatusOK {
+			t.Errorf("%s same-service key: %d %s", c.path, rec.Code, rec.Body.String())
+		}
+	}
+}

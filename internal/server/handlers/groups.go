@@ -144,6 +144,21 @@ func (h *GroupHandler) AddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	g, err := h.groups.GetByID(groupID)
+	if err != nil {
+		jsonError(w, "pool not found", http.StatusNotFound)
+		return
+	}
+	keySvc, err := h.groups.KeyServiceID(req.APIKeyID)
+	if err != nil {
+		jsonError(w, "key not found", http.StatusBadRequest)
+		return
+	}
+	if keySvc != g.ServiceID {
+		jsonError(w, "key belongs to a different service than this pool", http.StatusBadRequest)
+		return
+	}
+
 	if err := h.groups.AddMember(groupID, req.APIKeyID, req.Priority); err != nil {
 		jsonError(w, "failed to add member", http.StatusInternalServerError)
 		return

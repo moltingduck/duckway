@@ -43,3 +43,45 @@ func TestMergeStoredSubscriptionSecrets(t *testing.T) {
 		t.Fatalf("no stored value must be a no-op: %s", out)
 	}
 }
+
+func TestSecretFieldNameWordMatching(t *testing.T) {
+	secrets := []string{
+		"authorization", "Authorization", "cookie", "Set-Cookie", "cookies", "session_key", "sessionKey", "session",
+		"bearer", "bearerToken", "jwt", "id_jwt", "credential", "credentials", "passphrase", "pem", "private_pem",
+		"access_key", "accessKey", "signing_key", "signingKey", "x-api-key", "X-Api-Key", "tokens", "refresh_tokens",
+		"refreshTokens", "access_token", "accessToken", "id_token", "client_secret", "private_key", "apiKey",
+	}
+	for _, n := range secrets {
+		if !isSecretFieldName(n) {
+			t.Errorf("%q must be treated as secret", n)
+		}
+	}
+	visible := []string{
+		"subscriptionType", "rateLimitTier", "scopes", "account_id", "client_id", "clientId", "token_type",
+		"tokenType", "token_endpoint", "displayName", "email", "expires_at", "tokens_remaining", "key_preview", "organization",
+	}
+	for _, n := range visible {
+		if isSecretFieldName(n) {
+			t.Errorf("%q must stay visible", n)
+		}
+	}
+}
+
+func TestRedactAndMergeRoundTripNewSecretNames(t *testing.T) {
+	stored := `{"subscriptionType":"max","session_key":"S1","x-api-key":"S2","refreshTokens":["S3"],"authorization":"S4","scopes":["a"]}`
+	red := redactSubscriptionInfo(stored)
+	for _, leaked := range []string{"S1", "S2", "S3", "S4"} {
+		if strings.Contains(red, leaked) {
+			t.Fatalf("leaked %s: %s", leaked, red)
+		}
+	}
+	if !strings.Contains(red, "scopes") || !strings.Contains(red, "subscriptionType") {
+		t.Fatalf("metadata lost: %s", red)
+	}
+	merged := mergeStoredSubscriptionSecrets(stored, red)
+	for _, kept := range []string{"S1", "S2", "S3", "S4"} {
+		if !strings.Contains(merged, kept) {
+			t.Fatalf("stored secret %s not restored: %s", kept, merged)
+		}
+	}
+}
