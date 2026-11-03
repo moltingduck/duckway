@@ -98,6 +98,7 @@ func (g *DiscordGateway) RegisterApprovalMessage(messageID, approvalID string) {
 
 // SendApprovalMessage sends an approval notification with pre-added reactions.
 func (g *DiscordGateway) SendApprovalMessage(notif ApprovalNotification) {
+	notif = notif.mdSafe()
 	embed := map[string]interface{}{
 		"title": "🔑 Duckway Approval Required",
 		"color": 16750848,

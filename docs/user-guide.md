@@ -135,8 +135,8 @@ does not list.
 - Approvals recorded by earlier versions with a relative expiry never ran out;
   they were expired at upgrade, so an affected token asks for approval again.
 - A rule approval covers one exact request: method, path, query string and body.
-  The approval and its notification show the query and the first 12 hex
-  characters of the body's SHA-256.
+  The approval and its notification show the query and a short keyed hash
+  of the body.
 - A proxied path containing `%2F` is refused (400) unless the service has
   **Allow encoded slashes** enabled (Services, Delivery section; for example
   GitLab project paths). `%5C`, an encoded `?` or `#` (`%3F`, `%23`) and

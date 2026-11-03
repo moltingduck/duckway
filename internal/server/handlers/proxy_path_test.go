@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/hackerduck/duckway/internal/database"
 	"github.com/hackerduck/duckway/internal/server/handlers"
 	"github.com/hackerduck/duckway/internal/server/services"
 	"sync/atomic"
@@ -407,5 +408,77 @@ func TestApprovalKeyPersistedAcrossHandlers(t *testing.T) {
 	}
 	if settings.Get(queries.SettingApprovalScopeKey) == "" {
 		t.Fatal("the key must be persisted")
+	}
+}
+
+// Only RFC 7230 tokens of upper-case letters, digits and '-' (after
+// upper-casing) are proxied; anything else is 400.
+func TestProxyRejectsInvalidMethods(t *testing.T) {
+	rig := newPathRig(t, "")
+	h := newProxyHandler(rig.f)
+	for _, m := range []string{"G`ET", "GE T", "GET;", "g_t", "GET\\x00", "", "A,B", "GET/1", "X*"} {
+		r := httptest.NewRequest("GET", "/proxy/anthropic/v1/a", strings.NewReader(""))
+		r.Method = m
+		code, _ := doProxy(h, withClient(r, rig.f.client))
+		if code != http.StatusBadRequest {
+			t.Errorf("method %q => %d, want 400", m, code)
+		}
+	}
+	for _, m := range []string{"get", "PROPFIND", "m-search", "Report"} {
+		r := httptest.NewRequest("GET", "/proxy/anthropic/v1/a", strings.NewReader(""))
+		r.Method = m
+		if code, _ := doProxy(h, withClient(r, rig.f.client)); code == http.StatusBadRequest {
+			t.Errorf("method %q must be accepted, got 400", m)
+		}
+	}
+}
+
+// The encoded-slash branch applies only when the escaped path literally starts
+// with /proxy/ (an escaped spelling such as /%70roxy/ is refused).
+func TestEncodedSlashRequiresLiteralProxyPrefix(t *testing.T) {
+	rig := newPathRig(t, "")
+	rig.enableEncodedSlash(t)
+	h := newProxyHandler(rig.f)
+	r := httptest.NewRequest("GET", "/%70roxy/anthropic/v1/projects/a%2Fb", strings.NewReader(""))
+	code, _ := doProxy(h, withClient(r, rig.f.client))
+	if code != http.StatusBadRequest {
+		t.Fatalf("/%%70roxy/ with an encoded slash => %d, want 400", code)
+	}
+	if len(rig.seen()) != 0 {
+		t.Fatalf("reached upstream: %v", rig.seen())
+	}
+	if code := rig.do("GET", "/v1/projects/a%2Fb"); code != http.StatusOK {
+		t.Fatalf("literal /proxy/ prefix still works: %d", code)
+	}
+}
+
+// A settings read failure while the approval key is needed answers 503 and is
+// never cached; a healthy store later yields the stored key.
+func TestApprovalKeyReadErrorIs503AndNotCached(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	t.Cleanup(upstream.Close)
+	f := newProxyFixture(t, upstream.URL)
+	acl := approvePostsACL
+	ph, _ := f.placeholderQ.GetByID(f.placeholderID)
+	ph.PermissionConfig = &acl
+	if err := f.placeholderQ.Update(ph); err != nil {
+		t.Fatal(err)
+	}
+	bad, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = bad.Close() // every read now fails
+	resolver := services.NewKeyResolver(f.crypto, f.apiKeyQ, f.placeholderQ, f.groupQ, f.approvalQ)
+	h := handlers.NewProxyHandler(f.svcQ, f.apiKeyQ, resolver, f.logQ, f.approvalQ, queries.NewSettingsQueries(bad), nil)
+	r := httptest.NewRequest("POST", "/proxy/anthropic/v1/messages", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	http.HandlerFunc(h.Handle).ServeHTTP(rec, withClient(r, f.client))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("code=%d retry-after=%q body=%s", rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
+	}
+	pending, _ := f.approvalQ.ListPending()
+	if len(pending) != 0 {
+		t.Fatalf("nothing may be created without the key: %d", len(pending))
 	}
 }

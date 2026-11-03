@@ -56,6 +56,16 @@ func (n ApprovalNotification) requestTarget() string {
 	return strings.ReplaceAll(t, "`", "'")
 }
 
+// mdSafe returns a copy whose plain fields are safe inside markdown code spans
+// (a backtick would close the span). Used for the Telegram and Discord texts
+// only; the webhook payload keeps the raw values.
+func (n ApprovalNotification) mdSafe() ApprovalNotification {
+	r := func(s string) string { return strings.ReplaceAll(s, "`", "'") }
+	n.ClientName, n.ServiceName, n.Method, n.ApprovalID = r(n.ClientName), r(n.ServiceName), r(n.Method), r(n.ApprovalID)
+	n.Path, n.Query = r(n.Path), r(n.Query)
+	return n
+}
+
 // bodyLine shows the short body hash an approval is bound to (markdown).
 func bodyLine(hash string) string {
 	if hash == "" {
@@ -97,6 +107,7 @@ func (n *Notifier) NotifyApprovalNeeded(notif ApprovalNotification) {
 
 // Telegram: config = {"bot_token": "...", "chat_id": "..."}
 func (n *Notifier) sendTelegram(configJSON string, notif ApprovalNotification) error {
+	notif = notif.mdSafe()
 	var cfg struct {
 		BotToken string `json:"bot_token"`
 		ChatID   string `json:"chat_id"`
@@ -148,6 +159,7 @@ func (n *Notifier) sendTelegram(configJSON string, notif ApprovalNotification) e
 
 // Discord: config = {"webhook_url": "..."}
 func (n *Notifier) sendDiscord(configJSON string, notif ApprovalNotification) error {
+	notif = notif.mdSafe()
 	var cfg struct {
 		WebhookURL string `json:"webhook_url"`
 	}
@@ -181,6 +193,7 @@ func (n *Notifier) sendDiscord(configJSON string, notif ApprovalNotification) er
 // Discord Bot: config = {"bot_token": "...", "channel_id": "..."}
 // Uses the Gateway's SendApprovalMessage for reaction-based approval if available.
 func (n *Notifier) sendDiscordBot(configJSON string, notif ApprovalNotification) error {
+	notif = notif.mdSafe()
 	var cfg struct {
 		BotToken  string `json:"bot_token"`
 		ChannelID string `json:"channel_id"`

@@ -46,8 +46,8 @@ type ProxyHandler struct {
 	httpClient    *http.Client
 	proxyClients  *services.UpstreamProxyClientCache
 
-	scopeKeyOnce sync.Once
-	scopeKey     []byte
+	scopeKeyMu sync.Mutex
+	scopeKey   []byte
 	// scopedOpsWrap lets tests wrap the scoped-approval store operations.
 	scopedOpsWrap func(scopedApprovalOps) scopedApprovalOps
 
@@ -333,6 +333,22 @@ func validateProxiedPath(r *http.Request) string {
 	return ""
 }
 
+// validProxyMethod accepts only an RFC 7230 token made of upper-case letters,
+// digits and '-' (after upper-casing): the method is interpolated into logs,
+// approvals and chat messages, so anything else is refused outright.
+func validProxyMethod(m string) bool {
+	if m == "" || len(m) > 32 {
+		return false
+	}
+	for _, c := range m {
+		upper, digit := c >= 'A' && c <= 'Z', c >= '0' && c <= '9'
+		if !upper && !digit && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
 func hasEncodedSlash(r *http.Request) bool {
 	return strings.Contains(strings.ToLower(r.URL.EscapedPath()), "%2f")
 }
@@ -381,6 +397,10 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// Methods are case-sensitive on the wire: normalise once so the ACL and the
 	// upstream request see the same, upper-case method.
 	r.Method = strings.ToUpper(r.Method)
+	if !validProxyMethod(r.Method) {
+		jsonError(w, "invalid request method", http.StatusBadRequest)
+		return
+	}
 	if msg := validateProxiedPath(r); msg != "" {
 		jsonError(w, msg, http.StatusBadRequest)
 		return
@@ -443,6 +463,12 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if hasEncodedSlash(r) {
 		if !svc.AllowEncodedSlash {
 			jsonError(w, "encoded slash in proxied path is not allowed for this service", http.StatusBadRequest)
+			return
+		}
+		if !strings.HasPrefix(r.URL.EscapedPath(), "/proxy/") {
+			// The route matched an escaped spelling such as /%70roxy/: the
+			// service and path split below works on the escaped form, so refuse.
+			jsonError(w, "invalid proxy path", http.StatusBadRequest)
 			return
 		}
 		rawRest := strings.TrimPrefix(r.URL.EscapedPath(), "/proxy/")
@@ -585,7 +611,14 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 			bodyRequired = true
 		}
-		scope := ruleApprovalScope(h.approvalKey(), aclMethod, aclPath, r.URL.RawQuery, bodyBytes)
+		akey, kerr := h.approvalKey()
+		if kerr != nil {
+			log.Printf("approval key unavailable: %v", kerr)
+			w.Header().Set("Retry-After", "2")
+			jsonError(w, "approval service temporarily unavailable; retry", http.StatusServiceUnavailable)
+			return
+		}
+		scope := ruleApprovalScope(akey, aclMethod, aclPath, r.URL.RawQuery, bodyBytes)
 		if _, err := h.approvals.GetValidScopedApproval(result.PlaceholderID, scope); err != nil {
 			if err != sql.ErrNoRows {
 				log.Printf("check rule approval for %s: %v", result.PlaceholderID, err)
@@ -598,7 +631,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			if len(query) > 300 {
 				query = query[:300] + "..."
 			}
-			if !h.holdForApproval(w, r, client, serviceName, result.PlaceholderID, aclMethod, aclPath, query, approvalBodyHash(h.approvalKey(), bodyBytes), scope, approveRule+" ("+approveLayer+")") {
+			if !h.holdForApproval(w, r, client, serviceName, result.PlaceholderID, aclMethod, aclPath, query, approvalBodyHash(akey, bodyBytes), scope, approveRule+" ("+approveLayer+")") {
 				return
 			}
 		}
@@ -1684,29 +1717,43 @@ func isGitHubSmartHTTPPath(path string) bool {
 
 // approvalKey returns the server-held HMAC key for approval scopes and body
 // hashes. It is persisted as a reserved setting (shared by every process on the
-// same database, hidden from the settings API); without a settings store (tests)
-// a per-handler random key is used.
-func (h *ProxyHandler) approvalKey() []byte {
-	h.scopeKeyOnce.Do(func() {
-		gen := func() string {
-			b := make([]byte, 32)
-			_, _ = rand.Read(b)
-			return hex.EncodeToString(b)
+// same database, hidden from the settings API). A read or write error is
+// returned and NOTHING is cached, so a transient failure can never pin a
+// throw-away key that would disagree with the stored one. Only when there is no
+// settings store at all (tests) is a per-handler random key used.
+func (h *ProxyHandler) approvalKey() ([]byte, error) {
+	h.scopeKeyMu.Lock()
+	defer h.scopeKeyMu.Unlock()
+	if h.scopeKey != nil {
+		return h.scopeKey, nil
+	}
+	gen := func() string {
+		b := make([]byte, 32)
+		_, _ = rand.Read(b)
+		return hex.EncodeToString(b)
+	}
+	if h.settings == nil {
+		h.scopeKey = []byte(gen())
+		return h.scopeKey, nil
+	}
+	key, err := h.settings.GetE(queries.SettingApprovalScopeKey)
+	if err != nil {
+		return nil, fmt.Errorf("read approval key: %w", err)
+	}
+	if key == "" {
+		if err := h.settings.SetIfAbsent(queries.SettingApprovalScopeKey, gen()); err != nil {
+			return nil, fmt.Errorf("store approval key: %w", err)
 		}
-		key := ""
-		if h.settings != nil {
-			key = h.settings.Get(queries.SettingApprovalScopeKey)
-			if key == "" {
-				_ = h.settings.SetIfAbsent(queries.SettingApprovalScopeKey, gen())
-				key = h.settings.Get(queries.SettingApprovalScopeKey)
-			}
+		// Re-read: another process may have won the insert; its key is the key.
+		if key, err = h.settings.GetE(queries.SettingApprovalScopeKey); err != nil {
+			return nil, fmt.Errorf("read approval key: %w", err)
 		}
 		if key == "" {
-			key = gen()
+			return nil, errors.New("approval key missing after store")
 		}
-		h.scopeKey = []byte(key)
-	})
-	return h.scopeKey
+	}
+	h.scopeKey = []byte(key)
+	return h.scopeKey, nil
 }
 
 func hmacHex(key []byte, parts ...string) string {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/url"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -208,25 +209,24 @@ var extraSecretQueryWords = map[string]bool{
 	"ticket": true, "sessid": true, "sid": true,
 }
 
-// stripArraySuffix removes trailing [..] groups (token[], tokens[0]) so the
-// parameter is judged by its real name.
-func stripArraySuffix(name string) string {
-	for strings.HasSuffix(name, "]") {
-		i := strings.LastIndexByte(name, '[')
-		if i <= 0 {
-			break
+// queryNameSegments splits a parameter name into its base and every
+// bracketed segment: user[password] -> user, password; a[b][token] -> a, b, token.
+func queryNameSegments(name string) []string {
+	var segs []string
+	for _, p := range strings.Split(name, "[") {
+		p = strings.TrimSpace(strings.TrimSuffix(p, "]"))
+		if p != "" {
+			segs = append(segs, p)
 		}
-		name = name[:i]
 	}
-	return name
+	return segs
 }
 
-func isSecretQueryName(name string) bool {
-	name = stripArraySuffix(name)
-	if isSecretFieldName(name) {
+func isSecretQuerySegment(seg string) bool {
+	if isSecretFieldName(seg) {
 		return true
 	}
-	for _, w := range nameWords(name) {
+	for _, w := range nameWords(seg) {
 		if extraSecretQueryWords[w] {
 			return true
 		}
@@ -234,13 +234,34 @@ func isSecretQueryName(name string) bool {
 	return false
 }
 
-// looksLikeSecretValue flags a long value that mixes letters and digits (an
-// opaque token, signature or key) whatever the parameter is called.
+// isSecretQueryName judges the base name and every bracketed segment, so
+// token[], user[password], x[api_key] and a[b][token] are secret while
+// filter[page] and sort[mode] are not.
+func isSecretQueryName(name string) bool {
+	for _, seg := range queryNameSegments(name) {
+		if isSecretQuerySegment(seg) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	reUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	reSHA  = regexp.MustCompile(`^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
+	reISO  = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$`)
+)
+
+// looksLikeSecretValue flags a long (32+ characters) value that mixes letters
+// and digits (an opaque token, signature or key) whatever the parameter is
+// called. Shapes that are identifiers rather than secrets stay visible: UUIDs,
+// 40- and 64-hex SHAs (commit and content hashes) and ISO-8601 dates and
+// timestamps. A secret-looking NAME is still redacted regardless of value.
 func looksLikeSecretValue(v string) bool {
 	if dec, err := url.QueryUnescape(v); err == nil {
 		v = dec
 	}
-	if len(v) < 20 {
+	if len(v) < 32 || reUUID.MatchString(v) || reSHA.MatchString(v) || reISO.MatchString(v) {
 		return false
 	}
 	var letter, digit bool

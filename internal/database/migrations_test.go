@@ -1,6 +1,7 @@
 package database
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -180,6 +181,7 @@ func TestMigrationAddsAllowEncodedSlashDefaultOff(t *testing.T) {
 // Duplicate pending scoped approvals (possible before the unique index existed)
 // must not block startup: the oldest stays pending, the rest are ignored.
 func TestMigrationCollapsesDuplicatePendingScopedApprovals(t *testing.T) {
+	scopeX, scopeY := "rule:"+strings.Repeat("a1", 32), "rule:"+strings.Repeat("c3", 32)
 	db, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -197,14 +199,14 @@ func TestMigrationCollapsesDuplicatePendingScopedApprovals(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ins("old", "p1", "pending", "rule:POST /x?#h", "2026-01-01 00:00:00")
-	ins("dup1", "p1", "pending", "rule:POST /x?#h", "2026-01-01 00:00:05")
-	ins("dup2", "p1", "pending", "rule:POST /x?#h", "2026-01-01 00:00:09")
-	ins("other-ph", "p2", "pending", "rule:POST /x?#h", "2026-01-01 00:00:07") // different token: kept
-	ins("other-scope", "p1", "pending", "rule:POST /y?#h", "2026-01-01 00:00:08")
+	ins("old", "p1", "pending", scopeX, "2026-01-01 00:00:00")
+	ins("dup1", "p1", "pending", scopeX, "2026-01-01 00:00:05")
+	ins("dup2", "p1", "pending", scopeX, "2026-01-01 00:00:09")
+	ins("other-ph", "p2", "pending", scopeX, "2026-01-01 00:00:07") // different token: kept
+	ins("other-scope", "p1", "pending", scopeY, "2026-01-01 00:00:08")
 	ins("wide1", "p1", "pending", "", "2026-01-01 00:00:01") // token-wide rows are untouched
 	ins("wide2", "p1", "pending", "", "2026-01-01 00:00:02")
-	ins("done", "p1", "approved", "rule:POST /x?#h", "2026-01-01 00:00:03")
+	ins("done", "p1", "approved", scopeX, "2026-01-01 00:00:03")
 	for i := 0; i < 2; i++ { // second run: idempotent
 		if err := runMigrations(db); err != nil {
 			t.Fatalf("migration must not fail on duplicates: %v", err)
@@ -220,7 +222,74 @@ func TestMigrationCollapsesDuplicatePendingScopedApprovals(t *testing.T) {
 			t.Errorf("%s: status %q, want %q", id, got, want)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO approvals (id, placeholder_id, status, scope) VALUES ('x','p1','pending','rule:POST /x?#h')`); err == nil {
+	if _, err := db.Exec(`INSERT INTO approvals (id, placeholder_id, status, scope) VALUES ('x','p1','pending',?)`, scopeX); err == nil {
 		t.Fatal("the unique index must be back")
+	}
+}
+
+// Pre-HMAC scoped approvals hold raw "rule:METHOD path?query#sha256" text. The
+// migration retires them (an approved one must not become token-wide), clears
+// the text, leaves current "rule:<64 hex>" scopes alone, and is idempotent.
+func TestMigrationRetiresLegacyRawScopeApprovals(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_approvals_pending_scope`); err != nil { // an older database has no such index yet
+		t.Fatal(err)
+	}
+	current := "rule:" + strings.Repeat("a1", 32)
+	ins := func(id, status, scope, expires string) {
+		if _, err := db.Exec(`INSERT INTO approvals (id, placeholder_id, status, scope, expires_at) VALUES (?,?,?,?,?)`, id, "p1", status, scope, expires); err != nil {
+			t.Fatal(err)
+		}
+	}
+	legacy := "rule:POST /v1/pay?api_key=SECRET#" + strings.Repeat("b2", 32)
+	ins("lp", "pending", legacy, "")
+	ins("lp2", "pending", legacy, "") // duplicate legacy pending: must not trip the unique index
+	ins("la", "approved", legacy, "2099-01-01 00:00:00")
+	ins("lr", "rejected", legacy, "")
+	ins("cur", "pending", current, "")
+	ins("curA", "approved", current, "2099-01-01 00:00:00")
+	ins("wide", "approved", "", "2099-01-01 00:00:00")
+	for i := 0; i < 2; i++ {
+		if err := runMigrations(db); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+	}
+	get := func(id string) (status, scope, expires string) {
+		_ = db.QueryRow(`SELECT status, scope, COALESCE(expires_at,'') FROM approvals WHERE id = ?`, id).Scan(&status, &scope, &expires)
+		return
+	}
+	for _, id := range []string{"lp", "lp2", "la"} {
+		st, sc, _ := get(id)
+		if st != "ignored" || sc != "" {
+			t.Errorf("%s: status=%q scope=%q, want ignored and cleared", id, st, sc)
+		}
+	}
+	if _, _, exp := get("la"); exp > time.Now().UTC().Add(time.Minute).Format("2006-01-02 15:04:05") {
+		t.Errorf("approved legacy row must expire now, expires=%q", exp)
+	}
+	if st, sc, _ := get("lr"); st != "rejected" || sc != "" {
+		t.Errorf("rejected legacy: %q %q", st, sc)
+	}
+	if st, sc, _ := get("cur"); st != "pending" || sc != current {
+		t.Errorf("current pending scope must be untouched: %q %q", st, sc)
+	}
+	if st, sc, exp := get("curA"); st != "approved" || sc != current || exp != "2099-01-01 00:00:00" {
+		t.Errorf("current approved scope must be untouched: %q %q %q", st, sc, exp)
+	}
+	if st, sc, _ := get("wide"); st != "approved" || sc != "" {
+		t.Errorf("token-wide approval must be untouched: %q %q", st, sc)
+	}
+	var raw int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM approvals WHERE scope LIKE '%SECRET%'`).Scan(&raw)
+	if raw != 0 {
+		t.Fatal("no raw query may remain stored")
 	}
 }

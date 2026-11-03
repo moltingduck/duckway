@@ -144,3 +144,30 @@ func TestRequestTargetNeutralisesBackticks(t *testing.T) {
 		t.Fatalf("target=%q", got)
 	}
 }
+
+// Plain fields interpolated into Telegram/Discord code spans cannot break out;
+// the webhook payload keeps the raw values.
+func TestMdSafeNeutralisesBackticksInPlainFields(t *testing.T) {
+	n := ApprovalNotification{ClientName: "c`x", ServiceName: "s`y", Method: "PO`ST", ApprovalID: "id`1", Path: "/p`q", Query: "a=`b`"}
+	m := n.mdSafe()
+	for _, v := range []string{m.ClientName, m.ServiceName, m.Method, m.ApprovalID, m.Path, m.Query} {
+		if strings.Contains(v, "`") {
+			t.Fatalf("backtick left in %q", v)
+		}
+	}
+	if n.Method != "PO`ST" {
+		t.Fatal("mdSafe must not modify the original")
+	}
+	var sent string
+	nt := &Notifier{client: &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		sent = string(b)
+		return okJSON(`{}`), nil
+	})}}
+	if err := nt.sendTelegram(`{"bot_token":"1:x","chat_id":"2"}`, n); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sent, "PO`ST") || strings.Contains(sent, "c`x") {
+		t.Fatalf("telegram text still has request-controlled backticks: %s", sent)
+	}
+}

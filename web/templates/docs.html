@@ -810,7 +810,7 @@ cp .env.example .dev.env
   <h3 class="mt-1">Upgrade notes</h3>
   <ul>
     <li><strong>Old approvals were expired.</strong> Approvals recorded by earlier versions with a relative expiry never ran out. They were expired when you upgraded, so an affected token asks for approval again.</li>
-    <li><strong>A rule approval covers one exact request.</strong> Approving a held request releases that method, path, query string and body for the approval time-to-live. Any change to one of them asks again. The approval shows the query and the first 12 characters of the body's SHA-256.</li>
+    <li><strong>A rule approval covers one exact request.</strong> Approving a held request releases that method, path, query string and body for the approval time-to-live. Any change to one of them asks again. The approval shows the query and a short keyed hash of the body.</li>
     <li><strong>Encoded slashes need a per-service switch.</strong> A request path containing <code>%2F</code> is refused (400) unless the service has <em>Allow encoded slashes</em> turned on in its Delivery settings (for example GitLab project paths). <code>%5C</code>, an encoded <code>?</code> or <code>#</code> (<code>%3F</code>, <code>%23</code>) and control characters in a path are always refused.</li>
     <li><strong>Behind a proxy that rewrites Host, set <code>DUCKWAY_PUBLIC_ORIGIN</code>.</strong> Admin writes are accepted only from the console's own origin. Either forward the original Host (<code>proxy_set_header Host $host;</code>) or set <code>DUCKWAY_PUBLIC_ORIGIN</code> to the public origin, for example <code>https://console.example.com</code>.</li>
     <li><strong>Changing the admin password signs out other sessions.</strong> The session you changed it from stays signed in.</li>

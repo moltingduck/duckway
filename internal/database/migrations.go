@@ -520,6 +520,23 @@ func runMigrations(db *sql.DB) error {
 			return fmt.Errorf("safe alter: %w", err)
 		}
 	}
+	// Scoped approvals recorded before scopes became keyed hashes carry the raw
+	// "rule:METHOD path?query#sha256" text (which can hold secrets). Retire them:
+	// pending and approved rows become ignored (an approved row must NOT keep
+	// working, and clearing its scope alone would turn it into a token-wide
+	// approval), their scope text is cleared, and approved rows also expire now.
+	// Current scopes are exactly "rule:" + 64 hex = 69 characters, so the test is
+	// portable and the statement is a no-op once nothing legacy remains. Cleared
+	// rows are no longer pending, so the partial unique index is unaffected.
+	if _, err := db.Exec(`UPDATE approvals SET
+			expires_at = CASE WHEN status = 'approved' THEN ? ELSE expires_at END,
+			status = CASE WHEN status IN ('pending', 'approved') THEN 'ignored' ELSE status END,
+			scope = ''
+		WHERE scope <> '' AND (LENGTH(scope) <> 69 OR scope NOT LIKE 'rule:%')`,
+		time.Now().UTC().Format("2006-01-02 15:04:05")); err != nil {
+		return fmt.Errorf("retire legacy scoped approvals: %w", err)
+	}
+
 	required := []string{
 		`CREATE TABLE IF NOT EXISTS client_drafts (
 			client_id TEXT PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
