@@ -803,6 +803,70 @@ cp .env.example .dev.env
     </tbody>
   </table>
   </div>
+  <h3 class="mt-1" id="upgrade-principles">Four upgrade principles</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th scope="col">Principle</th><th scope="col">What it means</th></tr></thead>
+    <tbody>
+      <tr><td>No data moved</td><td>Both group mechanisms are kept and merged in the UI as Key pools. The database only gains columns; nothing is changed or deleted.</td></tr>
+      <tr><td>Clients need no upgrade</td><td>The gateway-to-client API, phantom tokens and ACL decisions are unchanged. Old clients and the new console coexist.</td></tr>
+      <tr><td>Roll back any time</td><td>A consistent backup is taken before upgrading. The schema is append-only, so the previous binary runs against the new database.</td></tr>
+      <tr><td>Old URLs and scripts keep working</td><td>Console URLs use new paths and are not redirected; API paths and field names are unchanged and renames are interface text only.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h3 class="mt-1" id="upgrade-urls">Old URL to new URL</h3>
+  <p class="text-sm text-muted">Old console URLs answer a page-moved 404 inside the console with a link to the new location; there is no redirect. Clients only reference <code>/admin/cc</code>, which is unchanged.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th scope="col">Old URL</th><th scope="col">New URL</th></tr></thead>
+    <tbody>
+      <tr><td><code>/admin/keys</code></td><td><code>/admin/credentials</code></td></tr>
+      <tr><td><code>/admin/oauth</code></td><td><code>/admin/credentials?type=refreshable</code></td></tr>
+      <tr><td><code>/admin/groups</code></td><td><code>/admin/key-pools</code></td></tr>
+      <tr><td><code>/admin/key-groups</code></td><td><code>/admin/key-pools</code></td></tr>
+      <tr><td><code>/admin/key-groups/{id}</code></td><td><code>/admin/key-pools?pool=lease:{id}</code></td></tr>
+      <tr><td><code>/admin/key-suites</code></td><td><code>/admin/key-bundles</code></td></tr>
+      <tr><td><code>/admin/placeholders</code></td><td><code>/admin/phantom-tokens</code></td></tr>
+      <tr><td><code>/admin/client-updates</code></td><td><code>/admin/clients/rollouts</code></td></tr>
+      <tr><td><code>/admin/onboarding</code></td><td><code>/admin/clients/new</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h3 class="mt-1" id="upgrade-terms">Term mapping</h3>
+  <p class="text-sm text-muted">Interface text only. API paths, JSON fields, tables and CLI flags are unchanged.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th scope="col">Old name</th><th scope="col">New name</th></tr></thead>
+    <tbody>
+      <tr><td>API Keys / Refreshable Tokens</td><td>Credentials</td></tr>
+      <tr><td>Key Groups (both kinds)</td><td>Key pools (mode: per-request rotation or quota-aware lease)</td></tr>
+      <tr><td>Key Suites</td><td>Key bundles</td></tr>
+      <tr><td>Placeholders</td><td>Phantom tokens</td></tr>
+      <tr><td>Reconfigure connection info</td><td>Rotate client token</td></tr>
+      <tr><td>Dashboard</td><td>Overview</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h3 class="mt-1" id="upgrade-deployments">Deployment types</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th scope="col">Deployment</th><th scope="col">Restarted on upgrade</th><th scope="col">Traffic gap</th><th scope="col">Backup</th></tr></thead>
+    <tbody>
+      <tr><td>Split (admin and gateway separate)</td><td>Admin first, then the gateway</td><td>Sub-second gateway swap (measured 0.51 s)</td><td>Consistent SQLite copy under <code>/data</code></td></tr>
+      <tr><td>Combined (single server)</td><td><code>duckway-server</code></td><td>A few seconds</td><td>Consistent SQLite copy under <code>/data</code></td></tr>
+      <tr><td>PostgreSQL backend</td><td>As split or combined</td><td>As above</td><td><code>pg_dump -Fc</code> into <code>backups/</code></td></tr>
+      <tr><td>Built from source (no compose)</td><td>Restart the admin process yourself</td><td>Depends on your setup</td><td><code>duckway-admin backup --out FILE</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="text-sm text-muted"><strong>Deviation from the upgrade board:</strong> in split mode the gateway container is recreated as well, after the admin passes its smoke test. Measured on a real split deployment: gateway about 0.51 s, admin about 0.83 s.</p>
+  <h3 class="mt-1" id="upgrade-commands">Upgrade commands</h3>
+  <pre class="dc-pre">./scripts/prod.sh upgrade --check
+./scripts/prod.sh upgrade
+./scripts/prod.sh rollback --to backups/upgrade-&lt;UTC timestamp&gt;
+./scripts/prod.sh rollback --to backups/upgrade-&lt;UTC timestamp&gt; --keep-data</pre>
+  <p class="text-sm text-muted"><code>--check</code> only reads and changes nothing. <code>--keep-data</code> rolls back the images only and keeps the current database.</p>
   <h3 class="mt-1">Also new</h3>
   <ul>
     <li><strong>Command palette.</strong> Press <kbd>Ctrl</kbd>+<kbd>K</kbd> (<kbd>&#8984;K</kbd> on a Mac), or use the Search row at the top of the sidebar (the Search button in the top bar on narrow screens), to jump to any page or find a client, credential, key pool, bundle, phantom token, service or notification channel by name.</li>

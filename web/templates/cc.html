@@ -42,14 +42,15 @@
   </div>
 </div>
 
+<script nonce="{{$.CSPNonce}}" src="/static/cc-form.js"></script>
 <script nonce="{{$.CSPNonce}}">
 (function() {
 'use strict';
 
-var AGENTS = [['claude_code', 'Claude Code'], ['codex', 'Codex'], ['openclaw', 'OpenClaw']];
-var SANDBOXES = ['workspace-write', 'read-only', 'danger-full-access', 'none'];
-var MASK = '********';
-var SECRET_RE = /token|secret|password|passwd|apikey|api_key|credential|authorization|bearer|private|signing|_key$|^key$/i;
+var CF = DW.ccForm;   // shared control-channel form (static/cc-form.js)
+var SANDBOXES = CF.SANDBOXES;
+var MASK = CF.MASK;
+var SECRET_RE = CF.SECRET_RE;
 
 var allKeys = [], allServices = [], allClients = [], allCCs = [];
 var cur = null;        // CC detail (view/edit)
@@ -65,10 +66,7 @@ var cancelPoll = null;
 function $(id) { return document.getElementById(id); }
 function sel(b) { return b ? DW.raw('selected') : ''; }
 function dis(b) { return b ? DW.raw('disabled') : ''; }
-function agentLabel(a) {
-  for (var i = 0; i < AGENTS.length; i++) if (AGENTS[i][0] === a) return AGENTS[i][1];
-  return a || 'Unknown';
-}
+var agentLabel = CF.agentLabel;
 function parseCfg(c) {
   try { var v = JSON.parse((c && c.config) || '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch (e) { return {}; }
 }
@@ -266,15 +264,7 @@ function renderView() {
 }
 
 /* ---------- result list ---------- */
-function stepList(steps) {
-  return DW.html`<ul class="cc-steps">${(steps || []).map(function(s) {
-    return DW.html`<li class="cc-step ${s.ok ? 'is-ok' : 'is-bad'}"><span class="cc-step-st">${s.ok ? 'Pass' : 'Fail'}</span><span class="cc-step-name">${s.name}</span>${s.note ? DW.html`<span class="cc-step-note">${s.note}</span>` : ''}</li>`;
-  })}</ul>`;
-}
-function resultCard(ok, title, detail, steps, extra) {
-  return DW.html`<div class="cc-card ${ok ? 'is-ok' : 'is-bad'}"><div class="cc-card-head"><span class="badge ${ok ? 'badge-green' : 'badge-red'}">${ok ? 'Ready' : 'Needs attention'}</span><strong>${title}</strong></div>${detail ? DW.html`<p class="text-sm">${detail}</p>` : ''}${steps && steps.length ? stepList(steps) : ''}${extra || ''}</div>`;
-}
-function pending(text) { return DW.html`<div class="cc-card"><div class="cc-card-head"><span class="badge badge-gray">Working</span><strong>${text}</strong></div></div>`; }
+var stepList = CF.stepList, resultCard = CF.resultCard, pending = CF.pending;
 function setBusy(ids, on) {
   ids.forEach(function(id) { var b = $(id); if (b) b.disabled = on; });
 }
@@ -392,7 +382,7 @@ function pollTest(ccID, testID, handle, panel, my, done) {
         DW.setHTML(panel, resultCard(false, 'No reply after 120 seconds', 'The agent did not answer in time. The message may still be queued. You can run the test again.', steps, DW.raw('<p class="text-sm">Check <code>duckway cc watch status</code> and <code>cc-watch.log</code> on the client.</p>')));
         return;
       }
-      DW.setHTML(panel, DW.html`<div class="cc-card"><div class="cc-card-head"><span class="badge badge-gray">Working</span><strong>${title}</strong></div>${stepList(steps)}<p class="mt-2"><button type="button" class="btn btn-sm" data-action="cancelTest">Stop waiting</button></p></div>`);
+      DW.setHTML(panel, DW.html`<div class="ccf-card"><div class="ccf-card-head"><span class="badge badge-gray">Working</span><strong>${title}</strong></div>${stepList(steps)}<p class="mt-2"><button type="button" class="btn btn-sm" data-action="cancelTest">Stop waiting</button></p></div>`);
       setTimeout(tick, 1000);
     }).catch(function(err) { if (stopped) return; done(); if (my === seq) DW.setHTML(panel, resultCard(false, 'Status request failed', err.message, [], '')); });
   }
@@ -423,14 +413,7 @@ DW.actions.confirmDelete = function() {
 
 /* ---------- edit / create form ---------- */
 function blankSetup() { setup = {apiKeyId: '', guilds: [], categories: [], bot: null, invite: '', setupInvite: '', err: ''}; }
-function kvFromConfig(cfg) {
-  return Object.keys(cfg).filter(function(k) { return k !== 'agent_options'; }).sort().map(function(k) {
-    var v = cfg[k];
-    var complex = v !== null && typeof v === 'object';
-    var masked = v === MASK;
-    return {k: k, v: complex || masked ? '' : String(v), orig: v, masked: masked, complex: complex, existing: true};
-  });
-}
+var kvFromConfig = CF.kvFromConfig;
 DW.actions.openCreate = function() {
   seq++;
   if (!drawerOpen()) opener = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
@@ -474,10 +457,7 @@ function renderForm() {
     var taken = allCCs.filter(function(x) { return x.client_id === c.id; })[0];
     return DW.html`<option value="${c.id}" ${sel(c.id === form.client_id)} ${dis(!!taken)}>${c.name}${taken ? ' (already has: ' + taken.name + ')' : ''}</option>`;
   });
-  var agentOpts = AGENTS.map(function(a) { return DW.html`<option value="${a[0]}" ${sel(a[0] === form.agent_type)}>${a[1]}</option>`; });
   var ks = keysForService(form.service_id);
-  var keyOpts = ks.length ? ks.map(function(k) { return DW.html`<option value="${k.id}" ${sel(k.id === form.api_key_id)}>${k.name}</option>`; })
-    : DW.raw('<option value="">No credentials for this platform</option>');
   var needs = cur && needsKey(cur);
   DW.setHTML($('cc-body'), DW.html`<form id="cc-form" data-on-submit="saveForm" novalidate>
     <div class="cc-callout" role="note"><strong>The bot token is never shown.</strong> Pick a stored credential; the token stays on the server and cannot be read back.</div>
@@ -486,13 +466,12 @@ function renderForm() {
       ${creating ? DW.html`<select id="cf-client" data-field="client_id" data-on-change="fieldChange">${clientOpts}</select><span class="text-muted text-sm">One control channel per client.</span>`
         : DW.html`<input type="text" id="cf-client" value="${cur.client_name || cur.client_id}" readonly><span class="text-muted text-sm">The client and platform cannot be changed after creation.</span>`}
     </div>
-    <div class="form-group"><label for="cf-agent">Agent</label><select id="cf-agent" data-field="agent_type" data-on-change="fieldChange">${agentOpts}</select><span class="text-muted text-sm">The agent that <code>duckway cc watch</code> runs on the client.</span></div>
-    ${form.agent_type === 'codex' ? DW.html`<div class="form-group"><label for="cf-sandbox">Codex sandbox</label><select id="cf-sandbox" data-field="sandbox" data-on-change="fieldChange">${SANDBOXES.map(function(v) { return DW.html`<option value="${v}" ${sel(v === form.sandbox)}>${v === 'none' ? 'none (use client Codex config)' : v}</option>`; })}</select><span class="text-muted text-sm">Use danger-full-access only for trusted categories. Existing channels pick it up after <code>duckway cc watch restart</code>.</span></div>` : ''}
+    ${CF.agentField({id: 'cf-agent', value: form.agent_type, action: 'fieldChange', field: 'agent_type', hint: DW.raw('<span class="text-muted text-sm">The agent that <code>duckway cc watch</code> runs on the client.</span>')})}
+    ${form.agent_type === 'codex' ? CF.sandboxField({id: 'cf-sandbox', value: form.sandbox, action: 'fieldChange', field: 'sandbox', noneLabel: 'none (use client Codex config)', hint: DW.raw('<span class="text-muted text-sm">Use danger-full-access only for trusted categories. Existing channels pick it up after <code>duckway cc watch restart</code>.</span>')}) : ''}
     <div class="form-group"><label for="cf-service">Platform</label>
       ${creating ? DW.html`<select id="cf-service" data-field="service_id" data-on-change="fieldChange">${svcs}</select>` : DW.html`<input type="text" id="cf-service" value="${cur.service_name}" readonly>`}
     </div>
-    <div class="form-group"><label for="cf-key">Bot credential</label><select id="cf-key" data-field="api_key_id" data-on-change="fieldChange">${keyOpts}</select>
-      <span class="text-muted text-sm">${needs ? 'The previous credential was deleted. Pick a replacement and set the channel active.' : 'Select a stored credential. Add one under Credentials if it is missing.'}</span></div>
+    ${CF.credentialField({id: 'cf-key', label: 'Bot credential', keys: ks, value: form.api_key_id, action: 'fieldChange', field: 'api_key_id', empty: 'No credentials for this platform', hint: DW.html`<span class="text-muted text-sm">${needs ? 'The previous credential was deleted. Pick a replacement and set the channel active.' : 'Select a stored credential. Add one under Credentials if it is missing.'}</span>`})}
     ${creating ? '' : DW.html`<div class="form-group"><label class="cc-check"><input type="checkbox" id="cf-active" data-field="active" data-on-change="fieldChange" ${form.active ? DW.raw('checked') : ''}> Active</label></div>`}
     <div id="cc-platform">${platformFields()}</div>
     <details class="cc-adv" id="cc-adv"${form.advDirty ? DW.raw(' open') : ''}>
@@ -515,25 +494,13 @@ function renderPlatform() { DW.setHTML($('cc-platform'), platformFields()); }
 
 function platformFields() {
   if (formIsDiscord()) return discordFields();
-  return DW.html`<fieldset class="cc-set"><legend>Platform settings</legend>
-    ${mode === 'create' ? DW.raw('<p class="cc-callout cc-callout-warn text-sm" role="note">Creating control channels on this platform is not supported by the server yet. Existing ones can still be edited.</p>') : ''}
-    <div class="cc-kv">${form.kv.length ? form.kv.map(function(r, i) {
-      var secret = r.masked || SECRET_RE.test(r.k);
-      return DW.html`<div class="cc-kv-row"><label class="cc-sr" for="kv-k${i}">Setting name ${i + 1}</label><input type="text" id="kv-k${i}" data-kv="k" data-idx="${i}" data-on-input="kvInput" value="${r.k}" placeholder="name" ${dis(r.existing)} autocomplete="off">
-        <label class="cc-sr" for="kv-v${i}">Value ${i + 1}</label>${r.complex ? DW.html`<input type="text" id="kv-v${i}" value="structured value (edit in Advanced JSON)" disabled>`
-          : DW.html`<input type="${secret ? 'password' : 'text'}" id="kv-v${i}" data-kv="v" data-idx="${i}" data-on-input="kvInput" value="${r.v}" placeholder="${r.masked ? 'Stored on server, leave blank to keep' : 'value'}" autocomplete="off">`}
-        <button type="button" class="btn btn-sm" data-action="kvRemove" data-idx="${i}" aria-label="Remove setting ${r.k || i + 1}">Remove</button></div>`;
-    }) : DW.raw('<p class="text-muted text-sm">No settings yet.</p>')}</div>
-    <button type="button" class="btn btn-sm" data-action="kvAdd">Add setting</button>
-  </fieldset>`;
+  return CF.kvFieldset({rows: form.kv, addAction: 'kvAdd', removeAction: 'kvRemove', inputAction: 'kvInput',
+    note: mode === 'create' ? DW.raw('<p class="cc-callout cc-callout-warn text-sm" role="note">Creating control channels on this platform is not supported by the server yet. Existing ones can still be edited.</p>') : ''});
 }
-DW.actions.kvAdd = function() { form.kv.push({k: '', v: '', existing: false}); renderPlatform(); var i = form.kv.length - 1; var n = $('kv-k' + i); if (n) n.focus(); };
-DW.actions.kvRemove = function(el) { form.kv.splice(parseInt(el.dataset.idx, 10), 1); renderPlatform(); };
-DW.actions.kvInput = function(el) {
-  var r = form.kv[parseInt(el.dataset.idx, 10)];
-  if (!r) return;
-  r[el.dataset.kv] = el.value;
-};
+var kvH = CF.kvHandlers({rows: function() { return form ? form.kv : null; }, render: renderPlatform});
+DW.actions.kvAdd = kvH.add;
+DW.actions.kvRemove = kvH.remove;
+DW.actions.kvInput = kvH.input;
 DW.actions.advInput = function(el) { form.adv = el.value; form.advDirty = true; };
 DW.actions.fieldInput = function(el) { form[el.dataset.field] = el.value; };
 DW.actions.fieldChange = function(el) {
@@ -549,14 +516,12 @@ DW.actions.fieldChange = function(el) {
 function discordFields() {
   var loaded = setup.apiKeyId === form.api_key_id && form.api_key_id;
   var hasG = loaded && setup.guilds.length > 0;
-  var gOpts = setup.guilds.map(function(g) { return DW.html`<option value="${g.id}" ${sel(g.id === form.guild_id)}>${g.name} (${g.id})</option>`; });
-  var cOpts = setup.categories.map(function(c) { return DW.html`<option value="${c.id}" ${sel(c.id === form.category_id)}>${c.name} (${c.id})</option>`; });
   var guildField = hasG
-    ? DW.html`<div class="form-group"><label for="cf-guild">Server</label><select id="cf-guild" data-field="guild_id" data-on-change="guildChange"><option value="">Choose a server</option>${gOpts}</select></div>`
-    : DW.html`<div class="form-group"><label for="cf-guild">Server ID</label><input type="text" id="cf-guild" data-field="guild_id" data-on-input="fieldInput" value="${form.guild_id}" placeholder="Load Discord setup, or paste the server id" autocomplete="off">${setup.err ? DW.html`<span class="cc-err text-sm">Could not list servers: ${setup.err}</span>` : ''}</div>`;
+    ? CF.serverField({id: 'cf-guild', label: 'Server', items: setup.guilds, value: form.guild_id, action: 'guildChange', field: 'guild_id', blank: 'Choose a server', showIds: true})
+    : CF.idField({id: 'cf-guild', label: 'Server ID', value: form.guild_id, action: 'fieldInput', field: 'guild_id', placeholder: 'Load Discord setup, or paste the server id', hint: setup.err ? DW.html`<span class="cc-err text-sm">Could not list servers: ${setup.err}</span>` : ''});
   var catField = hasG && setup.categories.length
-    ? DW.html`<div class="form-group"><label for="cf-cat">Category</label><select id="cf-cat" data-field="category_id" data-on-change="catChange"><option value="">Choose a category</option>${cOpts}</select></div>`
-    : DW.html`<div class="form-group"><label for="cf-cat">Category ID</label><input type="text" id="cf-cat" data-field="category_id" data-on-input="fieldInput" value="${form.category_id}" placeholder="Paste the category id" autocomplete="off"><span class="text-muted text-sm">Changing the category does not move existing channels.</span></div>`;
+    ? CF.categoryField({id: 'cf-cat', label: 'Category', items: setup.categories, value: form.category_id, action: 'catChange', field: 'category_id', blank: 'Choose a category', showIds: true})
+    : CF.idField({id: 'cf-cat', label: 'Category ID', value: form.category_id, action: 'fieldInput', field: 'category_id', placeholder: 'Paste the category id', hint: DW.raw('<span class="text-muted text-sm">Changing the category does not move existing channels.</span>')});
   var bot = setup.bot ? DW.html`<p class="text-sm text-muted">Bot: <strong>${setup.bot.username || setup.bot.id}</strong></p>` : '';
   return DW.html`<fieldset class="cc-set"><legend>Discord</legend>
     <div class="cc-actions">
@@ -645,20 +610,7 @@ function buildConfig() {
     cfg.category_id = (form.category_id || '').trim();
     if (!cfg.guild_id || !cfg.category_id) throw new Error('Choose or enter a server and a category.');
   } else {
-    var seen = {};
-    form.kv.forEach(function(r) {
-      var k = (r.k || '').trim();
-      if (!k) return;
-      if (seen[k]) throw new Error('Duplicate setting name: ' + k);
-      seen[k] = true;
-      if (r.complex) { cfg[k] = r.orig; return; }
-      if (r.masked && r.v === '') { cfg[k] = MASK; return; }
-      var v = r.v;
-      if (r.existing && typeof r.orig === 'number' && v.trim() !== '' && !isNaN(Number(v))) cfg[k] = Number(v);
-      else if (r.existing && typeof r.orig === 'boolean' && (v === 'true' || v === 'false')) cfg[k] = v === 'true';
-      else cfg[k] = v;
-    });
-    Object.keys(cfg).forEach(function(k) { if (k !== 'agent_options' && !seen[k]) delete cfg[k]; });
+    CF.kvApply(cfg, form.kv);
   }
   return cfg;
 }

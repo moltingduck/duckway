@@ -381,10 +381,76 @@ error makes the rollback refuse. Rollback additionally checks that each
 ### Downtime
 
 - Split mode: admin is recreated first and smoke-tested before the gateway is
-  touched. The admin UI is briefly unavailable; agent traffic through the
-  gateway is interrupted only for the gateway container swap (seconds).
+  touched. **The gateway is recreated too** (`--force-recreate`), so agent
+  traffic is interrupted for the gateway container swap. Measured on a real
+  podman-compose split deployment (live-upgrade trial, commit d344e79): gateway
+  about 0.51 s, admin about 0.83 s. This is a documented deviation from the
+  console-redesign upgrade board, which describes an admin-only restart with no
+  proxy interruption; clients retry, so a sub-second gap is normally invisible.
 - Combined mode: the single server container serves both, so admin and gateway
-  traffic are interrupted together during the swap.
+  traffic are interrupted together during the swap (seconds).
+
+### Migrating to the redesigned console
+
+The redesign only changes the admin console. The gateway API, phantom tokens,
+ACL decisions and client behaviour are unchanged, so existing clients need no
+upgrade.
+
+**Four principles**
+
+| Principle | What it means |
+| --- | --- |
+| No data moved | Both group mechanisms are kept and merged in the UI as Key pools. The database only gains columns; nothing is changed or deleted. |
+| Clients need no upgrade | The gateway-to-client API, phantom tokens and ACL decisions are unchanged. Old clients and the new console coexist and fleets roll out at their own pace. |
+| Roll back any time | A consistent backup is taken before upgrading. Because the schema is append-only, the previous binary runs against the new database. |
+| Old URLs and scripts keep working | Console URLs use new paths and are not redirected; API paths and field names are unchanged and renames are interface text only. |
+
+**Old URL to new URL.** Old console URLs answer a page-moved 404 inside the
+console that links to the new location (no redirect). Update bookmarks.
+
+| Old URL | New URL |
+| --- | --- |
+| `/admin/keys` | `/admin/credentials` |
+| `/admin/oauth` | `/admin/credentials?type=refreshable` |
+| `/admin/groups` | `/admin/key-pools` |
+| `/admin/key-groups` | `/admin/key-pools` |
+| `/admin/key-groups/{id}` | `/admin/key-pools?pool=lease:{id}` |
+| `/admin/key-suites` | `/admin/key-bundles` |
+| `/admin/placeholders` | `/admin/phantom-tokens` |
+| `/admin/client-updates` | `/admin/clients/rollouts` |
+| `/admin/onboarding` | `/admin/clients/new` |
+
+Clients only reference `/admin/cc`, whose path is unchanged.
+
+**Term mapping.** Interface text only; API paths, JSON fields, tables and CLI
+flags are unchanged.
+
+| Old name | New name |
+| --- | --- |
+| API Keys / Refreshable Tokens | Credentials |
+| Key Groups (both kinds) | Key pools (mode: per-request rotation or quota-aware lease) |
+| Key Suites | Key bundles |
+| Placeholders | Phantom tokens |
+| Reconfigure connection info | Rotate client token |
+| Dashboard | Overview |
+
+**Deployment types**
+
+| Deployment | Restarted on upgrade | Traffic gap | Backup |
+| --- | --- | --- | --- |
+| Split (admin and gateway separate) | Admin first, then the gateway | Sub-second gateway swap (measured 0.51 s), see Downtime | Consistent SQLite copy under `/data` |
+| Combined (single server) | `duckway-server` | A few seconds | Consistent SQLite copy under `/data` |
+| PostgreSQL backend | As split or combined | As above | `pg_dump -Fc` into `backups/`; the SQLite copy does not apply |
+| Built from source (no compose) | Restart the admin process yourself | Depends on your setup | `duckway-admin backup --out FILE` |
+
+**Command sequence**
+
+```bash
+./scripts/prod.sh upgrade --check                              # read-only preflight
+./scripts/prod.sh upgrade                                      # backup, build, recreate, smoke test
+./scripts/prod.sh rollback --to backups/upgrade-<UTC timestamp>              # images and database
+./scripts/prod.sh rollback --to backups/upgrade-<UTC timestamp> --keep-data  # images only, keep current data
+```
 
 ### Rolling back
 
