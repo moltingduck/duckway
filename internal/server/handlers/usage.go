@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/server/services"
@@ -36,6 +37,79 @@ func parseHours(r *http.Request) int {
 		n = n*10 + int(c-'0')
 	}
 	return n
+}
+
+const (
+	usageDateLayout   = "2006-01-02"
+	usageCutoffLayout = "2006-01-02 15:04:05"
+	usageMaxCustomDay = 90
+)
+
+// usageRange is a validated custom range: UTC dates, both inclusive.
+type usageRange struct {
+	From, To string // YYYY-MM-DD
+	Window   queries.UsageWindow
+	Days     int
+}
+
+// usageRangeError names the offending query field so callers can return 400.
+type usageRangeError struct {
+	Field, Msg string
+}
+
+func (e *usageRangeError) Error() string { return "invalid " + e.Field + ": " + e.Msg }
+
+// parseUsageRange reads ?from=&to= (YYYY-MM-DD, UTC, inclusive). It returns
+// (nil, nil) when neither is present, in which case the legacy days=/hours=
+// parameters apply. When from/to are present they win over days=/hours=,
+// which are then ignored. Rules: both required together, valid dates,
+// from <= to, to not after today (UTC), at most 90 days inclusive.
+func parseUsageRange(r *http.Request, now time.Time) (*usageRange, *usageRangeError) {
+	q := r.URL.Query()
+	from, to := strings.TrimSpace(q.Get("from")), strings.TrimSpace(q.Get("to"))
+	if from == "" && to == "" {
+		return nil, nil
+	}
+	if from == "" {
+		return nil, &usageRangeError{"from", "required with to"}
+	}
+	if to == "" {
+		return nil, &usageRangeError{"to", "required with from"}
+	}
+	f, err := time.Parse(usageDateLayout, from)
+	if err != nil || f.Format(usageDateLayout) != from {
+		return nil, &usageRangeError{"from", "must be YYYY-MM-DD"}
+	}
+	t, err := time.Parse(usageDateLayout, to)
+	if err != nil || t.Format(usageDateLayout) != to {
+		return nil, &usageRangeError{"to", "must be YYYY-MM-DD"}
+	}
+	today := now.UTC().Truncate(24 * time.Hour)
+	if t.After(today) {
+		return nil, &usageRangeError{"to", "must not be in the future"}
+	}
+	if f.After(t) {
+		return nil, &usageRangeError{"from", "must not be after to"}
+	}
+	days := int(t.Sub(f).Hours()/24) + 1
+	if days > usageMaxCustomDay {
+		return nil, &usageRangeError{"to", "range is limited to 90 days"}
+	}
+	return &usageRange{
+		From: from, To: to, Days: days,
+		Window: queries.UsageWindow{Since: f.Format(usageCutoffLayout), Until: t.AddDate(0, 0, 1).Format(usageCutoffLayout)},
+	}, nil
+}
+
+// usageRangeOrFail parses the custom range and writes a 400 naming the field
+// on invalid input. ok is false when a response has been written.
+func usageRangeOrFail(w http.ResponseWriter, r *http.Request) (rng *usageRange, ok bool) {
+	rng, rerr := parseUsageRange(r, time.Now())
+	if rerr != nil {
+		JsonErrorPublic(w, rerr.Error(), http.StatusBadRequest)
+		return nil, false
+	}
+	return rng, true
 }
 
 // usageMetricRow is one rate-limited dimension flattened for the UI.
@@ -147,6 +221,8 @@ type meteredDailyUsage struct {
 
 type meteredUsageDetailResponse struct {
 	WindowDays int                  `json:"window_days"`
+	From       string               `json:"from,omitempty"`
+	To         string               `json:"to,omitempty"`
 	Summary    meteredUsageTotals   `json:"summary"`
 	Clients    []meteredClientUsage `json:"clients"`
 	Models     []meteredModelUsage  `json:"models"`
@@ -158,6 +234,10 @@ type meteredUsageDetailResponse struct {
 // usage snapshot. Keys with no data yet are still listed (HasData=false)
 // so the operator can see they exist but haven't been exercised.
 func (h *UsageHandler) List(w http.ResponseWriter, r *http.Request) {
+	rng, ok := usageRangeOrFail(w, r)
+	if !ok {
+		return
+	}
 	keys, err := h.apiKeys.List("")
 	if err != nil {
 		JsonErrorPublic(w, "failed to list keys", http.StatusInternalServerError)
@@ -167,7 +247,14 @@ func (h *UsageHandler) List(w http.ResponseWriter, r *http.Request) {
 	// Token rollups keyed by api_key_id over the requested window.
 	tokenTotals := map[string]queries.KeyTokenTotals{}
 	if h.convUsage != nil {
-		if t, terr := h.convUsage.TotalsByKey(parseHours(r)); terr == nil {
+		var t map[string]queries.KeyTokenTotals
+		var terr error
+		if rng != nil {
+			t, terr = h.convUsage.TotalsByKeyWindow(rng.Window)
+		} else {
+			t, terr = h.convUsage.TotalsByKey(parseHours(r))
+		}
+		if terr == nil {
 			tokenTotals = t
 		}
 	}
@@ -253,13 +340,21 @@ func (h *UsageHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UsageHandler) Clients(w http.ResponseWriter, r *http.Request) {
+	rng, ok := usageRangeOrFail(w, r)
+	if !ok {
+		return
+	}
 	if h.convUsage == nil {
 		JsonResponsePublic(w, []clientUsageView{})
 		return
 	}
-
-	days := parseDays(r)
-	rows, err := h.convUsage.ClientKeyUsage(days)
+	var rows []queries.ClientKeyUsageRow
+	var err error
+	if rng != nil {
+		rows, err = h.convUsage.ClientKeyUsageWindow(rng.Window)
+	} else {
+		rows, err = h.convUsage.ClientKeyUsage(parseDays(r))
+	}
 	if err != nil {
 		JsonErrorPublic(w, "failed to aggregate client usage", http.StatusInternalServerError)
 		return
@@ -397,7 +492,17 @@ func (h *UsageHandler) usageMetaByKey() map[string]usageKeyMeta {
 // has no token data, so this is a call-count view (total + errors + last
 // seen) — the per-key panel covers token/rate-limit usage.
 func (h *UsageHandler) Sessions(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.requestLog.SessionUsage(parseHours(r))
+	rng, ok := usageRangeOrFail(w, r)
+	if !ok {
+		return
+	}
+	var rows []queries.SessionUsageRow
+	var err error
+	if rng != nil {
+		rows, err = h.requestLog.SessionUsageWindow(rng.Window)
+	} else {
+		rows, err = h.requestLog.SessionUsage(parseHours(r))
+	}
 	if err != nil {
 		JsonErrorPublic(w, "failed to aggregate session usage", http.StatusInternalServerError)
 		return
@@ -420,11 +525,21 @@ func (h *UsageHandler) Conversations(w http.ResponseWriter, r *http.Request) {
 		JsonErrorPublic(w, "key_id required", http.StatusBadRequest)
 		return
 	}
+	rng, ok := usageRangeOrFail(w, r)
+	if !ok {
+		return
+	}
 	if h.convUsage == nil {
 		JsonResponsePublic(w, []queries.ConversationUsageRow{})
 		return
 	}
-	rows, err := h.convUsage.ByKey(keyID, parseHours(r))
+	var rows []queries.ConversationUsageRow
+	var err error
+	if rng != nil {
+		rows, err = h.convUsage.ByKeyWindow(keyID, rng.Window)
+	} else {
+		rows, err = h.convUsage.ByKey(keyID, parseHours(r))
+	}
 	if err != nil {
 		JsonErrorPublic(w, "failed to aggregate conversation usage", http.StatusInternalServerError)
 		return
@@ -437,6 +552,10 @@ func (h *UsageHandler) Conversations(w http.ResponseWriter, r *http.Request) {
 
 // KeyDetail returns daily metered usage at the client+model grain for one key.
 func (h *UsageHandler) KeyDetail(w http.ResponseWriter, r *http.Request) {
+	rng, ok := usageRangeOrFail(w, r)
+	if !ok {
+		return
+	}
 	if h.convUsage == nil {
 		JsonResponsePublic(w, []queries.MeteredUsageDetailRow{})
 		return
@@ -450,7 +569,13 @@ func (h *UsageHandler) KeyDetail(w http.ResponseWriter, r *http.Request) {
 		JsonErrorPublic(w, "key not found", http.StatusNotFound)
 		return
 	}
-	rows, err := h.convUsage.DetailByKey(keyID, parseUsageDetailDays(r))
+	var rows []queries.MeteredUsageDetailRow
+	var err error
+	if rng != nil {
+		rows, err = h.convUsage.DetailByKeyWindow(keyID, rng.Window)
+	} else {
+		rows, err = h.convUsage.DetailByKey(keyID, parseUsageDetailDays(r))
+	}
 	if err != nil {
 		JsonErrorPublic(w, "failed to aggregate key usage", http.StatusInternalServerError)
 		return
@@ -460,6 +585,10 @@ func (h *UsageHandler) KeyDetail(w http.ResponseWriter, r *http.Request) {
 
 // KeyGroupDetail returns usage for the key group's current member set.
 func (h *UsageHandler) KeyGroupDetail(w http.ResponseWriter, r *http.Request) {
+	rng, ok := usageRangeOrFail(w, r)
+	if !ok {
+		return
+	}
 	if h.convUsage == nil {
 		JsonResponsePublic(w, []queries.MeteredUsageDetailRow{})
 		return
@@ -469,7 +598,13 @@ func (h *UsageHandler) KeyGroupDetail(w http.ResponseWriter, r *http.Request) {
 		JsonErrorPublic(w, "key group id required", http.StatusBadRequest)
 		return
 	}
-	rows, err := h.convUsage.DetailByKeyGroup(groupID, parseUsageDetailDays(r))
+	var rows []queries.MeteredUsageDetailRow
+	var err error
+	if rng != nil {
+		rows, err = h.convUsage.DetailByKeyGroupWindow(groupID, rng.Window)
+	} else {
+		rows, err = h.convUsage.DetailByKeyGroup(groupID, parseUsageDetailDays(r))
+	}
 	if err != nil {
 		JsonErrorPublic(w, "failed to aggregate key group usage", http.StatusInternalServerError)
 		return
@@ -490,7 +625,14 @@ func (h *UsageHandler) Detail(w http.ResponseWriter, r *http.Request) {
 		JsonErrorPublic(w, "exactly one of key_id or key_group_id is required", http.StatusBadRequest)
 		return
 	}
+	rng, ok := usageRangeOrFail(w, r)
+	if !ok {
+		return
+	}
 	days := parseUsageDetailDays(r)
+	if rng != nil {
+		days = rng.Days
+	}
 	response := meteredUsageDetailResponse{
 		WindowDays: days,
 		Clients:    []meteredClientUsage{},
@@ -508,7 +650,13 @@ func (h *UsageHandler) Detail(w http.ResponseWriter, r *http.Request) {
 			JsonErrorPublic(w, "key not found", http.StatusNotFound)
 			return
 		}
-		rows, err = h.convUsage.DetailByKey(keyID, days)
+		if rng != nil {
+			rows, err = h.convUsage.DetailByKeyWindow(keyID, rng.Window)
+		} else {
+			rows, err = h.convUsage.DetailByKey(keyID, days)
+		}
+	} else if rng != nil {
+		rows, err = h.convUsage.DetailByKeyGroupWindow(groupID, rng.Window)
 	} else {
 		rows, err = h.convUsage.DetailByKeyGroup(groupID, days)
 	}
@@ -517,6 +665,9 @@ func (h *UsageHandler) Detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response = buildMeteredUsageDetail(days, rows)
+	if rng != nil {
+		response.From, response.To = rng.From, rng.To
+	}
 	JsonResponsePublic(w, response)
 }
 
