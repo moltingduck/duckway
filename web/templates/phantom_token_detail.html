@@ -7,7 +7,6 @@
   <a class="btn btn-primary" href="/admin/phantom-tokens">Back to phantom tokens</a>
 </div>
 {{else}}
-<div class="cd-crumb"><a href="/admin/phantom-tokens">Phantom tokens</a> / <span>{{.Placeholders.EnvName}}</span></div>
 <script type="application/json" id="pt-data" nonce="{{$.CSPNonce}}">{{.Placeholders.Data}}</script>
 <div id="pt-root" data-id="{{.Placeholders.ID}}">
   <div class="pt-head">

@@ -85,7 +85,8 @@ function interactingWithRows() {
   var box = el('appr-layout');
   if (box.querySelector(':focus-visible')) return true;
   if (box.querySelector('button:hover')) return true;
-  if (!box.matches(':hover')) return false;
+  // :hover alone (a pointer parked there since before the page loaded) is not interaction.
+  if (!box.matches(':hover') || !lastPointer) return false;
   if (pointerType === 'mouse') return true;
   return Date.now() - lastPointer < 5000;
 }
@@ -144,6 +145,8 @@ function loadApprovals(live) {
     // Drop out-of-order responses and ones for a tab/filter no longer shown.
     if (!data || seq !== loadSeq || key !== approvalsKey()) return;
     if (currentTab === 'pending' && !hasFilters()) loadPendingTotal(data); else loadPendingTotal(null);
+    // A refetch that returns what is already shown (the live channel's catch-up after connecting) has nothing to announce.
+    if (live === true && JSON.stringify(data) === JSON.stringify(allApprovals)) { clearQueue(); showNudge(false); return; }
     if (live === true && interactingWithRows()) {
       queuedData = data;
       queuedKey = key;

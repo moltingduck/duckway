@@ -17,7 +17,9 @@ func TestBuildCrumbs(t *testing.T) {
 		want []Crumb
 	}{
 		{"section page", "credentials", pageData{Title: "Credentials", Active: "credentials"},
-			[]Crumb{{Label: "Credentials"}, {Label: "Credentials", Current: true}}},
+			[]Crumb{{Label: "Credentials", Current: true}}},
+		{"overview", "dashboard", pageData{Title: "Overview", Active: "dashboard"},
+			[]Crumb{{Label: "Overview", Current: true}}},
 		{"access", "phantom_tokens", pageData{Title: "Phantom tokens", Active: "placeholders"},
 			[]Crumb{{Label: "Access"}, {Label: "Phantom tokens", Current: true}}},
 		{"detail", "phantom_token_detail", pageData{Title: "NAME", Active: "placeholders"},

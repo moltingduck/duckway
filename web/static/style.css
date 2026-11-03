@@ -779,7 +779,13 @@ pre code, pre kbd, pre samp { overflow-wrap: normal; word-break: normal; }
 .lg-switch input { width: auto; }
 .lg-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); display: inline-block; }
 #live-tail.is-off .lg-dot { background: var(--muted); }
-.lg-split { display: grid; grid-template-columns: minmax(0, 1fr) 22rem; gap: 1rem; align-items: start; }
+.lg-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; align-items: start; }
+/* The detail panel exists only while a request is selected; until then the table has the full width. */
+.lg-split.lg-has-detail { grid-template-columns: minmax(0, 1fr) 22rem; }
+.lg-detail:not(.open) { display: none; }
+.lg-clip { display: inline-block; max-width: 11rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.lg-req { min-width: 15rem; }
+.lg-req .lg-path { overflow-wrap: anywhere; }
 .lg-list { padding: 0; overflow: hidden; margin-bottom: 0; }
 .lg-listhead { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem 0.875rem 0; min-height: 0.5rem; }
 .lg-table { min-width: 44rem; }
@@ -813,7 +819,8 @@ pre code, pre kbd, pre samp { overflow-wrap: normal; word-break: normal; }
 .lg-body { white-space: pre-wrap; background: var(--track); padding: 0.5rem; border-radius: 4px; max-height: 18rem; overflow: auto; }
 .lg-scrim { display: none; }
 @media (max-width: 900px) {
-  .lg-split { grid-template-columns: minmax(0, 1fr); }
+  .lg-split, .lg-split.lg-has-detail { grid-template-columns: minmax(0, 1fr); }
+  .lg-detail:not(.open) { display: block; }
   .lg-detail { position: fixed; top: 0; right: 0; bottom: 0; width: min(100vw, 30rem); max-height: none; margin: 0; border-radius: 0; z-index: 110; transform: translateX(100%); visibility: hidden; transition: transform 0.2s ease, visibility 0s linear 0.2s; }
   .lg-detail.open { transform: none; visibility: visible; transition: transform 0.2s ease, visibility 0s; box-shadow: var(--shadow); }
   .lg-scrim { display: block; position: fixed; inset: 0; background: var(--scrim); z-index: 105; }
@@ -1623,6 +1630,7 @@ a.pt-layer:hover { border-color: var(--accent); color: var(--ink); }
 /* ---- Credentials page (cr-*) ---- */
 .cr-layout { display: flex; flex-wrap: wrap; gap: 1.1rem; align-items: flex-start; }
 .cr-list { flex: 3 1 34rem; min-width: 0; margin: 0; }
+.cr-detail:not(.cr-open) { display: none; }
 .cr-detail { flex: 1 1 20rem; min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 0.75rem; position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
 .cr-detail-empty h2 { font-size: 1rem; margin-bottom: 0.4rem; }
 #cr-detail-body { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
@@ -1639,7 +1647,7 @@ a.pt-layer:hover { border-color: var(--accent); color: var(--ink); }
 .cr-d-titlebox { min-width: 0; flex: 1 1 10rem; }
 .cr-d-titlebox h2 { font-size: 1.0625rem; margin: 0; overflow-wrap: anywhere; }
 .cr-d-btns { display: flex; gap: 0.4rem; flex-wrap: wrap; }
-.cr-close { display: none; }
+.cr-close { display: inline-flex; }
 .cr-d-health { margin: 0; }
 .cr-h3 { margin: 0.5rem 0 0.25rem; font-size: 0.8125rem; font-weight: 600; color: var(--muted); }
 .cr-dl { grid-template-columns: 7rem minmax(0, 1fr); }
@@ -1679,7 +1687,7 @@ textarea.cr-masked { -webkit-text-security: disc; text-security: disc; }
 input[type="date"], input[type="search"] { width: 100%; padding: 0.5rem 0.75rem; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 0.875rem; }
 @media (min-width: 901px) { .cr-table { min-width: 58rem; } .cr-table th, .cr-table td.cr-c-name, .cr-table td.cr-c-svc, .cr-table td.cr-c-type, .cr-table td.cr-c-health { white-space: nowrap; } }
 @media (max-width: 900px) {
-  .cr-detail { display: none; position: fixed; top: 0; right: 0; bottom: 0; left: auto; width: min(100vw, 26rem); max-height: none; margin: 0; z-index: 100; border-radius: 0; border-width: 0 0 0 1px; }
+  .cr-detail { position: fixed; top: 0; right: 0; bottom: 0; left: auto; width: min(100vw, 26rem); max-height: none; margin: 0; z-index: 100; border-radius: 0; border-width: 0 0 0 1px; }
   .cr-detail.cr-open { display: flex; }
   .cr-close { display: inline-flex; }
   .cr-list { flex-basis: 100%; background: transparent; border: 0; overflow: visible; padding: 0; }
@@ -2217,3 +2225,26 @@ a.lg2-dec { display: inline-flex; align-items: center; min-height: 1.5rem; }
   .ccf-kv-row { grid-template-columns: minmax(0, 1fr); }
   .ccf-field select, .ccf-field input[type="text"], .ccf-kv input, .ccf-kv .btn, .ccf-check .btn, .ccf-set .btn { min-height: 44px; }
 }
+
+/* ---- vp1104: top bar at phone width, client clipping ---- */
+.crumb-back { display: none; }
+@media (max-width: 480px) {
+  /* Only the current page name; the parent becomes a back arrow. */
+  .crumbs li:not(.crumb-current) { display: none; }
+  .crumbs li + li::before { content: none; }
+  .crumb-back { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; font-size: 1.5rem; line-height: 1; color: var(--muted); }
+  /* "Live" must never truncate: the crumb gives way instead. */
+  .live-status { flex: none; }
+  .live-status .live-text { overflow: visible; text-overflow: clip; }
+}
+
+/* ---- vp1104: client detail Overview balance ---- */
+.cd-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 901px) {
+  .cd-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* The About column keeps room for its values (dates, "Claude Code via demo-cc"). */
+  .cd-side { flex: 0 0 20rem; min-width: 20rem; }
+  .cd-main { flex: 1 1 30rem; }
+  .cd-dl { grid-template-columns: 6rem minmax(0, 1fr); }
+}
+.cd-stats + * { margin-top: 0.9rem; }

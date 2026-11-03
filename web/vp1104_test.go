@@ -1,0 +1,77 @@
+package web
+
+import (
+	"strings"
+	"testing"
+)
+
+func mustContain(t *testing.T, what, body string, wants ...string) {
+	t.Helper()
+	for _, w := range wants {
+		if !strings.Contains(body, w) {
+			t.Errorf("%s: missing %q", what, w)
+		}
+	}
+}
+
+// Side panels exist only while something is selected, so tables keep the full width.
+func TestEmptySidePanelsAreHiddenUntilSelection(t *testing.T) {
+	css := readWeb(t, "static/style.css")
+	mustContain(t, "style.css", css,
+		".cr-detail:not(.cr-open) { display: none; }",
+		".lg-detail:not(.open) { display: none; }",
+		".lg-split.lg-has-detail { grid-template-columns: minmax(0, 1fr) 22rem; }",
+		".lg-req { min-width: 15rem; }",
+		".lg-req .lg-path { overflow-wrap: anywhere; }")
+	cr := readWeb(t, "templates/credentials.html")
+	mustContain(t, "credentials.html", cr,
+		"el('cr-detail').classList.add('cr-open');", // opens at every width, not only as a drawer
+		"if (isDrawer()) { show(el('cr-scrim'), true); drawerA11y(true); }")
+	if strings.Contains(cr, "if (!isDrawer()) { el('cr-detail').classList.remove('cr-open')") {
+		t.Error("leaving drawer width must not close the side panel")
+	}
+	lg := readWeb(t, "templates/logs.html")
+	mustContain(t, "logs.html", lg,
+		"panel.parentNode.classList.add('lg-has-detail')",
+		"$('log-detail').parentNode.classList.remove('lg-has-detail')",
+		`<td class="lg-req">`, `class="lg-clip" title="${l.client_name}"`)
+}
+
+// One crumb where group and page share a name; no second in-page crumb on detail pages.
+func TestBreadcrumbsHaveNoDuplicates(t *testing.T) {
+	for _, name := range []string{"templates/client_detail.html", "templates/phantom_token_detail.html"} {
+		body := readWeb(t, name)
+		// Only the "Not found" branch keeps its own back link.
+		if n := strings.Count(body, `class="cd-crumb"`); n != 1 || !strings.Contains(body, "Not found</span></div>") {
+			t.Errorf("%s: want only the Not found crumb, got %d cd-crumb elements", name, n)
+		}
+	}
+	layout := readWeb(t, "templates/layout.html")
+	mustContain(t, "layout.html", layout, `class="crumb-back"`, `aria-label="Back to {{.Label}}"`)
+	css := readWeb(t, "static/style.css")
+	mustContain(t, "style.css", css,
+		".crumbs li:not(.crumb-current) { display: none; }",
+		".live-status { flex: none; }",
+		".live-status .live-text { overflow: visible; text-overflow: clip; }",
+		"min-width: 44px; min-height: 44px; font-size: 1.5rem")
+}
+
+func TestClientDetailOverviewIsBalanced(t *testing.T) {
+	css := readWeb(t, "static/style.css")
+	mustContain(t, "style.css", css,
+		".cd-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }",
+		".cd-side { flex: 0 0 20rem; min-width: 20rem; }")
+}
+
+// The Updates-available nudge needs unseen changes: identical refetches and a parked pointer do not count.
+func TestApprovalsNudgeNeedsUnseenChanges(t *testing.T) {
+	a := readWeb(t, "templates/approvals.html")
+	mustContain(t, "approvals.html", a,
+		"if (!box.matches(':hover') || !lastPointer) return false;",
+		"JSON.stringify(data) === JSON.stringify(allApprovals)")
+}
+
+func TestOverviewRecentClientNamesAreClipped(t *testing.T) {
+	d := readWeb(t, "templates/dashboard.html")
+	mustContain(t, "dashboard.html", d, "${l.client_name ? DW.html`<span class=\"lg-clip\"", `<span class="lg-clip" title="{{.ClientName}}">{{.ClientName}}</span>`)
+}

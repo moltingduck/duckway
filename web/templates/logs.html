@@ -426,7 +426,7 @@ function render() {
       var dash = DW.raw('<span class="text-muted">—</span>');
       var cred = l.credential ? DW.html` <span class="text-muted">· ${l.credential}</span>` : '';
       var sel = l.id === selectedId;
-      return DW.html`<tr class="lg-tr${sel ? ' is-selected' : ''}" data-action="openRow" data-id="${l.id}"><td class="lg-t"><button type="button" class="lg-rowbtn" data-action="openRow" data-id="${l.id}"${sel ? DW.raw(' aria-current="true"') : ''} title="${l.created_at} UTC">${fmtTime(l.created_at)}</button></td><td>${l.client_name || dash}</td><td><span class="lg-svc">${l.service_name}</span>${cred}</td><td><span class="lg-tag">${l.method}</span> <span class="mono lg-path">${l.path}</span></td><td>${decisionCell(l)}</td><td>${pill(l)}</td><td class="text-right lg-ms">${fmtMs(l.duration_ms)}</td></tr>`;
+      return DW.html`<tr class="lg-tr${sel ? ' is-selected' : ''}" data-action="openRow" data-id="${l.id}"><td class="lg-t"><button type="button" class="lg-rowbtn" data-action="openRow" data-id="${l.id}"${sel ? DW.raw(' aria-current="true"') : ''} title="${l.created_at} UTC">${fmtTime(l.created_at)}</button></td><td>${l.client_name ? DW.html`<span class="lg-clip" title="${l.client_name}">${l.client_name}</span>` : dash}</td><td><span class="lg-svc">${l.service_name}</span>${cred}</td><td class="lg-req"><span class="lg-tag">${l.method}</span> <span class="mono lg-path">${l.path}</span></td><td>${decisionCell(l)}</td><td>${pill(l)}</td><td class="text-right lg-ms">${fmtMs(l.duration_ms)}</td></tr>`;
     })}`);
   }
   if (emptyHadFocus && items.length) {
@@ -480,6 +480,7 @@ DW.actions.openRow = function(el) {
   markSelected();
   var panel = $('log-detail');
   panel.classList.add('open');
+  panel.parentNode.classList.add('lg-has-detail');
   if (isDrawer()) $('lg-scrim').hidden = false;
   applyDrawerA11y();
   renderDetail(l, undefined);
@@ -508,6 +509,7 @@ function closePanel(restore) {
   if (!panelOpen()) return;
   selectedId = 0; lastItem = null; detailSeq++;
   $('log-detail').classList.remove('open');
+  $('log-detail').parentNode.classList.remove('lg-has-detail');
   $('lg-scrim').hidden = true;
   DW.setHTML($('det-body'), DW.raw('<p class="text-muted text-sm">Select a request to inspect it.</p>'));
   DW.setHTML($('det-status'), DW.raw(''));

@@ -65,7 +65,11 @@ func buildCrumbs(page string, d pageData) []Crumb {
 	if !ok {
 		return []Crumb{{Label: d.Title, Current: true}}
 	}
-	crumbs := []Crumb{{Label: e.Section}}
+	// Where the group and the page share a name ("Overview / Overview"), the group crumb is dropped.
+	var crumbs []Crumb
+	if e.Section != e.Label {
+		crumbs = []Crumb{{Label: e.Section}}
+	}
 	last := ""
 	switch {
 	case d.Crumb != "":
