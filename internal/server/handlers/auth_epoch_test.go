@@ -95,3 +95,29 @@ func TestChangePasswordReissuesCookieAtNewEpoch(t *testing.T) {
 		t.Fatal("the current session cookie must be re-issued")
 	}
 }
+
+type onceFailEpoch struct{ failed bool }
+
+func (o *onceFailEpoch) GetE(string) (string, error) { return "", nil }
+func (o *onceFailEpoch) Set(string, string) error {
+	if !o.failed {
+		o.failed = true
+		return errors.New("transient")
+	}
+	return nil
+}
+
+// One transient epoch-store error is retried before the "may still be active" error.
+func TestChangePasswordRetriesEpochBumpOnce(t *testing.T) {
+	env := envWithEpoch(t, &flakyEpoch{})
+	env.auth = middleware.NewAdminAuth([]byte("test-secret")).WithEpochStore(&onceFailEpoch{})
+	env.handler = handlers.NewAuthHandler(env.users, env.auth)
+	seedUser(t, env, "u1", "alice", "oldpassword")
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", jsonBody(t, map[string]string{"current_password": "oldpassword", "new_password": "a-new-password-1"}))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	env.handler.ChangePassword(rr, injectUser(req, "alice"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("a single transient failure must be retried: %d %s", rr.Code, rr.Body.String())
+	}
+}

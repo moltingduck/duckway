@@ -139,8 +139,8 @@ does not list.
   characters of the body's SHA-256.
 - A proxied path containing `%2F` is refused (400) unless the service has
   **Allow encoded slashes** enabled (Services, Delivery section; for example
-  GitLab project paths). `%5C`, `?`, `#` and control characters are always
-  refused.
+  GitLab project paths). `%5C`, an encoded `?` or `#` (`%3F`, `%23`) and
+  control characters are always refused.
 - Behind a reverse proxy that rewrites `Host`, set `DUCKWAY_PUBLIC_ORIGIN` (see
   the proxy section) or forward the original Host.
 - Changing the admin password signs out every other session.

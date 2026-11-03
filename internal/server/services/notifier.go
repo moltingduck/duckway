@@ -47,10 +47,13 @@ type ApprovalNotification struct {
 
 // requestTarget is the path with its query string: what exactly is being approved.
 func (n ApprovalNotification) requestTarget() string {
-	if n.Query == "" {
-		return n.Path
+	t := n.Path
+	if n.Query != "" {
+		t += "?" + n.Query
 	}
-	return n.Path + "?" + n.Query
+	// The target is placed inside markdown code spans: a backtick would close
+	// the span and let request-controlled text inject formatting.
+	return strings.ReplaceAll(t, "`", "'")
 }
 
 // bodyLine shows the short body hash an approval is bound to (markdown).

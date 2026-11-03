@@ -35,7 +35,7 @@ func NewSettingsHandler(s *queries.SettingsQueries) *SettingsHandler {
 // session epoch (writing it would revoke or resurrect sessions) and the
 // per-admin What's-new dismissal records.
 func reservedSetting(key string) bool {
-	return key == queries.SettingSessionEpoch || strings.HasPrefix(key, "whats_new_seen_version:")
+	return key == queries.SettingSessionEpoch || key == queries.SettingApprovalScopeKey || strings.HasPrefix(key, "whats_new_seen_version:")
 }
 
 func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {

@@ -29,6 +29,13 @@ func (q *SettingsQueries) GetE(key string) (string, error) {
 	return val, err
 }
 
+// SetIfAbsent stores value only when the key has no row yet (portable upsert
+// that never overwrites), so concurrent first-time initialisers agree.
+func (q *SettingsQueries) SetIfAbsent(key, value string) error {
+	_, err := q.db.Exec("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", key, value)
+	return err
+}
+
 func (q *SettingsQueries) Set(key, value string) error {
 	_, err := q.db.Exec(
 		"INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
@@ -86,6 +93,7 @@ const (
 	SettingRequestLogCaptureOn      = "request_log_capture_enabled"  // "1" / "0"
 	SettingRequestLogCaptureClients = "request_log_capture_clients"  // JSON array of client IDs; empty = all
 	SettingApprovalRequestTTL       = "approval_request_ttl_minutes" // pending approvals auto-marked "ignored" after this; default 60
+	SettingApprovalScopeKey         = "approval_scope_key"           // server-held HMAC key for approval scopes and body hashes; reserved
 	SettingSessionEpoch             = "session_epoch"                // admin session generation; bumped on password change to sign out other sessions
 	SettingAgentStatuslineScript    = "agent_statusline_script"      // shell script body served via GET /client/statusline; agents `duckway sync` writes it to ~/.duckway/statusline.sh
 )

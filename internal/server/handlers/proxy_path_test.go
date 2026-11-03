@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/hackerduck/duckway/internal/server/handlers"
 	"github.com/hackerduck/duckway/internal/server/services"
 	"sync/atomic"
 	"time"
@@ -297,9 +298,14 @@ func TestApprovalShowsQueryAndShortBodyHash(t *testing.T) {
 	if info["query"] != "mode=live&x=1" || len(info["body_hash"]) != 12 || info["path"] != "/v1/messages" {
 		t.Fatalf("request_info=%v", info)
 	}
-	sum := sha256.Sum256([]byte(`{"amount":100}`))
-	if info["body_hash"] != hex.EncodeToString(sum[:])[:12] {
-		t.Fatalf("body hash is not the SHA-256 prefix: %s", info["body_hash"])
+	plain := sha256.Sum256([]byte(`{"amount":100}`))
+	if info["body_hash"] == hex.EncodeToString(plain[:])[:12] {
+		t.Fatal("the displayed body hash must be keyed (HMAC), not a plain SHA-256 prefix")
+	}
+	// Stable for the same body, so the admin can compare.
+	_, again := rig.doBody("POST", "/v1/messages?mode=live&x=1", `{"amount":100}`)
+	if again["approval_id"] != m["approval_id"] {
+		t.Fatalf("same request must reuse the approval: %v", again)
 	}
 	if strings.Contains(*a.RequestInfo, "amount") {
 		t.Fatal("the body itself must never be stored")
@@ -338,5 +344,68 @@ func TestApprovalQueryIsRedactedButScopeUsesRealQuery(t *testing.T) {
 		if strings.Contains(n.Query, "SECRET") || strings.Contains(n.Query, "sig=s1") || !strings.Contains(n.Query, "mode=live") {
 			t.Fatalf("notification query=%q", n.Query)
 		}
+	}
+}
+
+// The stored scope is keyed: it contains neither the raw query nor a plain
+// SHA-256 of the body, and the key is a reserved setting.
+func TestScopeStoredAsKeyedHashWithoutRawQuery(t *testing.T) {
+	rig := newPathRig(t, approvePostsACL)
+	_, m := rig.doBody("POST", "/v1/messages?api_key=SUPER-SECRET-123", `{"a":1}`)
+	var scope string
+	if err := rig.f.rawDB.QueryRow(`SELECT scope FROM approvals WHERE id = ?`, m["approval_id"]).Scan(&scope); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(scope, "rule:") || len(scope) != len("rule:")+64 || strings.Contains(scope, "SUPER-SECRET") || strings.Contains(scope, "/v1/messages") {
+		t.Fatalf("scope must be rule:<64 hex>, got %q", scope)
+	}
+	plain := sha256.Sum256([]byte(`{"a":1}`))
+	if strings.Contains(scope, hex.EncodeToString(plain[:])) {
+		t.Fatal("scope must not embed a plain body SHA-256")
+	}
+}
+
+func TestSpoofedServiceSegmentWithEncodedSlashIs400(t *testing.T) {
+	rig := newPathRig(t, "")
+	for _, p := range []string{"/proxy/anthropic%2Fx/v1/a", "/proxy/anthropic%2fx", "/proxy/anthropic%5Cx/v1"} {
+		r := httptest.NewRequest("GET", p, strings.NewReader(""))
+		r = withClient(r, rig.f.client)
+		code, _ := doProxy(newProxyHandler(rig.f), r)
+		if code != http.StatusBadRequest {
+			t.Errorf("%s => %d, want 400", p, code)
+		}
+	}
+}
+
+// The scope key is persisted (reserved setting), so two gateway processes on one
+// database compute the same scope and share the pending approval.
+func TestApprovalKeyPersistedAcrossHandlers(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	t.Cleanup(upstream.Close)
+	f := newProxyFixture(t, upstream.URL)
+	acl := approvePostsACL
+	ph, _ := f.placeholderQ.GetByID(f.placeholderID)
+	ph.PermissionConfig = &acl
+	if err := f.placeholderQ.Update(ph); err != nil {
+		t.Fatal(err)
+	}
+	settings := queries.NewSettingsQueries(f.rawDB)
+	mk := func() *handlers.ProxyHandler {
+		resolver := services.NewKeyResolver(f.crypto, f.apiKeyQ, f.placeholderQ, f.groupQ, f.approvalQ)
+		return handlers.NewProxyHandler(f.svcQ, f.apiKeyQ, resolver, f.logQ, f.approvalQ, settings, nil)
+	}
+	call := func(h *handlers.ProxyHandler) string {
+		r := httptest.NewRequest("POST", "/proxy/anthropic/v1/messages?x=1", strings.NewReader(`{"k":1}`))
+		_, body := doProxy(h, withClient(r, f.client))
+		m := map[string]string{}
+		_ = json.Unmarshal(body, &m)
+		return m["approval_id"]
+	}
+	a, b := call(mk()), call(mk())
+	if a == "" || a != b {
+		t.Fatalf("two handlers on one database must agree: %q vs %q", a, b)
+	}
+	if settings.Get(queries.SettingApprovalScopeKey) == "" {
+		t.Fatal("the key must be persisted")
 	}
 }

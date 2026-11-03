@@ -200,13 +200,29 @@ func sanitizeAPIKeyForAdmin(k *models.APIKey) {
 }
 
 // extraSecretQueryWords are query-parameter words that name credentials or
-// signatures beyond the field-name rules above (presigned URLs, passcodes).
+// signatures beyond the field-name rules above (presigned URLs, passcodes,
+// session ids).
 var extraSecretQueryWords = map[string]bool{
 	"sig": true, "signature": true, "sign": true, "signed": true, "pwd": true, "pin": true, "passcode": true,
 	"apikey": true, "accesskey": true, "key": true, "keys": true, "token": true, "tokens": true,
+	"ticket": true, "sessid": true, "sid": true,
+}
+
+// stripArraySuffix removes trailing [..] groups (token[], tokens[0]) so the
+// parameter is judged by its real name.
+func stripArraySuffix(name string) string {
+	for strings.HasSuffix(name, "]") {
+		i := strings.LastIndexByte(name, '[')
+		if i <= 0 {
+			break
+		}
+		name = name[:i]
+	}
+	return name
 }
 
 func isSecretQueryName(name string) bool {
+	name = stripArraySuffix(name)
 	if isSecretFieldName(name) {
 		return true
 	}
@@ -218,27 +234,53 @@ func isSecretQueryName(name string) bool {
 	return false
 }
 
+// looksLikeSecretValue flags a long value that mixes letters and digits (an
+// opaque token, signature or key) whatever the parameter is called.
+func looksLikeSecretValue(v string) bool {
+	if dec, err := url.QueryUnescape(v); err == nil {
+		v = dec
+	}
+	if len(v) < 20 {
+		return false
+	}
+	var letter, digit bool
+	for _, r := range v {
+		switch {
+		case unicode.IsLetter(r):
+			letter = true
+		case unicode.IsDigit(r):
+			digit = true
+		}
+	}
+	return letter && digit
+}
+
 // redactApprovalQuery replaces the value of every secret-looking query
-// parameter with [redacted] (api_key, access_token, sig, signature, code,
-// password, X-Amz-Signature ...) and leaves everything else, including order,
-// untouched. It is applied before a query string is stored in request_info or
-// sent to a notification channel; the approval scope is still computed over the
-// real query so the approval binds exactly.
+// parameter with [redacted] (api_key, access_token, token[], sig, signature,
+// code, password, X-Amz-Signature, ticket, sessid ...), every keyless
+// parameter, and any value of 20+ characters mixing letters and digits. Order
+// and benign parameters are untouched. It is applied before a query string is
+// stored in request_info or sent to a notification channel; the approval scope
+// is computed over the real query so the approval still binds exactly.
 func redactApprovalQuery(raw string) string {
 	if raw == "" {
 		return ""
 	}
 	parts := strings.Split(raw, "&")
 	for i, p := range parts {
+		if p == "" {
+			continue
+		}
 		eq := strings.IndexByte(p, '=')
 		if eq < 0 {
+			parts[i] = "[redacted]" // a keyless parameter may itself be the secret
 			continue
 		}
 		name := p[:eq]
 		if dec, err := url.QueryUnescape(name); err == nil {
 			name = dec
 		}
-		if isSecretQueryName(name) {
+		if isSecretQueryName(name) || looksLikeSecretValue(p[eq+1:]) {
 			parts[i] = p[:eq] + "=[redacted]"
 		}
 	}

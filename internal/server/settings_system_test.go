@@ -134,3 +134,14 @@ func TestSettingsAPIHidesAndRejectsReservedKeys(t *testing.T) {
 		t.Fatalf("GET exposes reserved keys or wrote a rejected batch: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestApprovalScopeKeyIsReservedInSettingsAPI(t *testing.T) {
+	s, shared := newClientDetailServer(t)
+	if rec := svcDo(s, shared, http.MethodPost, "/api/settings", `{"approval_scope_key":"x"}`, true); rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST => %d", rec.Code)
+	}
+	svcExec(t, s, `INSERT INTO settings (key, value) VALUES ('approval_scope_key','topsecretkey') ON CONFLICT(key) DO UPDATE SET value='topsecretkey'`)
+	if rec := svcDo(s, shared, http.MethodGet, "/api/settings", "", true); strings.Contains(rec.Body.String(), "topsecretkey") || strings.Contains(rec.Body.String(), "approval_scope_key") {
+		t.Fatalf("GET exposes the key: %s", rec.Body.String())
+	}
+}

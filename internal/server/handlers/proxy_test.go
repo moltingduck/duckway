@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -27,6 +28,7 @@ import (
 
 // proxyFixture holds all query objects and the seeded IDs for proxy tests.
 type proxyFixture struct {
+	rawDB        *sql.DB
 	svcQ         *queries.ServiceQueries
 	apiKeyQ      *queries.APIKeyQueries
 	placeholderQ *queries.PlaceholderQueries
@@ -125,6 +127,7 @@ func newProxyFixture(t testing.TB, upstreamURL string) *proxyFixture {
 	}
 
 	return &proxyFixture{
+		rawDB:         db,
 		svcQ:          svcQ,
 		apiKeyQ:       apiKeyQ,
 		placeholderQ:  placeholderQ,

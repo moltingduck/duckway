@@ -136,3 +136,11 @@ func TestApprovalNotificationShowsQueryAndBodyHash(t *testing.T) {
 		t.Fatalf("telegram text lacks query or hash: %s", sent)
 	}
 }
+
+// Request-controlled text must not break out of the markdown code span.
+func TestRequestTargetNeutralisesBackticks(t *testing.T) {
+	n := ApprovalNotification{Path: "/a`b", Query: "x=`*bold*`"}
+	if got := n.requestTarget(); strings.Contains(got, "`") || got != "/a'b?x='*bold*'" {
+		t.Fatalf("target=%q", got)
+	}
+}

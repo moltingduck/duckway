@@ -116,7 +116,11 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to update password", http.StatusInternalServerError)
 		return
 	}
-	if _, err := h.auth.BumpEpoch(); err != nil {
+	_, err = h.auth.BumpEpoch()
+	if err != nil {
+		_, err = h.auth.BumpEpoch() // one retry: a transient store error should not leave sessions alive
+	}
+	if err != nil {
 		log.Printf("change-password: bump session epoch: %v", err)
 		jsonError(w, "password changed, but other sessions may still be active: they could not be signed out", http.StatusInternalServerError)
 		return

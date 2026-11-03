@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
@@ -43,6 +45,11 @@ type ProxyHandler struct {
 	crypto        *services.Crypto
 	httpClient    *http.Client
 	proxyClients  *services.UpstreamProxyClientCache
+
+	scopeKeyOnce sync.Once
+	scopeKey     []byte
+	// scopedOpsWrap lets tests wrap the scoped-approval store operations.
+	scopedOpsWrap func(scopedApprovalOps) scopedApprovalOps
 
 	githubAppMu     sync.Mutex
 	githubAppTokens map[string]githubAppTokenCache
@@ -391,6 +398,12 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if len(parts) > 1 {
 		upstreamPath = "/" + parts[1]
 	}
+	// The service-name segment never takes an encoded slash or backslash.
+	rawSvc := strings.SplitN(strings.TrimPrefix(r.URL.EscapedPath(), "/proxy/"), "/", 2)[0]
+	if l := strings.ToLower(rawSvc); strings.Contains(l, "%2f") || strings.Contains(l, "%5c") {
+		jsonError(w, "encoded slash in service name is not allowed", http.StatusBadRequest)
+		return
+	}
 	if hasEncodedSlash(r) && (serviceName == "openai-auth" || serviceName == "openai-chatgpt") {
 		jsonError(w, "encoded slash in proxied path is not allowed", http.StatusBadRequest)
 		return
@@ -572,21 +585,20 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 			bodyRequired = true
 		}
-		scope := ruleApprovalScope(aclMethod, aclPath, r.URL.RawQuery, bodyBytes)
+		scope := ruleApprovalScope(h.approvalKey(), aclMethod, aclPath, r.URL.RawQuery, bodyBytes)
 		if _, err := h.approvals.GetValidScopedApproval(result.PlaceholderID, scope); err != nil {
 			if err != sql.ErrNoRows {
 				log.Printf("check rule approval for %s: %v", result.PlaceholderID, err)
 				jsonError(w, "failed to check approval", http.StatusInternalServerError)
 				return
 			}
-			sum := sha256.Sum256(bodyBytes)
 			// Secret-looking parameter values never reach request_info or the
 			// notification channels; the scope above used the real query.
 			query := redactApprovalQuery(r.URL.RawQuery)
 			if len(query) > 300 {
 				query = query[:300] + "..."
 			}
-			if !h.holdForApproval(w, r, client, serviceName, result.PlaceholderID, aclMethod, aclPath, query, hex.EncodeToString(sum[:])[:12], scope, approveRule+" ("+approveLayer+")") {
+			if !h.holdForApproval(w, r, client, serviceName, result.PlaceholderID, aclMethod, aclPath, query, approvalBodyHash(h.approvalKey(), bodyBytes), scope, approveRule+" ("+approveLayer+")") {
 				return
 			}
 		}
@@ -1670,13 +1682,56 @@ func isGitHubSmartHTTPPath(path string) bool {
 		strings.HasSuffix(path, ".git/git-receive-pack")
 }
 
+// approvalKey returns the server-held HMAC key for approval scopes and body
+// hashes. It is persisted as a reserved setting (shared by every process on the
+// same database, hidden from the settings API); without a settings store (tests)
+// a per-handler random key is used.
+func (h *ProxyHandler) approvalKey() []byte {
+	h.scopeKeyOnce.Do(func() {
+		gen := func() string {
+			b := make([]byte, 32)
+			_, _ = rand.Read(b)
+			return hex.EncodeToString(b)
+		}
+		key := ""
+		if h.settings != nil {
+			key = h.settings.Get(queries.SettingApprovalScopeKey)
+			if key == "" {
+				_ = h.settings.SetIfAbsent(queries.SettingApprovalScopeKey, gen())
+				key = h.settings.Get(queries.SettingApprovalScopeKey)
+			}
+		}
+		if key == "" {
+			key = gen()
+		}
+		h.scopeKey = []byte(key)
+	})
+	return h.scopeKey
+}
+
+func hmacHex(key []byte, parts ...string) string {
+	m := hmac.New(sha256.New, key)
+	for _, p := range parts {
+		m.Write([]byte(p))
+		m.Write([]byte{0})
+	}
+	return hex.EncodeToString(m.Sum(nil))
+}
+
 // ruleApprovalScope is the request signature a per-rule approval is bound to:
-// "rule:METHOD path?query#sha256(body)". An approval covers exactly that
-// request (method, path, query and body) for its TTL: it never unlocks another
-// method, path, query string or body.
-func ruleApprovalScope(method, path, rawQuery string, body []byte) string {
-	sum := sha256.Sum256(body)
-	return "rule:" + strings.ToUpper(method) + " " + path + "?" + rawQuery + "#" + hex.EncodeToString(sum[:])
+// "rule:" + hex(HMAC-SHA256(key, METHOD, path, query, body)). An approval
+// covers exactly that request (method, path, query and body) for its TTL: it
+// never unlocks another method, path, query string or body. The keyed hash
+// keeps the raw query (which may hold secrets) and any brute-forceable body
+// digest out of the database; equality lookups and the unique index still work.
+func ruleApprovalScope(key []byte, method, path, rawQuery string, body []byte) string {
+	return "rule:" + hmacHex(key, strings.ToUpper(method), path, rawQuery, string(body))
+}
+
+// approvalBodyHash is the short (12 hex) keyed digest of the body shown to
+// admins; it is not a plain SHA-256 of the body.
+func approvalBodyHash(key []byte, body []byte) string {
+	return hmacHex(key, "body", string(body))[:12]
 }
 
 // holdForApproval records (or reuses) a pending approval, notifies the admin
@@ -1749,7 +1804,7 @@ func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, c
 		}
 		approvalID, created = id, true
 	} else {
-		id, wasCreated, fwd, err := resolveScopedApproval(scopedApprovalOps{
+		ops := scopedApprovalOps{
 			pending: func() (string, error) {
 				p, err := h.approvals.GetPendingScoped(placeholderID, scope)
 				if err != nil {
@@ -1764,7 +1819,11 @@ func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, c
 			create: func() (string, error) {
 				return CreatePendingApprovalFor(h.approvals, placeholderID, method, path, query, bodyHash, scope, rule)
 			},
-		})
+		}
+		if h.scopedOpsWrap != nil {
+			ops = h.scopedOpsWrap(ops)
+		}
+		id, wasCreated, fwd, err := resolveScopedApproval(ops)
 		switch {
 		case err == errApprovalContention:
 			w.Header().Set("Retry-After", "1")
