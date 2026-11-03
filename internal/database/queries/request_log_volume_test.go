@@ -172,27 +172,42 @@ func TestRequestLogRetentionPrunesInBatches(t *testing.T) {
 // One client probing many different paths cannot write more than 30 denial rows a minute.
 func TestACLDeniedPerClientPerMinuteCap(t *testing.T) {
 	db, q := logDB(t)
-	for i := 0; i < 100; i++ {
-		if err := q.LogACLDenied("c1", "", "s", "GET", "/probe/"+strings.Repeat("x", i%7)+string(rune('a'+i%26))+string(rune('A'+i/26))); err != nil {
+	// A fixed clock mid-minute, far in the past so stored (real-time) rows always count as in-window: no real minute boundary can flake this test.
+	clk := time.Date(2020, 1, 1, 10, 0, 20, 0, time.UTC)
+	q.SetClock(func() time.Time { return clk })
+	probe := func(client string, i int) {
+		t.Helper()
+		if err := q.LogACLDenied(client, "", "s", "GET", "/probe/"+strings.Repeat("x", i%7)+string(rune('a'+i%26))+string(rune('A'+i/26))); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if n := countWhere(t, db, `decision = 'acl_denied' AND client_id = 'c1'`); n != queries.MaxACLDeniedRowsPerMinute {
+	for i := 0; i < 100; i++ {
+		probe("c1", i)
+	}
+	// 30 stored denials plus exactly one marker row.
+	if n := countWhere(t, db, `decision = 'acl_denied' AND client_id = 'c1' AND path <> '`+queries.DeniedSuppressedPath+`'`); n != queries.MaxACLDeniedRowsPerMinute {
 		t.Fatalf("c1 wrote %d denial rows, want the cap %d", n, queries.MaxACLDeniedRowsPerMinute)
 	}
-	// The cap is per client: another client still logs.
-	if err := q.LogACLDenied("c2", "", "s", "GET", "/probe/other"); err != nil {
-		t.Fatal(err)
+	if n := countWhere(t, db, `client_id = 'c1' AND path = '`+queries.DeniedSuppressedPath+`'`); n != 1 {
+		t.Fatalf("c1 marker rows=%d, want 1", n)
 	}
+	// The cap is per client: another client still logs.
+	probe("c2", 0)
 	if n := countWhere(t, db, `decision = 'acl_denied' AND client_id = 'c2'`); n != 1 {
 		t.Fatalf("c2 rows=%d", n)
 	}
 	// Identical repeats are still coalesced under the cap.
 	for i := 0; i < 5; i++ {
-		_ = q.LogACLDenied("c2", "", "s", "GET", "/probe/other")
+		probe("c2", 0)
 	}
 	if n := countWhere(t, db, `decision = 'acl_denied' AND client_id = 'c2'`); n != 1 {
 		t.Fatalf("c2 identical repeats stored %d rows", n)
+	}
+	// Next minute: the counter is pruned and c1 logs again (and can trip once more).
+	clk = clk.Add(time.Minute)
+	probe("c1", 500)
+	if n := countWhere(t, db, `decision = 'acl_denied' AND client_id = 'c1' AND path <> '`+queries.DeniedSuppressedPath+`'`); n != queries.MaxACLDeniedRowsPerMinute+1 {
+		t.Fatalf("c1 after the minute rolled: %d rows", n)
 	}
 }
 

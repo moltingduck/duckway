@@ -75,9 +75,9 @@ func TestTermHintsAreOutsideHeadingNames(t *testing.T) {
 		}
 	}
 	dw := readWeb(t, "static/dw.js")
-	// Announced once: through aria-describedby only (no second status-region announcement).
-	if strings.Contains(dw, "dw-term-status") || !strings.Contains(dw, "setAttribute('aria-describedby', pop.id)") {
-		t.Error("a hint is announced once, via aria-describedby")
+	// Announced once: one sr-only status region, no aria-describedby on the button.
+	if !strings.Contains(dw, "getElementById('dw-term-status')") || strings.Contains(dw, "setAttribute('aria-describedby'") {
+		t.Error("a hint is announced once, via the status region only")
 	}
 }
 
@@ -145,5 +145,27 @@ func TestRound2FrontendContracts(t *testing.T) {
 	docs := readWeb(t, "templates/docs.html")
 	if !strings.Contains(docs, "Keep forever (not set)") {
 		t.Error("docs Upgrade notes must explain the unset retention")
+	}
+}
+
+// Round 3: a notification Undo that cannot run rejects (so "Undo failed" shows); the skip button
+// carries the button reset; the term status region lives in the layout.
+func TestRound3FrontendContracts(t *testing.T) {
+	nt := readWeb(t, "templates/notifications.html")
+	if !strings.Contains(nt, "Promise.reject(new Error(") {
+		t.Error("notifications Undo must reject when the channel is busy or gone")
+	}
+	css := readWeb(t, "static/style.css")
+	for _, line := range strings.Split(css, "\n") {
+		if strings.HasPrefix(line, ".skip-link {") {
+			for _, want := range []string{"font: inherit", "border: 0", "cursor: pointer"} {
+				if !strings.Contains(line, want) {
+					t.Errorf(".skip-link lacks %q", want)
+				}
+			}
+		}
+	}
+	if !strings.Contains(readWeb(t, "templates/layout.html"), `id="dw-term-status" class="sr-only" role="status"`) {
+		t.Error("layout needs the single term status region")
 	}
 }

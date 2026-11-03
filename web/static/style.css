@@ -589,7 +589,7 @@ code, .mono {
   position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
-.skip-link { position: absolute; left: -999px; top: 0; z-index: 300; background: var(--accent); color: var(--on-accent); padding: 0.5rem 1rem; }
+.skip-link { position: absolute; left: -999px; top: 0; z-index: 300; background: var(--accent); color: var(--on-accent); padding: 0.5rem 1rem; font: inherit; border: 0; cursor: pointer; text-decoration: none; }
 .skip-link:focus { left: 0; }
 .field-error { color: var(--danger-text); font-size: 0.85rem; margin-bottom: 1rem; padding: 0.5rem 0.75rem; border: 1px solid var(--danger); border-radius: var(--radius); }
 .field-error:focus { outline: 2px solid var(--accent); }

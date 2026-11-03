@@ -13,7 +13,7 @@ func TestResolveScopedApprovalRaceOutcomes(t *testing.T) {
 	t.Run("reuses an existing pending approval", func(t *testing.T) {
 		id, created, fwd, err := resolveScopedApproval(scopedApprovalOps{
 			pending: func() (string, error) { return "p1", nil },
-			valid:   func() error { return sql.ErrNoRows },
+			valid:   func() (string, error) { return "", sql.ErrNoRows },
 			create:  func() (string, error) { t.Fatal("must not create"); return "", nil },
 		})
 		if id != "p1" || created || fwd || err != nil {
@@ -21,7 +21,7 @@ func TestResolveScopedApprovalRaceOutcomes(t *testing.T) {
 		}
 	})
 	t.Run("creates when nothing exists", func(t *testing.T) {
-		id, created, fwd, err := resolveScopedApproval(scopedApprovalOps{pending: noRows, valid: func() error { return sql.ErrNoRows }, create: func() (string, error) { return "n1", nil }})
+		id, created, fwd, err := resolveScopedApproval(scopedApprovalOps{pending: noRows, valid: func() (string, error) { return "", sql.ErrNoRows }, create: func() (string, error) { return "n1", nil }})
 		if id != "n1" || !created || fwd || err != nil {
 			t.Fatalf("%s %v %v %v", id, created, fwd, err)
 		}
@@ -36,7 +36,7 @@ func TestResolveScopedApprovalRaceOutcomes(t *testing.T) {
 				}
 				return "winner", nil
 			},
-			valid:  func() error { return sql.ErrNoRows },
+			valid:  func() (string, error) { return "", sql.ErrNoRows },
 			create: func() (string, error) { return "", errUnique },
 		})
 		if id != "winner" || created || fwd || err != nil {
@@ -46,7 +46,7 @@ func TestResolveScopedApprovalRaceOutcomes(t *testing.T) {
 	t.Run("winner already approved: forward, never 500", func(t *testing.T) {
 		_, created, fwd, err := resolveScopedApproval(scopedApprovalOps{
 			pending: noRows,
-			valid:   func() error { return nil },
+			valid:   func() (string, error) { return "a1", nil },
 			create:  func() (string, error) { return "", errUnique },
 		})
 		if created || !fwd || err != nil {
@@ -57,7 +57,7 @@ func TestResolveScopedApprovalRaceOutcomes(t *testing.T) {
 		n := 0
 		id, created, _, err := resolveScopedApproval(scopedApprovalOps{
 			pending: noRows,
-			valid:   func() error { return sql.ErrNoRows },
+			valid:   func() (string, error) { return "", sql.ErrNoRows },
 			create: func() (string, error) {
 				n++
 				if n == 1 {
@@ -71,14 +71,14 @@ func TestResolveScopedApprovalRaceOutcomes(t *testing.T) {
 		}
 	})
 	t.Run("persistent contention is a retryable condition, not a failure", func(t *testing.T) {
-		_, _, _, err := resolveScopedApproval(scopedApprovalOps{pending: noRows, valid: func() error { return sql.ErrNoRows }, create: func() (string, error) { return "", errUnique }})
+		_, _, _, err := resolveScopedApproval(scopedApprovalOps{pending: noRows, valid: func() (string, error) { return "", sql.ErrNoRows }, create: func() (string, error) { return "", errUnique }})
 		if !errors.Is(err, errApprovalContention) {
 			t.Fatalf("err=%v", err)
 		}
 	})
 	t.Run("other errors are reported", func(t *testing.T) {
 		boom := errors.New("disk full")
-		_, _, _, err := resolveScopedApproval(scopedApprovalOps{pending: noRows, valid: func() error { return sql.ErrNoRows }, create: func() (string, error) { return "", boom }})
+		_, _, _, err := resolveScopedApproval(scopedApprovalOps{pending: noRows, valid: func() (string, error) { return "", sql.ErrNoRows }, create: func() (string, error) { return "", boom }})
 		if !errors.Is(err, boom) {
 			t.Fatalf("err=%v", err)
 		}

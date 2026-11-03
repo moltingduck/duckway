@@ -1812,7 +1812,7 @@ var errApprovalContention = errors.New("approval request contention")
 // (injectable so the race outcomes can be unit-tested).
 type scopedApprovalOps struct {
 	pending func() (string, error) // newest pending approval id; sql.ErrNoRows if none
-	valid   func() error           // nil if an unexpired approval exists; sql.ErrNoRows if none
+	valid   func() (string, error) // id of an unexpired approval, or sql.ErrNoRows if none
 	create  func() (string, error)
 }
 
@@ -1842,9 +1842,9 @@ func resolveScopedApproval(ops scopedApprovalOps) (id string, created, forward b
 			return "", false, false, perr
 		}
 		// The winner is no longer pending: it may have been approved already.
-		verr := ops.valid()
+		vid, verr := ops.valid()
 		if verr == nil {
-			return "", false, true, nil
+			return vid, false, true, nil
 		}
 		if verr != sql.ErrNoRows {
 			return "", false, false, verr
@@ -1899,14 +1899,19 @@ func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, c
 				}
 				return p.ID, nil
 			},
-			valid: func() error {
-				var err error
+			valid: func() (string, error) {
 				if scope == "" {
-					_, err = h.approvals.GetValidApproval(placeholderID)
-				} else {
-					_, err = h.approvals.GetValidScopedApproval(placeholderID, scope)
+					a, err := h.approvals.GetValidApproval(placeholderID)
+					if err != nil {
+						return "", err
+					}
+					return a.ID, nil
 				}
-				return err
+				a, err := h.approvals.GetValidScopedApproval(placeholderID, scope)
+				if err != nil {
+					return "", err
+				}
+				return a.ID, nil
 			},
 			create: func() (string, error) {
 				return CreatePendingApprovalFor(h.approvals, placeholderID, method, path, query, bodyHash, scope, rule)
@@ -1931,7 +1936,7 @@ func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, c
 				// the client's retry will pass.
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
-				json.NewEncoder(w).Encode(map[string]string{"error": "duckway_approval_pending", "message": "The approval was just granted. Retry the request.", "approval_id": ""})
+				json.NewEncoder(w).Encode(map[string]string{"error": "duckway_approval_pending", "message": "The approval was just granted. Retry the request.", "approval_id": id})
 				return false
 			}
 			return true

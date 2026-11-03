@@ -177,7 +177,11 @@
 
   function setActive(id, next, isUndo) {
     var ch = find(id);
-    if (!ch || state.busy[id]) return;
+    if (!ch || state.busy[id]) {
+      // An Undo that cannot run must say so (DW shows "Undo failed" when the undo rejects).
+      if (isUndo) return Promise.reject(new Error(!ch ? 'channel no longer exists' : 'channel is busy'));
+      return;
+    }
     var prev = !!ch.is_active;
     state.busy[id] = true;
     setStatus(id, 'Saving…');

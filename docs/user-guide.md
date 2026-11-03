@@ -148,7 +148,10 @@ does not list.
   upgrade. Settings, Gateway, "Request log retention (days)" shows "Keep forever
   (not set)"; set 7 to 3650 days (90 is a good start) and the hourly cleanup
   removes older rows. Held and ACL-denied requests are logged but excluded from
-  the Overview request and error totals.
+  the Overview request and error totals. Each client logs at most 30 distinct
+  denied requests per UTC minute; past that, one "[further denials suppressed
+  this minute]" row is written and the rest are dropped (the count resets on
+  restart).
 - Already-installed `duckway` clients keep working: they send no browser
   headers, and the admin API accepts such requests.
 

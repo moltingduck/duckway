@@ -329,3 +329,22 @@ func TestUsageSessions_Aggregates(t *testing.T) {
 		t.Errorf("openai row wrong: %+v", rows[1])
 	}
 }
+
+// Sessions use the same predicate as Overview and requests_7d: held, acl_denied and status-0 rows are not counted.
+func TestUsageSessions_ExcludesHeldDeniedAndStatusZero(t *testing.T) {
+	d := newUsageTestDeps(t)
+	_ = d.clientQ.Create(&models.Client{ID: "c1", Name: "laptop"})
+	_ = d.logQ.Log("c1", "", "anthropic", "POST", "/v1/messages", 200)
+	_ = d.logQ.Log("c1", "", "anthropic", "POST", "/v1/messages", 0)
+	_ = d.logQ.LogACLDenied("c1", "", "anthropic", "DELETE", "/v1/x")
+	_ = d.logQ.LogHeldOnce("c1", "", "anthropic", "POST", "/v1/messages", "ap1", true)
+	rec := httptest.NewRecorder()
+	d.h.Sessions(rec, httptest.NewRequest("GET", "/api/usage/sessions?hours=0", nil))
+	var rows []queries.SessionUsageRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Requests != 1 || rows[0].Errors != 0 {
+		t.Fatalf("sessions counted held/denied/status-0 rows: %+v", rows)
+	}
+}

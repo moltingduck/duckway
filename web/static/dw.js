@@ -413,6 +413,12 @@
     box.style.left = left + 'px';
     box.style.top = top + 'px';
   }
+  function termStatus(text) {
+    const r = document.getElementById('dw-term-status');
+    if (!r) return;
+    r.textContent = '';
+    if (text) window.setTimeout(() => { if (termPop || !text) r.textContent = text; }, 30);
+  }
   function closeTerm(returnFocus) {
     if (!termPop) return;
     const b = termBtn;
@@ -420,7 +426,7 @@
     termPop = null; termBtn = null;
     if (b) {
       b.setAttribute('aria-expanded', 'false');
-      b.removeAttribute('aria-describedby');
+      termStatus('');
       if (returnFocus && b.isConnected) b.focus();
     }
   }
@@ -431,7 +437,6 @@
     const pop = document.createElement('div');
     pop.className = 'term-pop';
     pop.id = uid('dw-term');
-    pop.setAttribute('role', 'tooltip');
     const h = document.createElement('strong');
     h.className = 'term-pop-title';
     h.textContent = t.term;
@@ -442,7 +447,10 @@
     document.body.appendChild(pop);
     termPop = pop; termBtn = btn;
     btn.setAttribute('aria-expanded', 'true');
-    btn.setAttribute('aria-describedby', pop.id);
+    // One live channel: the sr-only status region gets the definition; the visual popover is
+    // hidden from AT (and not referenced by aria-describedby) so it is not read twice.
+    pop.setAttribute('aria-hidden', 'true');
+    termStatus(t.term + ': ' + t.def);
     placeFixed(pop, btn, 6);
   }
   document.addEventListener('click', (e) => {

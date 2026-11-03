@@ -3,16 +3,60 @@ package queries
 import (
 	"database/sql"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
 
 type RequestLogQueries struct {
-	db *sql.DB
+	db  *sql.DB
+	now func() time.Time // injectable clock; nil means time.Now
+
+	deniedMu     sync.Mutex
+	deniedMinute int64          // UTC minute (Unix seconds / 60) the counters belong to
+	deniedCount  map[string]int // client ID -> denial rows stored (or attempted past the cap) this minute
 }
 
 func NewRequestLogQueries(db *sql.DB) *RequestLogQueries {
 	return &RequestLogQueries{db: db}
+}
+
+// SetClock replaces the clock used for the denial window (tests). Call before use.
+func (q *RequestLogQueries) SetClock(now func() time.Time) { q.now = now }
+
+func (q *RequestLogQueries) clock() time.Time {
+	if q.now != nil {
+		return q.now()
+	}
+	return time.Now()
+}
+
+// DeniedSuppressedPath is the path of the single marker row written when a client first
+// exceeds MaxACLDeniedRowsPerMinute in a UTC minute. Further denials that minute are dropped silently.
+const DeniedSuppressedPath = "[further denials suppressed this minute]"
+
+// admitDenied counts one new distinct denial for the client in the current UTC minute.
+// It reports whether the row may be stored, and whether this call is the one that trips the
+// cap (the caller then writes the marker row). The counters are in memory: they reset on
+// restart and are per process, which is acceptable for a log-volume guard.
+func (q *RequestLogQueries) admitDenied(clientID string, now time.Time) (admit, tripped bool) {
+	min := now.UTC().Unix() / 60
+	q.deniedMu.Lock()
+	defer q.deniedMu.Unlock()
+	if q.deniedCount == nil || q.deniedMinute != min {
+		q.deniedMinute = min
+		q.deniedCount = map[string]int{}
+	}
+	n := q.deniedCount[clientID]
+	if n < MaxACLDeniedRowsPerMinute {
+		q.deniedCount[clientID] = n + 1
+		return true, false
+	}
+	if n == MaxACLDeniedRowsPerMinute {
+		q.deniedCount[clientID] = n + 1
+		return false, true
+	}
+	return false, false
 }
 
 // Request decisions recorded in request_log.decision. Legacy rows are ”.
@@ -78,7 +122,8 @@ func utcFormat(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05"
 // bounded by the minute start, then an insert; a rare race may store two rows.
 func (q *RequestLogQueries) LogACLDenied(clientID, placeholderID, serviceName, method, path string) error {
 	path = TruncateLogPath(path)
-	minuteStart := utcFormat(time.Now().Truncate(time.Minute))
+	now := q.clock()
+	minuteStart := utcFormat(now.Truncate(time.Minute))
 	var existing int64
 	var err error
 	if placeholderID == "" {
@@ -94,14 +139,14 @@ func (q *RequestLogQueries) LogACLDenied(clientID, placeholderID, serviceName, m
 	if err != sql.ErrNoRows {
 		return err
 	}
-	// Per-client cap: a client probing many different paths cannot write more
-	// than MaxACLDeniedRowsPerMinute denial rows in one UTC minute.
-	var inMinute int
-	if err := q.db.QueryRow(`SELECT COUNT(*) FROM request_log WHERE decision = ? AND client_id = ? AND created_at >= ?`,
-		DecisionACLDenied, clientID, minuteStart).Scan(&inMinute); err != nil {
-		return err
+	// Per-client cap: a client probing many different paths cannot write more than
+	// MaxACLDeniedRowsPerMinute denial rows in one UTC minute. When the cap trips, one marker
+	// row (DeniedSuppressedPath) records that more denials were dropped.
+	admit, tripped := q.admitDenied(clientID, now)
+	if tripped {
+		return q.LogDecision(clientID, placeholderID, serviceName, method, DeniedSuppressedPath, 403, DecisionACLDenied, "")
 	}
-	if inMinute >= MaxACLDeniedRowsPerMinute {
+	if !admit {
 		return nil
 	}
 	return q.LogDecision(clientID, placeholderID, serviceName, method, path, 403, DecisionACLDenied, "")
@@ -676,9 +721,14 @@ func (q *RequestLogQueries) SessionUsageWindow(w UsageWindow) ([]SessionUsageRow
 func (q *RequestLogQueries) sessionUsage(sinceHours int, w *UsageWindow) ([]SessionUsageRow, error) {
 	where := ""
 	cond, args := usageCutoffs("r.created_at", sinceHours, w)
+	// Same predicate as the Overview and requests_7d: held and denied attempts never reached upstream.
+	counted := `r.decision NOT IN ('held', 'acl_denied') AND (r.status_code IS NULL OR r.status_code <> 0)`
 	if cond != "" {
-		where = "WHERE " + cond
+		cond += " AND " + counted
+	} else {
+		cond = counted
 	}
+	where = "WHERE " + cond
 	query := `
 		SELECT r.client_id,
 		       COALESCE(c.name, ''),
