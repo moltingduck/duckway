@@ -154,3 +154,69 @@ func TestRegenerateEndpointRejectsWithoutEmailAndKeepsTokens(t *testing.T) {
 		t.Fatalf("tokens=%d, want 1 kept", n)
 	}
 }
+
+func TestCanaryOverviewExclusionByIDUnreadableAndOrder(t *testing.T) {
+	s, shared := newClientDetailServer(t)
+	seedDetailClient(t, s, "c1", "bravo", "tok1")
+	seedDetailClient(t, s, "c2", "Alpha", "tok2")
+	seedDetailClient(t, s, "c3", "charlie", "tok3")
+	if rec := svcDo(s, shared, http.MethodPost, "/api/canary/settings", `{"email":"a@b.co","exclude_clients":["c3"]}`, true); rec.Code != 200 {
+		t.Fatalf("save=%d", rec.Code)
+	}
+	type ovT struct {
+		Unreadable bool `json:"exclusion_unreadable"`
+		Clients    []struct {
+			Name     string `json:"name"`
+			ClientID string `json:"client_id"`
+			Excluded bool   `json:"excluded"`
+		} `json:"clients"`
+	}
+	get := func() ovT {
+		rec := svcDo(s, shared, http.MethodGet, "/api/canary/overview", "", true)
+		if rec.Code != 200 || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("overview=%d cache=%q", rec.Code, rec.Header().Get("Cache-Control"))
+		}
+		var o ovT
+		if err := json.Unmarshal(rec.Body.Bytes(), &o); err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	o := get()
+	if len(o.Clients) != 3 || o.Clients[0].Name != "Alpha" || o.Clients[1].Name != "bravo" {
+		t.Fatalf("want case-insensitive name order, got %+v", o.Clients)
+	}
+	for _, c := range o.Clients {
+		if c.Excluded != (c.ClientID == "c3") {
+			t.Fatalf("exclusion by ID: %+v", c)
+		}
+	}
+	svcExec(t, s, `UPDATE canary_settings SET exclude_clients = 'not json' WHERE id = 'default'`)
+	if o := get(); !o.Unreadable {
+		t.Fatal("unparseable exclusion list must be surfaced")
+	}
+}
+
+func TestCanaryGenerateExcludedIs409AndResponsesNoStore(t *testing.T) {
+	s, shared := newClientDetailServer(t)
+	seedDetailClient(t, s, "c1", "alpha", "tok1")
+	svcExec(t, s, `INSERT INTO canary_tokens (id, client_id, token_type, canary_token, auth_token, token_value, memo, deploy_path, deploy_content) VALUES ('t1','c1','dns','','','v','m','.x/a','c')`)
+	if rec := svcDo(s, shared, http.MethodPost, "/api/canary/settings", `{"email":"a@b.co","exclude_clients":["c1"]}`, true); rec.Code != 200 {
+		t.Fatal(rec.Code)
+	}
+	rec := svcDo(s, shared, http.MethodPost, "/api/canary/clients/c1/generate?name=alpha", "", true)
+	if rec.Code != http.StatusConflict || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("excluded => %d cache=%q %s", rec.Code, rec.Header().Get("Cache-Control"), rec.Body.String())
+	}
+	// canary_enabled=false is enforced server-side too
+	svcExec(t, s, `UPDATE canary_settings SET exclude_clients = '[]' WHERE id = 'default'`)
+	svcExec(t, s, `UPDATE clients SET canary_enabled = 0 WHERE id = 'c1'`)
+	rec = svcDo(s, shared, http.MethodPost, "/api/canary/clients/c1/generate?name=alpha", "", true)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("canary disabled => %d %s", rec.Code, rec.Body.String())
+	}
+	rec = svcDo(s, shared, http.MethodGet, "/api/canary/clients/c1", "", true)
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("token list cache=%q", rec.Header().Get("Cache-Control"))
+	}
+}

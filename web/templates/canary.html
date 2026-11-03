@@ -12,6 +12,10 @@
   <a href="#cn-settings" data-action="cnOpenSettings">Settings</a>. Notification channels do not receive canary alerts.
 </div>
 
+<div id="cn-exclusion-warn" class="cn-warn" role="alert" hidden>
+  <strong>Exclusion list unreadable.</strong> The stored exclusion list is not valid JSON, so no client is treated as excluded and generation is refused. Save the canary settings again to repair it.
+</div>
+
 <div class="cn-layout">
   <div class="cn-main">
     <section class="card cn-card" aria-labelledby="cn-fleet-h">
@@ -111,7 +115,8 @@
   var $ = function(id) { return document.getElementById(id); };
   var fleet = [];          // overview rows
   var byId = {};           // client id -> row
-  var alertConfigured = true;
+  var alertConfigured = null;   // null = not known yet: actions stay disabled
+  var tokensLoaded = false;
   var selected = null;     // selected client id
   var selTokens = [];
   var pending = null;      // confirm callback info
@@ -120,6 +125,7 @@
   var enabledTypes = [];
   var excluded = [];       // excluded client names
   var settingsLoaded = false;
+  var exclusionUnreadable = false;
 
   function api(method, url) {
     return fetch(url, {method: method, credentials: 'same-origin'}).then(function(r) {
@@ -159,6 +165,8 @@
       byId = {}; fleet.forEach(function(c) { byId[c.client_id] = c; });
       alertConfigured = !!d.alert_configured;
       $('cn-warn').hidden = alertConfigured;
+      exclusionUnreadable = !!d.exclusion_unreadable;
+      $('cn-exclusion-warn').hidden = !exclusionUnreadable;
       renderFleet();
       if (selected && !$('cn-detail').hidden) renderTokens();
       renderExclude();
@@ -176,6 +184,8 @@
   function selectClient(id, focus) {
     var c = byId[id]; if (!c) return;
     selected = id;
+    selTokens = []; tokensLoaded = false;
+    DW.setHTML($('cn-tokens'), DW.html`<p class="text-sm text-muted">Loading tokens…</p>`);
     $('cn-detail').hidden = false;
     $('cn-detail-h').textContent = c.name;
     renderFleet();
@@ -184,10 +194,11 @@
   }
   function loadTokens() {
     var id = selected, st = $('cn-detail-state');
+    tokensLoaded = false;
     st.textContent = 'Loading tokens…';
     return api('GET', '/api/canary/clients/' + encodeURIComponent(id)).then(function(tokens) {
       if (id !== selected) return;
-      selTokens = tokens || [];
+      selTokens = tokens || []; tokensLoaded = true;
       st.textContent = '';
       renderTokens();
     }).catch(function(e) {
@@ -200,9 +211,11 @@
 
   function renderTokens() {
     var box = $('cn-tokens');
+    if (!tokensLoaded) { DW.setHTML(box, DW.html`<p class="text-sm text-muted">Loading tokens…</p>`); return; }
+    var canAct = alertConfigured === true;
     if (!selTokens.length) {
-      var why = alertConfigured ? '' : DW.html`<p class="text-sm cn-inline-warn">No alert email is set, so generating will create nothing.</p>`;
-      DW.setHTML(box, DW.html`<p class="text-sm text-muted">No canary tokens deployed for this client.</p>${why}<div class="cn-btnrow"><button type="button" class="btn btn-primary" data-action="cnGenerate"${alertConfigured ? '' : DW.raw(' disabled aria-describedby="cn-noalert-why"')}>Generate tokens</button></div>`);
+      var why = canAct ? '' : DW.html`<p class="text-sm cn-inline-warn" id="cn-noalert-why">${alertConfigured === null ? 'Checking whether an alert email is set…' : 'No alert email is set, so generating will create nothing.'}</p>`;
+      DW.setHTML(box, DW.html`<p class="text-sm text-muted">No canary tokens deployed for this client.</p>${why}<div class="cn-btnrow"><button type="button" class="btn btn-primary" data-action="cnGenerate"${canAct ? '' : DW.raw(' disabled aria-describedby="cn-noalert-why"')}>Generate tokens</button></div>`);
       return;
     }
     var rows = selTokens.map(function(t) {
@@ -212,19 +225,21 @@
         : DW.html`<span class="mono text-sm text-muted">${short}</span>`;
       return DW.html`<tr><td><span class="badge badge-blue">${t.token_type}</span></td><td>${link}</td><td class="mono text-sm">~/${t.deploy_path}</td><td class="text-sm text-muted">${t.created_at}</td><td class="cn-act"><button type="button" class="btn btn-sm btn-danger" data-action="cnDeleteToken" data-token-id="${t.id}">Delete<span class="cn-sr"> ${t.token_type}</span></button></td></tr>`;
     });
-    DW.setHTML(box, DW.html`<div class="table-wrap"><table class="cn-table"><thead><tr><th scope="col">Type</th><th scope="col">Token ID</th><th scope="col">Deploy path</th><th scope="col">Created</th><th scope="col"><span class="cn-sr">Action</span></th></tr></thead><tbody>${rows}</tbody></table></div><div class="cn-btnrow"><button type="button" class="btn" data-action="cnRegenAll"${alertConfigured ? '' : DW.raw(' disabled aria-describedby="cn-noalert-why"')}>Regenerate all</button><button type="button" class="btn btn-danger" data-action="cnDeleteAll">Delete all</button></div>${alertConfigured ? '' : DW.html`<p class="text-sm cn-inline-warn" id="cn-noalert-why">Regenerate is disabled until an alert email is set under Settings: without it no new tokens could be created, and the current ones are kept. Deleting stays available.</p>`}`);
+    DW.setHTML(box, DW.html`<div class="table-wrap"><table class="cn-table"><thead><tr><th scope="col">Type</th><th scope="col">Token ID</th><th scope="col">Deploy path</th><th scope="col">Created</th><th scope="col"><span class="cn-sr">Action</span></th></tr></thead><tbody>${rows}</tbody></table></div><div class="cn-btnrow"><button type="button" class="btn" data-action="cnRegenAll"${canAct ? '' : DW.raw(' disabled aria-describedby="cn-noalert-why"')}>Regenerate all</button><button type="button" class="btn btn-danger" data-action="cnDeleteAll">Delete all</button></div>${canAct ? '' : DW.html`<p class="text-sm cn-inline-warn" id="cn-noalert-why">Regenerate is disabled until an alert email is set under Settings: without it no new tokens could be created, and the current ones are kept. Deleting stays available.</p>`}`);
   }
 
   function setDetailState(msg) { $('cn-detail-state').textContent = msg; }
 
-  DW.actions.cnGenerate = function() { if (alertConfigured) doGenerate(); };
+  DW.actions.cnGenerate = function() { if (alertConfigured === true && tokensLoaded) doGenerate(); };
   function doGenerate() {
     var id = selected, c = byId[id]; if (!c) return Promise.resolve();
     setDetailState('Generating tokens… this may take a moment');
-    return api('POST', '/api/canary/clients/' + encodeURIComponent(id) + '/generate?name=' + encodeURIComponent(c.name)).then(function(tokens) {
-      var n = (tokens || []).length;
+    return api('POST', '/api/canary/clients/' + encodeURIComponent(id) + '/generate?name=' + encodeURIComponent(c.name)).then(function(d) {
+      var n = (d && d.created) || 0;
       var msg = n ? ('Generated ' + n + ' tokens') : 'No tokens were created. Check that an alert email is set.';
-      setDetailState(msg); DW.toast(msg, n ? 'success' : 'error');
+      if (d && d.failed_types > 0) msg += '. ' + d.failed_types + ' types could not be regenerated; their existing tokens were kept';
+      if (d && d.delete_failed > 0) msg += '. ' + d.delete_failed + ' old tokens could not be removed from canarytokens.org and were kept';
+      setDetailState(msg); DW.toast(msg, n && !(d.failed_types > 0 || d.delete_failed > 0) ? 'success' : 'error');
       return Promise.all([loadFleet(), id === selected ? loadTokens() : null]);
     });
   }
@@ -243,8 +258,11 @@
     $('cn-confirm-cancel').focus();
   }
   function closeConfirm() {
-    DW.modal.close('#cn-confirm');
+    var m = $('cn-confirm');
+    var stillOpen = !m.hidden && m.style.display !== 'none';
     pending = null;
+    if (!stillOpen) return; // dismissed already: DW.modal restored focus itself
+    DW.modal.close('#cn-confirm');
     if (lastFocus && document.contains(lastFocus)) lastFocus.focus(); else if (selected) $('cn-detail').focus();
   }
   DW.actions.cnConfirmGo = function() {
@@ -259,7 +277,7 @@
   };
 
   DW.actions.cnRegenAll = function() {
-    var c = byId[selected]; if (!c || !alertConfigured) return;
+    var c = byId[selected]; if (!c || alertConfigured !== true || !tokensLoaded) return;
     var n = selTokens.length;
     openConfirm({
       title: 'Regenerate all tokens?',

@@ -1,16 +1,17 @@
 package services
 
 import (
-	"errors"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -26,7 +27,7 @@ type CanaryTokenType struct {
 	Category       string // "api" = canarytokens.org, "local" = self-generated
 	DeployMode     string // "create" (default), "append" = merge with existing file, "bak" = always use .bak
 	DeployPath     string
-	DefaultEnabled bool   // true = enabled by default in settings
+	DefaultEnabled bool // true = enabled by default in settings
 	FormatFn       func(resp canaryResponse, hostname string) string
 }
 
@@ -404,6 +405,7 @@ type canaryResponse struct {
 type CanaryService struct {
 	canaryQ *queries.CanaryQueries
 	client  *http.Client
+	locks   sync.Map // clientID -> *sync.Mutex
 }
 
 func NewCanaryService(canaryQ *queries.CanaryQueries) *CanaryService {
@@ -413,46 +415,105 @@ func NewCanaryService(canaryQ *queries.CanaryQueries) *CanaryService {
 	}
 }
 
+// clientLock serialises token generation for one client so concurrent
+// generate/regenerate calls cannot duplicate tokens or delete each other's
+// fresh tokens.
+func (s *CanaryService) clientLock(clientID string) func() {
+	m, _ := s.locks.LoadOrStore(clientID, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// ErrCanaryClientExcluded means the client is on the exclusion list or has
+// canary_enabled=false, so no tokens may be generated for it.
+var ErrCanaryClientExcluded = errors.New("this client is excluded from canary tokens or has canary disabled")
+
+// ErrCanaryExclusionUnreadable means the stored exclusion list is not valid
+// JSON, so exclusion cannot be evaluated; generation is refused (fail closed).
+var ErrCanaryExclusionUnreadable = errors.New("canary exclusion list is unreadable; fix it in the canary settings")
+
+// CanaryExcluded reports whether a client matches the exclusion list by name
+// or ID. A non-empty list that fails to parse returns an error.
+func CanaryExcluded(excludeJSON, clientName, clientID string) (bool, error) {
+	if strings.TrimSpace(excludeJSON) == "" {
+		return false, nil
+	}
+	var list []string
+	if err := json.Unmarshal([]byte(excludeJSON), &list); err != nil {
+		return false, ErrCanaryExclusionUnreadable
+	}
+	for _, ex := range list {
+		if ex == clientName || ex == clientID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // GenerateForClient creates canary tokens for a client based on settings.
-// Called automatically on client registration unless the client is excluded
-// or has canary_enabled=false.
+// Called automatically on client registration. Excluded or canary-disabled
+// clients are skipped silently.
 func (s *CanaryService) GenerateForClient(clientID, clientName, shortID string) error {
-	// Skip if tokens already exist for this client
-	existing, _ := s.canaryQ.ListByClient(clientID)
+	unlock := s.clientLock(clientID)
+	defer unlock()
+	existing, err := s.canaryQ.ListByClient(clientID)
+	if err != nil {
+		return fmt.Errorf("list tokens: %w", err)
+	}
 	if len(existing) > 0 {
 		return nil
 	}
-	return s.generateForClientInner(clientID, clientName, shortID)
-}
-
-func (s *CanaryService) generateForClientInner(clientID, clientName, shortID string) error {
 	settings, err := s.canaryQ.GetSettings()
 	if err != nil {
 		return fmt.Errorf("get settings: %w", err)
 	}
-
 	if settings.Email == "" {
 		return nil
 	}
-
-	// Build per-client tagged email: user+shortid@gmail.com
-	email := tagEmail(settings.Email, shortID)
-
-	// Check exclude list
-	var excludeList []string
-	if settings.ExcludeClients != "" {
-		json.Unmarshal([]byte(settings.ExcludeClients), &excludeList)
-	}
-	for _, ex := range excludeList {
-		if ex == clientName || ex == clientID {
+	if err := s.checkEligible(settings, clientID, clientName); err != nil {
+		if errors.Is(err, ErrCanaryClientExcluded) {
 			log.Printf("Client %s is excluded from canary tokens", clientName)
 			return nil
 		}
+		return err
 	}
+	_, err = s.generateForClientInner(settings, clientID, clientName, shortID)
+	return err
+}
 
-	// Get enabled types (default: types with DefaultEnabled=true)
+func (s *CanaryService) checkEligible(settings *queries.CanarySettings, clientID, clientName string) error {
+	excluded, err := CanaryExcluded(settings.ExcludeClients, clientName, clientID)
+	if err != nil {
+		return err
+	}
+	if excluded {
+		return ErrCanaryClientExcluded
+	}
+	enabled, found, err := s.canaryQ.ClientCanaryEnabled(clientID)
+	if err != nil {
+		return fmt.Errorf("get client: %w", err)
+	}
+	if found && !enabled {
+		return ErrCanaryClientExcluded
+	}
+	return nil
+}
+
+type canaryGenResult struct {
+	Created     []queries.CanaryToken
+	FailedTypes []string
+}
+
+// generateForClientInner creates one token per enabled type. The caller holds
+// the client lock and has validated settings and eligibility.
+func (s *CanaryService) generateForClientInner(settings *queries.CanarySettings, clientID, clientName, shortID string) (canaryGenResult, error) {
+	var res canaryGenResult
+	email := tagEmail(settings.Email, shortID)
+
 	var enabledTypes []string
 	if err := json.Unmarshal([]byte(settings.EnabledTypes), &enabledTypes); err != nil || len(enabledTypes) == 0 {
+		enabledTypes = nil
 		for _, t := range SupportedCanaryTypes {
 			if t.DefaultEnabled {
 				enabledTypes = append(enabledTypes, t.Type)
@@ -465,17 +526,21 @@ func (s *CanaryService) generateForClientInner(clientID, clientName, shortID str
 		if tokenType == nil {
 			continue
 		}
-
 		memo := fmt.Sprintf("duckway-canary/%s/%s", clientName, typeName)
-
+		var ct *queries.CanaryToken
+		var err error
 		if tokenType.Category == "api" {
-			s.generateAPIToken(tokenType, clientID, clientName, email, memo)
+			ct, err = s.generateAPIToken(tokenType, clientID, clientName, email, memo)
 		} else {
-			s.generateLocalToken(tokenType, clientID, clientName, email, memo)
+			ct, err = s.generateLocalToken(tokenType, clientID, clientName, email, memo)
 		}
+		if err != nil {
+			res.FailedTypes = append(res.FailedTypes, typeName)
+			continue
+		}
+		res.Created = append(res.Created, *ct)
 	}
-
-	return nil
+	return res, nil
 }
 
 // ErrCanaryNoAlertEmail is returned by RegenerateForClient when no alert email
@@ -483,59 +548,81 @@ func (s *CanaryService) generateForClientInner(clientID, clientName, shortID str
 var ErrCanaryNoAlertEmail = errors.New("no canary alert email is set; existing tokens were kept")
 
 // ErrCanaryNothingGenerated means generation produced no new tokens (for
-// example canarytokens.org was unreachable or the client is excluded).
+// example canarytokens.org was unreachable).
 var ErrCanaryNothingGenerated = errors.New("no new canary tokens could be generated; existing tokens were kept")
 
-// RegenerateForClient generates a fresh set of tokens and only then deletes the
-// previous ones, so a failed generation never leaves the client unprotected.
-func (s *CanaryService) RegenerateForClient(clientID, clientName, shortID string) error {
+// RegenerateResult reports what a regenerate run did.
+type RegenerateResult struct {
+	Created      int `json:"created"`
+	Replaced     int `json:"replaced"`      // old tokens removed
+	FailedTypes  int `json:"failed_types"`  // types that could not be regenerated; their old tokens were kept
+	DeleteFailed int `json:"delete_failed"` // old tokens kept because the remote delete failed
+}
+
+// RegenerateForClient generates fresh tokens and then deletes only the old
+// tokens of the types that got a fresh replacement. Each old token is deleted
+// from canarytokens.org first and its DB row removed only after that succeeds,
+// so a failure never leaves a live remote token the DB no longer tracks.
+func (s *CanaryService) RegenerateForClient(clientID, clientName, shortID string) (RegenerateResult, error) {
+	var out RegenerateResult
+	unlock := s.clientLock(clientID)
+	defer unlock()
 	settings, err := s.canaryQ.GetSettings()
 	if err != nil {
-		return fmt.Errorf("get settings: %w", err)
+		return out, fmt.Errorf("get settings: %w", err)
 	}
 	if settings.Email == "" {
-		return ErrCanaryNoAlertEmail
+		return out, ErrCanaryNoAlertEmail
+	}
+	if err := s.checkEligible(settings, clientID, clientName); err != nil {
+		return out, err
 	}
 	old, err := s.canaryQ.ListByClient(clientID)
 	if err != nil {
-		return fmt.Errorf("list tokens: %w", err)
+		return out, fmt.Errorf("list tokens: %w", err)
 	}
-	if err := s.generateForClientInner(clientID, clientName, shortID); err != nil {
-		return err
-	}
-	oldIDs := map[string]bool{}
-	for _, t := range old {
-		oldIDs[t.ID] = true
-	}
-	all, err := s.canaryQ.ListByClient(clientID)
+	res, err := s.generateForClientInner(settings, clientID, clientName, shortID)
 	if err != nil {
-		return fmt.Errorf("list tokens: %w", err)
+		return out, err
 	}
-	fresh := 0
-	for _, t := range all {
-		if !oldIDs[t.ID] {
-			fresh++
-		}
+	out.Created = len(res.Created)
+	out.FailedTypes = len(res.FailedTypes)
+	if out.Created == 0 {
+		return out, ErrCanaryNothingGenerated
 	}
-	if fresh == 0 {
-		return ErrCanaryNothingGenerated
+	fresh := map[string]bool{}
+	for _, t := range res.Created {
+		fresh[t.TokenType] = true
 	}
 	for _, t := range old {
+		if !fresh[t.TokenType] {
+			continue
+		}
 		if err := s.DeleteRemoteToken(t.CanaryToken, t.AuthToken); err != nil {
-			log.Printf("Warning: failed to delete remote canary token %s: %v", t.CanaryToken, err)
+			log.Printf("Warning: kept canary token %s (%s): remote delete failed: %v", t.ID, t.TokenType, err)
+			out.DeleteFailed++
+			continue
 		}
 		if err := s.canaryQ.DeleteByID(t.ID); err != nil {
-			return fmt.Errorf("delete old token: %w", err)
+			return out, fmt.Errorf("delete old token: %w", err)
 		}
+		out.Replaced++
 	}
-	return nil
+	return out, nil
 }
 
-func (s *CanaryService) generateAPIToken(tokenType *CanaryTokenType, clientID, clientName, email, memo string) {
+// discardRemote best-effort deletes a remote token that could not be saved.
+func (s *CanaryService) discardRemote(resp *canaryResponse) {
+	if err := s.DeleteRemoteToken(resp.Token, resp.AuthToken); err != nil {
+		log.Printf("Warning: could not remove unsaved remote canary token %s: %v", resp.Token, err)
+	}
+}
+
+func (s *CanaryService) generateAPIToken(tokenType *CanaryTokenType, clientID, clientName, email, memo string) (*queries.CanaryToken, error) {
 	resp, err := s.createToken(tokenType.Type, email, memo)
 	if err != nil {
 		log.Printf("Failed to create canary token %s for %s: %v", tokenType.Type, clientName, err)
-		return
+		return nil, err
 	}
 
 	tokenValue := resp.TokenValue
@@ -568,17 +655,19 @@ func (s *CanaryService) generateAPIToken(tokenType *CanaryTokenType, clientID, c
 
 	if err := s.canaryQ.Create(ct); err != nil {
 		log.Printf("Failed to save canary token: %v", err)
-	} else {
-		log.Printf("Created canary token %s for client %s", tokenType.Type, clientName)
+		s.discardRemote(resp)
+		return nil, err
 	}
+	log.Printf("Created canary token %s for client %s", tokenType.Type, clientName)
+	return ct, nil
 }
 
-func (s *CanaryService) generateLocalToken(tokenType *CanaryTokenType, clientID, clientName, email, memo string) {
+func (s *CanaryService) generateLocalToken(tokenType *CanaryTokenType, clientID, clientName, email, memo string) (*queries.CanaryToken, error) {
 	// For local types, we first create a DNS canary token to get a hostname for embedding
 	resp, err := s.createToken("dns", email, memo)
 	if err != nil {
 		log.Printf("Failed to create DNS canary for %s/%s: %v", clientName, tokenType.Type, err)
-		return
+		return nil, err
 	}
 
 	deployContent := ""
@@ -601,9 +690,11 @@ func (s *CanaryService) generateLocalToken(tokenType *CanaryTokenType, clientID,
 
 	if err := s.canaryQ.Create(ct); err != nil {
 		log.Printf("Failed to save local canary token: %v", err)
-	} else {
-		log.Printf("Created local canary token %s for client %s (DNS: %s)", tokenType.Type, clientName, resp.Hostname)
+		s.discardRemote(resp)
+		return nil, err
 	}
+	log.Printf("Created local canary token %s for client %s (DNS: %s)", tokenType.Type, clientName, resp.Hostname)
+	return ct, nil
 }
 
 const canaryDeleteAPI = "https://canarytokens.org/d3aece8093b71007b5ccfedad91ebb11/delete"

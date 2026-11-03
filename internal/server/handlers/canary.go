@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -91,6 +92,7 @@ func (h *CanaryHandler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 // Admin: list canary tokens for a client with management URLs
 func (h *CanaryHandler) ListByClient(w http.ResponseWriter, r *http.Request) {
 	clientID := r.PathValue("clientId")
+	w.Header().Set("Cache-Control", "no-store")
 	tokens, err := h.canaryQ.ListByClient(clientID)
 	if err != nil {
 		jsonError(w, "failed to list canary tokens", http.StatusInternalServerError)
@@ -142,22 +144,28 @@ func (h *CanaryHandler) Overview(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to load overview", http.StatusInternalServerError)
 		return
 	}
-	var excluded []string
-	_ = json.Unmarshal([]byte(settings.ExcludeClients), &excluded)
-	ex := map[string]bool{}
-	for _, n := range excluded {
-		ex[n] = true
-	}
 	type row struct {
 		queries.CanaryClientOverview
 		Excluded bool `json:"excluded"`
 	}
+	// Exclusion matches by client name OR ID, exactly like the service. An
+	// unreadable list is logged and surfaced instead of silently ignored.
+	exclusionUnreadable := false
 	rows := make([]row, 0, len(clients))
 	for _, c := range clients {
-		rows = append(rows, row{CanaryClientOverview: c, Excluded: ex[c.Name]})
+		excluded, exErr := services.CanaryExcluded(settings.ExcludeClients, c.Name, c.ClientID)
+		if exErr != nil {
+			exclusionUnreadable = true
+		}
+		rows = append(rows, row{CanaryClientOverview: c, Excluded: excluded})
 	}
+	if exclusionUnreadable {
+		log.Printf("canary overview: exclude_clients is not valid JSON; exclusion list unreadable")
+	}
+	w.Header().Set("Cache-Control", "no-store")
 	jsonResponse(w, map[string]interface{}{
 		"alert_configured":     settings.Email != "",
+		"exclusion_unreadable": exclusionUnreadable,
 		"last_triggered_known": false,
 		"clients":              rows,
 	})
@@ -205,21 +213,44 @@ func (h *CanaryHandler) GenerateForClient(w http.ResponseWriter, r *http.Request
 	}
 
 	shortID := r.URL.Query().Get("short_id")
-	if err := h.service.RegenerateForClient(clientID, clientName, shortID); err != nil {
-		if errors.Is(err, services.ErrCanaryNoAlertEmail) {
+	w.Header().Set("Cache-Control", "no-store")
+	res, err := h.service.RegenerateForClient(clientID, clientName, shortID)
+	if err != nil {
+		switch {
+		case errors.Is(err, services.ErrCanaryNoAlertEmail), errors.Is(err, services.ErrCanaryClientExcluded),
+			errors.Is(err, services.ErrCanaryExclusionUnreadable):
 			jsonError(w, err.Error(), http.StatusConflict)
-			return
-		}
-		if errors.Is(err, services.ErrCanaryNothingGenerated) {
+		case errors.Is(err, services.ErrCanaryNothingGenerated):
 			jsonError(w, err.Error(), http.StatusBadGateway)
-			return
+		default:
+			log.Printf("canary generate failed for client %s: %v", clientID, err)
+			jsonError(w, "failed to generate canary tokens", http.StatusInternalServerError)
 		}
-		jsonError(w, "failed to generate canary tokens: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	tokens, _ := h.canaryQ.ListByClient(clientID)
-	jsonResponse(w, maskedCanaryTokens(tokens))
+	tokens, err := h.canaryQ.ListByClient(clientID)
+	if err != nil {
+		log.Printf("canary generate: list tokens for client %s: %v", clientID, err)
+		jsonError(w, "tokens were generated but the list could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	view := maskedCanaryTokens(tokens)
+	for i, t := range tokens {
+		view[i].ManageURL = services.ManageURL(t.CanaryToken, t.AuthToken)
+	}
+	var notice string
+	if res.FailedTypes > 0 {
+		notice = fmt.Sprintf("%d types could not be regenerated; their existing tokens were kept", res.FailedTypes)
+	}
+	jsonResponse(w, map[string]interface{}{
+		"tokens":        view,
+		"created":       res.Created,
+		"replaced":      res.Replaced,
+		"failed_types":  res.FailedTypes,
+		"delete_failed": res.DeleteFailed,
+		"notice":        notice,
+	})
 }
 
 // Client: get canary tokens to deploy.

@@ -13,9 +13,9 @@ type CanaryToken struct {
 	ClientID      string  `json:"client_id"`
 	TokenType     string  `json:"token_type"`
 	CanaryToken   string  `json:"canary_token"` // canarytokens.org token ID
-	AuthToken     string  `json:"auth_token"`    // canarytokens.org auth token (needed for management)
-	TokenValue    string  `json:"token_value"`   // the fake credential value
-	SecretValue   *string `json:"secret_value"`  // secondary value (e.g., AWS secret key)
+	AuthToken     string  `json:"auth_token"`   // canarytokens.org auth token (needed for management)
+	TokenValue    string  `json:"token_value"`  // the fake credential value
+	SecretValue   *string `json:"secret_value"` // secondary value (e.g., AWS secret key)
 	Memo          string  `json:"memo"`
 	DeployPath    string  `json:"deploy_path"`    // where client should place it
 	DeployContent string  `json:"deploy_content"` // file content to write
@@ -122,7 +122,7 @@ func (q *CanaryQueries) Overview() ([]CanaryClientOverview, error) {
 	rows, err := q.db.Query(`SELECT c.id, c.name, c.canary_enabled, COUNT(t.id), COALESCE(MAX(t.created_at), '')
 		FROM clients c LEFT JOIN canary_tokens t ON t.client_id = c.id
 		WHERE c.id NOT IN (SELECT client_id FROM client_drafts)
-		GROUP BY c.id, c.name, c.canary_enabled ORDER BY c.name COLLATE NOCASE, c.id`)
+		GROUP BY c.id, c.name, c.canary_enabled ORDER BY LOWER(c.name), c.name, c.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -136,4 +136,17 @@ func (q *CanaryQueries) Overview() ([]CanaryClientOverview, error) {
 		out = append(out, o)
 	}
 	return out, rows.Err()
+}
+
+// ClientCanaryEnabled returns the client's canary_enabled flag; found is false
+// when no such client row exists.
+func (q *CanaryQueries) ClientCanaryEnabled(clientID string) (enabled, found bool, err error) {
+	err = q.db.QueryRow("SELECT canary_enabled FROM clients WHERE id = ?", clientID).Scan(&enabled)
+	if err == sql.ErrNoRows {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	return enabled, true, nil
 }
