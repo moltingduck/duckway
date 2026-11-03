@@ -3,6 +3,7 @@ package queries
 import (
 	"database/sql"
 	"strings"
+	"time"
 )
 
 type RequestLogQueries struct {
@@ -13,14 +14,28 @@ func NewRequestLogQueries(db *sql.DB) *RequestLogQueries {
 	return &RequestLogQueries{db: db}
 }
 
+// Request decisions recorded in request_log.decision. Legacy rows are ”.
+const (
+	DecisionAllowed         = "allowed"
+	DecisionApprovedForward = "approved_forward"
+	DecisionACLDenied       = "acl_denied"
+	DecisionHeld            = "held"
+)
+
 func (q *RequestLogQueries) Log(clientID, placeholderID, serviceName, method, path string, statusCode int) error {
+	return q.LogDecision(clientID, placeholderID, serviceName, method, path, statusCode, DecisionAllowed, "")
+}
+
+// LogDecision inserts a row with an explicit gateway decision. approvalID is
+// only meaningful for held rows ("" otherwise).
+func (q *RequestLogQueries) LogDecision(clientID, placeholderID, serviceName, method, path string, statusCode int, decision, approvalID string) error {
 	var phID interface{}
 	if placeholderID != "" {
 		phID = placeholderID
 	}
 	_, err := q.db.Exec(
-		"INSERT INTO request_log (client_id, placeholder_id, service_name, method, path, status_code) VALUES (?, ?, ?, ?, ?, ?)",
-		clientID, phID, serviceName, method, path, statusCode,
+		"INSERT INTO request_log (client_id, placeholder_id, service_name, method, path, status_code, decision, approval_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		clientID, phID, serviceName, method, path, statusCode, decision, approvalID,
 	)
 	return err
 }
@@ -28,14 +43,19 @@ func (q *RequestLogQueries) Log(clientID, placeholderID, serviceName, method, pa
 // LogWithReturn inserts a row and returns its auto-incremented id, so callers
 // that capture details can attach them to the same log entry.
 func (q *RequestLogQueries) LogWithReturn(clientID, placeholderID, serviceName, method, path string, statusCode int) (int64, error) {
+	return q.LogWithReturnDecision(clientID, placeholderID, serviceName, method, path, statusCode, DecisionAllowed)
+}
+
+// LogWithReturnDecision is LogWithReturn with an explicit decision.
+func (q *RequestLogQueries) LogWithReturnDecision(clientID, placeholderID, serviceName, method, path string, statusCode int, decision string) (int64, error) {
 	var phID interface{}
 	if placeholderID != "" {
 		phID = placeholderID
 	}
 	var id int64
 	err := q.db.QueryRow(
-		"INSERT INTO request_log (client_id, placeholder_id, service_name, method, path, status_code) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
-		clientID, phID, serviceName, method, path, statusCode,
+		"INSERT INTO request_log (client_id, placeholder_id, service_name, method, path, status_code, decision) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+		clientID, phID, serviceName, method, path, statusCode, decision,
 	).Scan(&id)
 	if err != nil {
 		return 0, err
@@ -184,6 +204,10 @@ type RequestLogEntry struct {
 	RequiresApproval bool `json:"requires_approval"`
 	// DurationMs is only known when detail capture recorded this request.
 	DurationMs *int64 `json:"duration_ms"`
+	// Decision is the gateway decision: "" (legacy), allowed, approved_forward,
+	// acl_denied or held. ApprovalID links held rows to their approval.
+	Decision   string `json:"decision"`
+	ApprovalID string `json:"approval_id"`
 }
 
 const requestLogSelect = `SELECT r.id, r.service_name, r.method, r.path, r.status_code,
@@ -192,7 +216,8 @@ const requestLogSelect = `SELECT r.id, r.service_name, r.method, r.path, r.statu
 		 r.created_at,
 		 EXISTS(SELECT 1 FROM request_log_detail d WHERE d.log_id = r.id),
 		 COALESCE(k.name, ''), COALESCE(p.requires_approval, 0),
-		 (SELECT d2.duration_ms FROM request_log_detail d2 WHERE d2.log_id = r.id)
+		 (SELECT d2.duration_ms FROM request_log_detail d2 WHERE d2.log_id = r.id),
+		 r.decision, r.approval_id
 		 FROM request_log r
 		 LEFT JOIN clients c ON r.client_id = c.id
 		 LEFT JOIN placeholder_keys p ON r.placeholder_id = p.id
@@ -206,7 +231,7 @@ func scanRequestLogEntries(rows *sql.Rows) ([]RequestLogEntry, error) {
 		var dur sql.NullInt64
 		if err := rows.Scan(&l.ID, &l.ServiceName, &l.Method, &l.Path, &l.StatusCode,
 			&l.ClientID, &l.ClientName, &l.PlaceholderID, &l.EnvName, &l.Placeholder,
-			&l.CreatedAt, &l.HasDetail, &l.Credential, &req, &dur); err != nil {
+			&l.CreatedAt, &l.HasDetail, &l.Credential, &req, &dur, &l.Decision, &l.ApprovalID); err != nil {
 			return nil, err
 		}
 		l.RequiresApproval = req != 0
@@ -241,7 +266,8 @@ type RequestLogFilter struct {
 	Credential    string
 	StatusClasses []string // subset of 2xx,3xx,4xx,5xx
 	Held          bool     // phantom token requires approval
-	ACLDenied     bool     // status 403 (gateway denials are not logged; includes upstream 403)
+	ACLDenied     bool     // status 403 (includes upstream 403 and gateway denials)
+	Decision      string   // exact request_log.decision match (allowed, approved_forward, acl_denied, held)
 	BeforeID      int64
 	AfterID       int64
 	Limit         int
@@ -310,6 +336,10 @@ func (f RequestLogFilter) where(cursor bool) (string, []interface{}) {
 	}
 	if f.ACLDenied {
 		conds = append(conds, "r.status_code = 403")
+	}
+	if f.Decision != "" {
+		conds = append(conds, "r.decision = ?")
+		args = append(args, f.Decision)
 	}
 	if cursor {
 		if f.BeforeID > 0 {
@@ -436,10 +466,12 @@ type LogFacets struct {
 	Clients     []LogFacetClient `json:"clients"`
 	Services    []string         `json:"services"`
 	Credentials []string         `json:"credentials"`
+	// Decisions counts rows per decision over the last 7 days.
+	Decisions map[string]int `json:"decisions"`
 }
 
 func (q *RequestLogQueries) Facets() (*LogFacets, error) {
-	out := &LogFacets{Clients: []LogFacetClient{}, Services: []string{}, Credentials: []string{}}
+	out := &LogFacets{Clients: []LogFacetClient{}, Services: []string{}, Credentials: []string{}, Decisions: map[string]int{}}
 	rows, err := q.db.Query(`SELECT id, name FROM clients WHERE id NOT IN (SELECT client_id FROM client_drafts) ORDER BY name LIMIT 1000`)
 	if err != nil {
 		return nil, err
@@ -473,6 +505,23 @@ func (q *RequestLogQueries) Facets() (*LogFacets, error) {
 			*spec.dst = append(*spec.dst, n)
 		}
 		r.Close()
+	}
+	since := time.Now().Add(-7 * 24 * time.Hour).UTC().Format("2006-01-02 15:04:05")
+	dr, err := q.db.Query(`SELECT decision, COUNT(*) FROM request_log WHERE created_at >= ? AND decision <> '' GROUP BY decision`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer dr.Close()
+	for dr.Next() {
+		var d string
+		var n int
+		if err := dr.Scan(&d, &n); err != nil {
+			return nil, err
+		}
+		out.Decisions[d] = n
+	}
+	if err := dr.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

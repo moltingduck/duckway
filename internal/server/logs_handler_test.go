@@ -350,3 +350,61 @@ func TestLogsDefaultWindowAndEmptyAfterPage(t *testing.T) {
 		t.Fatalf("before past end: newer=%v", p.HasNewer)
 	}
 }
+
+func TestLogsDecisionFilterAndFacets(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	seedLogs(t, s)
+	ins := func(decision, approval string, status int, path string) {
+		t.Helper()
+		if _, err := s.db.Exec(`INSERT INTO request_log (client_id, service_name, method, path, status_code, decision, approval_id) VALUES ('c1', 'github', 'POST', ?, ?, ?, ?)`,
+			path, status, decision, approval); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ins("allowed", "", 200, "/d/a1")
+	ins("allowed", "", 200, "/d/a2")
+	ins("held", "appr-1", 403, "/d/h1")
+	ins("acl_denied", "", 403, "/d/x1")
+	ins("acl_denied", "", 403, "/d/x2")
+	ins("approved_forward", "", 200, "/d/f1")
+
+	for q, want := range map[string]int{
+		"?decision=held&limit=200":             1,
+		"?decision=acl_denied&limit=200":       2,
+		"?decision=allowed&limit=200":          2,
+		"?decision=approved_forward&limit=200": 1,
+		"?decision=held&range=15m":             1,
+	} {
+		rec, p := getLogs(t, s, shared, q, false)
+		if rec.Code != 200 || p.Total != want {
+			t.Errorf("%s: code %d total %d want %d", q, rec.Code, p.Total, want)
+		}
+	}
+	rec, _ := getLogs(t, s, shared, "?decision=bogus", false)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid decision: %d", rec.Code)
+	}
+
+	var body struct {
+		Items []struct {
+			Decision   string `json:"decision"`
+			ApprovalID string `json:"approval_id"`
+		} `json:"items"`
+	}
+	rec, _ = getLogs(t, s, shared, "?decision=held", false)
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Items) != 1 || body.Items[0].ApprovalID != "appr-1" || body.Items[0].Decision != "held" {
+		t.Fatalf("held row payload: %v %+v", err, body)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/logs/facets", nil)
+	req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
+	testSameOrigin(req)
+	frec := httptest.NewRecorder()
+	s.ServeHTTP(frec, req)
+	var f struct {
+		Decisions map[string]int `json:"decisions"`
+	}
+	if err := json.Unmarshal(frec.Body.Bytes(), &f); err != nil || f.Decisions["held"] != 1 || f.Decisions["acl_denied"] != 2 || f.Decisions["allowed"] != 2 {
+		t.Fatalf("facet decisions: %v %v", err, f.Decisions)
+	}
+}

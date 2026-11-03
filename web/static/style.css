@@ -2167,3 +2167,26 @@ details.more-menu:not(.is-placed) > .more-menu-list { visibility: hidden; }
 @media (max-width: 900px) { .toast-undo { min-height: 44px; } }
 .dw-confirm { max-width: 28rem; }
 .dw-confirm-body { color: var(--muted); font-size: 0.875rem; line-height: 1.6; }
+
+/* ---- Overview and request log additions (ov2-*, lg2-*) ---- */
+.ov2-live { display: inline-flex; align-items: center; gap: 0.4rem; margin: 0.35rem 0 0; color: var(--text-muted); }
+.ov2-live-dot { color: var(--ok); flex: none; }
+.ov2-live-stale .ov2-live-dot { color: var(--warn); }
+.ov2-spark-wrap { display: flex; flex-direction: column; gap: 0.15rem; margin-top: 0.35rem; min-width: 0; }
+.ov2-spark-wrap[hidden] { display: none; }
+.ov2-spark { display: block; width: 100%; height: 2.5rem; overflow: visible; }
+.ov2-spark-area { fill: color-mix(in srgb, var(--accent) 18%, transparent); stroke: none; }
+.ov2-spark-line { stroke: var(--accent-text); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.ov2-spark-cap { font-size: 0.75rem; color: var(--text-muted); }
+.ov2-empty-link { display: inline-flex; align-items: center; min-height: 2.75rem; padding: 0 0.25rem; font-size: 0.875rem; }
+.lg-pill-info { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-text); }
+.lg2-dec { font-size: 0.8125rem; white-space: nowrap; }
+.lg2-dec-held { color: var(--accent-text); font-weight: 600; }
+.lg2-dec-acl_denied { color: var(--danger-text); font-weight: 600; }
+.lg2-dec-allowed, .lg2-dec-approved_forward { color: var(--text-muted); }
+a.lg2-dec { display: inline-flex; align-items: center; min-height: 1.5rem; }
+@media (max-width: 480px) {
+  .lg-chip, .lg-seg button { min-height: 2.75rem; }
+  .lg-seg button { min-width: 2.75rem; }
+  a.lg2-dec { min-height: 2.75rem; }
+}

@@ -457,6 +457,10 @@ func runMigrations(db *sql.DB) error {
 	safeAlters := []string{
 		// '' = token-wide approval; otherwise the request signature an approve rule gated.
 		"ALTER TABLE approvals ADD COLUMN scope TEXT NOT NULL DEFAULT ''",
+		// Gateway decision per request: '' (legacy), allowed, approved_forward,
+		// acl_denied or held. approval_id links a held row to its approval.
+		"ALTER TABLE request_log ADD COLUMN decision TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE request_log ADD COLUMN approval_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE clients ADD COLUMN canary_enabled INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE clients ADD COLUMN short_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE clients ADD COLUMN update_policy TEXT NOT NULL DEFAULT 'managed'",

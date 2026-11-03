@@ -582,6 +582,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// request is held in the same approval flow as token-wide requires_approval
 	// and forwarded only once an admin has approved that exact request.
 	var approveLayer, approveRule string
+	forwardDecision := queries.DecisionAllowed
 	for _, layer := range aclLayers {
 		if layer.config == "" {
 			continue
@@ -594,6 +595,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !permResult.Allowed {
+			h.logGatewayDecision(client, result.PlaceholderID, serviceName, r.Method, upstreamPath, queries.DecisionACLDenied, "")
 			jsonError(w, "permission denied ("+layer.name+"): "+permResult.Reason, http.StatusForbidden)
 			return
 		}
@@ -635,6 +637,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		forwardDecision = queries.DecisionApprovedForward
 	} else if approveLayer != "" {
 		// No approval store wired: never forward an approve-gated request.
 		jsonError(w, "permission denied ("+approveLayer+"): approval required", http.StatusForbidden)
@@ -825,7 +828,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// attach detail to if capture is on.
 	var logID int64
 	if h.requestLog != nil {
-		id, lerr := h.requestLog.LogWithReturn(client.ID, result.PlaceholderID, serviceName, r.Method, upstreamPath, resp.StatusCode)
+		id, lerr := h.requestLog.LogWithReturnDecision(client.ID, result.PlaceholderID, serviceName, r.Method, upstreamPath, resp.StatusCode, forwardDecision)
 		if lerr == nil {
 			logID = id
 		}
@@ -1839,6 +1842,18 @@ func resolveScopedApproval(ops scopedApprovalOps) (id string, created, forward b
 	return "", false, false, errApprovalContention
 }
 
+// logGatewayDecision records a request the gateway answered itself (403 ACL
+// denial or approval hold). Only method, path (no query or body), client and
+// service are stored, like forwarded rows.
+func (h *ProxyHandler) logGatewayDecision(client *models.Client, placeholderID, serviceName, method, path, decision, approvalID string) {
+	if h.requestLog == nil || client == nil {
+		return
+	}
+	if err := h.requestLog.LogDecision(client.ID, placeholderID, serviceName, method, path, http.StatusForbidden, decision, approvalID); err != nil {
+		log.Printf("request log (%s): %v", decision, err)
+	}
+}
+
 func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, client *models.Client, serviceName, placeholderID, method, path, query, bodyHash, scope, rule string) (forward bool) {
 	var approvalID string
 	var created bool
@@ -1903,6 +1918,7 @@ func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, c
 	if scope != "" {
 		msg = "This request matches an approval rule and needs admin approval. Retry after approval."
 	}
+	h.logGatewayDecision(client, placeholderID, serviceName, method, path, queries.DecisionHeld, approvalID)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
 	json.NewEncoder(w).Encode(map[string]string{

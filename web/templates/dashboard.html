@@ -3,6 +3,7 @@
   <div>
     <h1>Overview</h1>
     <p class="ov-sub">What needs you now, then how the gateway is doing.</p>
+    <p class="ov2-live text-sm" id="ov-live"><svg class="ov2-live-dot" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true" focusable="false"><circle cx="4" cy="4" r="4" fill="currentColor"></circle></svg><span id="ov-live-text">Live &middot; connecting&hellip;</span></p>
   </div>
   <a class="btn btn-primary" href="/admin/clients/new">Add client</a>
 </div>
@@ -29,12 +30,13 @@
   <a class="ov-stat" href="/admin/phantom-tokens">
     <span class="ov-stat-label">Phantom tokens</span>
     <span class="ov-stat-value" id="ov-s-phantoms">&mdash;</span>
-    <span class="ov-stat-sub">&nbsp;</span>
+    <span class="ov-stat-sub" id="ov-s-phantoms-sub" title="Tokens with token-wide approval or an approve rule in their own permissions">&nbsp;</span>
   </a>
   <a class="ov-stat" href="/admin/logs">
     <span class="ov-stat-label">Requests &middot; 24h</span>
     <span class="ov-stat-value" id="ov-s-reqs">&mdash;</span>
-    <span class="ov-stat-sub">&nbsp;</span>
+    <span class="ov-stat-sub" id="ov-s-reqs-sub" title="Share of the last 24 hours of requests that ended in an HTTP 5xx">&nbsp;</span>
+    <span class="ov2-spark-wrap" id="ov-spark" hidden></span>
   </a>
 </section>
 
@@ -48,7 +50,7 @@
     <table>
       <caption class="sr-only">Recent requests</caption>
       <thead>
-        <tr><th>Time</th><th>Client</th><th>Service</th><th>Method</th><th>Path</th><th>Status</th></tr>
+        <tr><th>Time</th><th>Client</th><th>Service</th><th>Request</th><th>Status</th></tr>
       </thead>
       <tbody id="recent-body">
         {{range .RecentLogs}}
@@ -56,12 +58,11 @@
           <td class="text-muted text-sm">{{.CreatedAt}}</td>
           <td>{{if .ClientName}}{{.ClientName}}{{else}}<span class="text-muted">—</span>{{end}}</td>
           <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
-          <td><span class="badge badge-blue">{{.Method}}</span></td>
-          <td class="mono text-sm">{{.Path}}</td>
-          <td>{{if .StatusCode}}<span class="badge {{if lt (deref .StatusCode) 400}}badge-green{{else}}badge-red{{end}}">{{deref .StatusCode}}</span>{{end}}</td>
+          <td><span class="badge badge-blue">{{.Method}}</span> <span class="mono text-sm">{{.Path}}</span></td>
+          <td>{{if eq .Decision "held"}}<span class="ov-pill ov-pill-info">held</span>{{else if eq .Decision "acl_denied"}}<span class="ov-pill ov-pill-bad">403 ACL</span>{{else if .StatusCode}}<span class="badge {{if lt (deref .StatusCode) 400}}badge-green{{else}}badge-red{{end}}">{{deref .StatusCode}}</span>{{end}}</td>
         </tr>
         {{else}}
-        <tr><td colspan="6" class="text-muted">No requests yet</td></tr>
+        <tr><td colspan="5" class="text-muted">No requests yet</td></tr>
         {{end}}
       </tbody>
     </table>
@@ -89,11 +90,13 @@
   function renderRecent(list) {
     var body = byId('recent-body');
     var rows = list.slice(0, 10);
-    if (!rows.length) { DW.setHTML(body, DW.raw('<tr><td colspan="6" class="text-muted">No requests yet</td></tr>')); return; }
+    if (!rows.length) { DW.setHTML(body, DW.raw('<tr><td colspan="5" class="text-muted">No requests yet</td></tr>')); return; }
     DW.setHTML(body, DW.html`${rows.map(function(l) {
       var code = l.status_code;
       var status = code ? DW.html`<span class="badge ${code < 400 ? 'badge-green' : 'badge-red'}">${code}</span>` : '';
-      return DW.html`<tr><td class="text-muted text-sm">${l.created_at}</td><td>${l.client_name || dash}</td><td><span class="badge badge-blue">${l.service_name}</span></td><td><span class="badge badge-blue">${l.method}</span></td><td class="mono text-sm">${l.path}</td><td>${status}</td></tr>`;
+      if (l.decision === 'held') status = DW.raw('<span class="ov-pill ov-pill-info">held</span>');
+      else if (l.decision === 'acl_denied') status = DW.raw('<span class="ov-pill ov-pill-bad">403 ACL</span>');
+      return DW.html`<tr><td class="text-muted text-sm">${l.created_at}</td><td>${l.client_name || dash}</td><td><span class="badge badge-blue">${l.service_name}</span></td><td><span class="badge badge-blue">${l.method}</span> <span class="mono text-sm">${l.path}</span></td><td>${status}</td></tr>`;
     })}`);
   }
 
@@ -121,14 +124,59 @@
 
   function renderStats(s) {
     byId('ov-s-clients').textContent = fmt.format(s.clients.online) + ' / ' + fmt.format(s.clients.total);
-    byId('ov-s-clients-sub').textContent = 'online in the last 5 min';
+    var cl = byId('ov-s-clients-sub');
+    var off = s.clients_offline_24h || 0;
+    cl.textContent = off ? off + ' offline > 24h' : 'none offline > 24h';
+    cl.className = 'ov-stat-sub' + (off ? ' ov-warn' : '');
     byId('ov-s-creds').textContent = fmt.format(s.credentials.total);
     var cs = byId('ov-s-creds-sub');
     cs.textContent = s.credentials.expiring ? s.credentials.expiring + ' need attention' : 'none expiring';
     cs.className = 'ov-stat-sub' + (s.credentials.expiring ? ' ov-warn' : '');
     byId('ov-s-phantoms').textContent = fmt.format(s.phantom_tokens);
     byId('ov-s-reqs').textContent = fmt.format(s.requests_24h);
+    var ap = s.phantom_require_approval || 0;
+    byId('ov-s-phantoms-sub').textContent = ap + ' require approval';
+    var rs = byId('ov-s-reqs-sub');
+    if (s.requests_24h > 0) {
+      var pct = (s.errors_24h || 0) * 100 / s.requests_24h;
+      rs.textContent = pct.toFixed(1) + '% errors';
+      rs.className = 'ov-stat-sub' + (s.errors_24h ? ' ov-warn' : '');
+    } else {
+      rs.textContent = 'no requests yet';
+      rs.className = 'ov-stat-sub';
+    }
   }
+
+  // Requests per hour for the last 24h as a small SVG area/line chart. Only
+  // classes and attributes are used (no inline style), so it is CSP-safe.
+  function renderSpark(counts) {
+    var box = byId('ov-spark');
+    if (!Array.isArray(counts) || counts.length < 2) { box.hidden = true; return; }
+    var W = 240, H = 40, P = 2, n = counts.length;
+    var max = Math.max.apply(null, counts.concat([1]));
+    var total = counts.reduce(function(a, b) { return a + b; }, 0);
+    var peakIdx = counts.indexOf(Math.max.apply(null, counts));
+    var pts = counts.map(function(v, i) {
+      return [(P + i * (W - 2 * P) / (n - 1)).toFixed(1), (H - P - v * (H - 2 * P) / max).toFixed(1)];
+    });
+    var line = 'M' + pts.map(function(p) { return p[0] + ' ' + p[1]; }).join(' L');
+    var area = line + ' L' + pts[n - 1][0] + ' ' + (H - P) + ' L' + pts[0][0] + ' ' + (H - P) + ' Z';
+    var label = 'Requests per hour over the last 24 hours: ' + fmt.format(total) + ' total, peak ' + fmt.format(counts[peakIdx]) + ' per hour, ' + fmt.format(counts[n - 1]) + ' in the current hour.';
+    DW.setHTML(box, DW.html`<svg class="ov2-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${label}" focusable="false"><path class="ov2-spark-area" d="${area}"></path><path class="ov2-spark-line" d="${line}" fill="none" vector-effect="non-scaling-stroke"></path></svg><span class="ov2-spark-cap">per hour &middot; 24h</span>`);
+    box.hidden = false;
+  }
+
+  // "Live · updated Ns ago" ticks once a second from the last good fetch.
+  var updatedAt = 0;
+  function tickLive() {
+    var t = byId('ov-live-text');
+    if (!updatedAt) return;
+    var s = Math.max(0, Math.floor((Date.now() - updatedAt) / 1000));
+    var age = s < 60 ? s + 's' : Math.floor(s / 60) + 'm';
+    t.textContent = 'Live \u00b7 updated ' + age + ' ago';
+    byId('ov-live').classList.toggle('ov2-live-stale', s > 30);
+  }
+  setInterval(tickLive, 1000);
 
   function renderPosture(p) {
     var cls = {ok: 'ov-pill-ok', warn: 'ov-pill-warn', info: 'ov-pill-info'};
@@ -165,10 +213,12 @@
   }, 1500);
   var refreshOverview = throttled(function() {
     latest('overview', '/api/overview', function(d) { return d && d.attention && d.stats; }, function(d) {
-      renderAttention(d.attention); renderStats(d.stats); renderPosture(d.posture);
+      renderAttention(d.attention); renderStats(d.stats); renderSpark(d.requests_per_hour); renderPosture(d.posture);
+      updatedAt = Date.now(); tickLive();
     });
   }, 1500);
   refreshOverview(true);
+  setInterval(function() { if (!document.hidden) refreshOverview(false); }, 15000);
   DW.live.on('logs', function() { refreshRecent(); refreshOverview(false); }, {defer: true});
   ['approvals', 'rollouts', 'badge'].forEach(function(t) {
     DW.live.on(t, function() { refreshOverview(false); }, {defer: true});
