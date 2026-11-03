@@ -19,21 +19,21 @@ function renderUsageSnapshot(rawJSON) {
       var used = (m.limit > 0 && m.remaining >= 0) ? (m.limit - m.remaining) : 0;
       var pct = (m.limit > 0) ? Math.min(100, Math.round((used / m.limit) * 100)) : 0;
       var label = name.replace(/_/g, ' ');
-      var bar = DW.html`<div style="background:var(--line);border-radius:3px;overflow:hidden;height:6px;margin-top:3px"><div style="height:100%;width:${pct}%;background:${barColor(pct)}"></div></div>`;
+      var bar = DW.html`<progress class="${'usage-bar ' + barClass(pct)}" max="100" value="${pct}" aria-label="${label + ' used'}">${pct}%</progress>`;
       return DW.html`<tr><td>${label}${bar}</td><td>${fmtNum(used)}</td><td>${fmtNum(m.remaining)}</td><td>${fmtNum(m.limit)}</td><td class="text-muted text-sm">${fmtReset(m.reset)}</td></tr>`;
     });
-    metricsBlock = DW.html`<table class="mt-1" style="width:100%;font-size:0.85rem"><thead><tr><th>Metric</th><th>Used</th><th>Remaining</th><th>Limit</th><th>Reset</th></tr></thead><tbody>${rows}</tbody></table>`;
+    metricsBlock = DW.html`<table class="mt-1 usage-snap-table"><thead><tr><th>Metric</th><th>Used</th><th>Remaining</th><th>Limit</th><th>Reset</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   var subBlock = '';
   if (snap.subscription && Object.keys(snap.subscription).length) {
     var badges = Object.keys(snap.subscription).map(function(k) {
-      return DW.html`<span class="badge badge-gray" style="margin-right:0.25rem">${k}: ${snap.subscription[k]}</span>`;
+      return DW.html`<span class="badge badge-gray usage-snap-badge">${k}: ${snap.subscription[k]}</span>`;
     });
     subBlock = DW.html`<div class="mt-1 text-sm"><strong>Subscription window</strong><br>${badges}</div>`;
   }
 
-  return DW.html`<div class="card mt-1" style="background:var(--bg-input);padding:0.75rem"><strong class="text-sm">Rate-limit usage</strong> <span class="text-muted text-sm">${snap.provider || ''} · updated ${snap.updated_at || ''}</span>${metricsBlock}${subBlock}</div>`;
+  return DW.html`<div class="card mt-1 usage-snap"><strong class="text-sm">Rate-limit usage</strong> <span class="text-muted text-sm">${snap.provider || ''} · updated ${snap.updated_at || ''}</span>${metricsBlock}${subBlock}</div>`;
 }
 
 // renderUsageCompact returns a one-line cell summary (DW SafeHTML) suitable for
@@ -82,8 +82,8 @@ function fmtReset(s) {
   return s;
 }
 
-function barColor(pct) {
-  if (pct < 70) return '#3b82f6';   // blue
-  if (pct < 90) return '#f59e0b';   // amber
-  return '#ef4444';                  // red
+function barClass(pct) {
+  if (pct < 70) return 'usage-bar-ok';
+  if (pct < 90) return 'usage-bar-warn';
+  return 'usage-bar-crit';
 }

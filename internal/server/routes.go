@@ -299,6 +299,9 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/supply-chain/min-age", supplyChainH.SetMinAge)
 	adminAPIMux.HandleFunc("POST /api/supply-chain/{id}", supplyChainH.Toggle)
 
+	adminAPIMux.HandleFunc("GET /api/search", handlers.NewSearchHandler(s.db).Search)
+	adminAPIMux.HandleFunc("POST /api/whats-new/dismiss", handlers.NewWhatsNewHandler(settingsQ).Dismiss)
+
 	settingsH := handlers.NewSettingsHandler(settingsQ)
 	adminAPIMux.HandleFunc("GET /api/settings", settingsH.Get)
 	adminAPIMux.HandleFunc("POST /api/settings", settingsH.Update)

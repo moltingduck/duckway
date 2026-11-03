@@ -43,6 +43,10 @@ func CSPHeaderValue(nonce string) string {
 		"base-uri 'none'",
 		"frame-ancestors 'none'",
 		"form-action 'self'",
+		// Trusted Types: DOM XSS sinks only accept values from the single `dw`
+		// policy created in dw.js (no default policy, no other policy names).
+		"require-trusted-types-for 'script'",
+		"trusted-types dw",
 	}, "; ")
 }
 

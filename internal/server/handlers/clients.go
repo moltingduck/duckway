@@ -240,7 +240,7 @@ func (h *ClientHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to delete client", http.StatusInternalServerError)
 		return
 	}
-	// Return empty body so HTMX outerHTML swap removes the card cleanly
+	// Empty body: the page removes the card itself on success
 	w.WriteHeader(http.StatusOK)
 }
 

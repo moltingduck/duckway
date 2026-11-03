@@ -46,6 +46,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	cookie := h.auth.CreateSession(user.Username, r)
 	http.SetCookie(w, cookie)
+	clearWhatsNewCookie(w)
 	jsonResponse(w, map[string]string{"status": "ok", "username": user.Username})
 }
 
@@ -56,6 +57,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		Path:   "/",
 		MaxAge: -1,
 	})
+	clearWhatsNewCookie(w)
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
 

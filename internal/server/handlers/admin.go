@@ -201,6 +201,11 @@ type pageData struct {
 	CanaryTokens interface{}
 	// Moved is set on the page-moved 404 notice (see moved.go).
 	Moved *MovedNotice
+	// What's-new dialog (see whats_new.go): version, moves list, and whether
+	// to auto-open it on this page load.
+	WhatsNewVersion string
+	WhatsNewMoves   []WhatsNewMove
+	WhatsNewShow    bool
 }
 
 func (h *AdminHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
@@ -225,6 +230,7 @@ func (h *AdminHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	cookie := h.auth.CreateSession(user.Username, r)
 	http.SetCookie(w, cookie)
+	clearWhatsNewCookie(w) // a fresh login shows the dialog again unless dismissed for good
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
 }
 
@@ -396,6 +402,7 @@ func (h *AdminHandler) RejectAction(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminHandler) render(w http.ResponseWriter, r *http.Request, page string, data pageData) {
 	data.CSPNonce = middleware.CSPNonce(r.Context())
+	h.prepareWhatsNew(w, r, &data)
 	if h.approvals != nil {
 		if n, err := h.approvals.CountPending(); err != nil {
 			log.Printf("admin: count pending approvals for nav badge: %v", err)
@@ -443,4 +450,28 @@ func (h *AdminHandler) render(w http.ResponseWriter, r *http.Request, page strin
 		log.Printf("Template error (%s): %v", page, err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+// prepareWhatsNew fills the What's-new dialog data. The dialog auto-opens when
+// this admin has not dismissed the current version for good and has not already
+// been shown it in this login session (a session cookie cleared on login and
+// logout), so it appears once per login rather than on every page load.
+func (h *AdminHandler) prepareWhatsNew(w http.ResponseWriter, r *http.Request, data *pageData) {
+	data.WhatsNewVersion = WhatsNewVersion
+	data.WhatsNewMoves = whatsNewMoves
+	if h.db == nil {
+		return
+	}
+	username, _ := r.Context().Value(middleware.AdminUserKey).(string)
+	if username == "" || data.Moved != nil {
+		return
+	}
+	if queries.NewSettingsQueries(h.db).Get(whatsNewKey(username)) == WhatsNewVersion {
+		return
+	}
+	if c, err := r.Cookie(whatsNewCookie); err == nil && c.Value == WhatsNewVersion {
+		return
+	}
+	data.WhatsNewShow = true
+	http.SetCookie(w, &http.Cookie{Name: whatsNewCookie, Value: WhatsNewVersion, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode})
 }

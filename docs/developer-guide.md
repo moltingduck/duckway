@@ -136,7 +136,7 @@ internal/
 
 web/
   templates/                   Go html/template files (one per page)
-  static/                      CSS + vendored htmx.min.js
+  static/                      CSS + vanilla JS (dw.js foundation, no framework)
 
 scripts/
   dev.sh                       local dev container management
