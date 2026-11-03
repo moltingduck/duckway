@@ -362,6 +362,7 @@ func (h *AdminHandler) OnboardingPage(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "onboarding", pageData{
 		Title:  "Add client",
 		Active: "clients",
+		Crumb:  "Add client", // top bar: Fleet / Clients / Add client
 	})
 }
 

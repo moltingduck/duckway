@@ -75,3 +75,27 @@ func TestOverviewRecentClientNamesAreClipped(t *testing.T) {
 	d := readWeb(t, "templates/dashboard.html")
 	mustContain(t, "dashboard.html", d, "${l.client_name ? DW.html`<span class=\"lg-clip\"", `<span class="lg-clip" title="{{.ClientName}}">{{.ClientName}}</span>`)
 }
+
+// Every <details> gets a chevron (except the More menu and the systemd block, which draw their own).
+func TestDetailsHaveADisclosureChevron(t *testing.T) {
+	css := readWeb(t, "static/style.css")
+	mustContain(t, "style.css", css,
+		"details:not(.more-menu):not(.cl-systemd) > summary::before",
+		"details:not(.more-menu):not(.cl-systemd)[open] > summary::before { transform: rotate(45deg); }",
+		"details:not(.more-menu) > summary:focus-visible",
+		"cursor: pointer; list-style: none;")
+	cn := readWeb(t, "templates/canary.html")
+	mustContain(t, "canary.html", cn, `id="cn-set-sum"`, "Alert email: not set", "charAt(0) + '***'")
+	if strings.Contains(cn, "Alert email: ' + email") {
+		t.Error("the full alert address must not appear in the summary")
+	}
+}
+
+// The wizard has no in-page crumb; the top bar carries "Add client".
+func TestOnboardingHasNoInPageCrumb(t *testing.T) {
+	ob := readWeb(t, "templates/onboarding.html")
+	if strings.Contains(ob, "wz-crumb\"") || strings.Contains(ob, `aria-label="Breadcrumb"`) {
+		t.Error("onboarding must not render its own breadcrumb")
+	}
+	mustContain(t, "onboarding.html", ob, `id="wz-draftnote"`)
+}

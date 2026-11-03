@@ -2248,3 +2248,13 @@ a.lg2-dec { display: inline-flex; align-items: center; min-height: 1.5rem; }
   .cd-dl { grid-template-columns: 6rem minmax(0, 1fr); }
 }
 .cd-stats + * { margin-top: 0.9rem; }
+
+/* ---- vp1104 r2: visible disclosure affordance on every <details> ---- */
+/* The More menu (a button-like summary) and the systemd block (its own Show/Hide) draw their own cues. */
+details:not(.more-menu):not(.cl-systemd) > summary { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; list-style: none; }
+details:not(.more-menu):not(.cl-systemd) > summary::-webkit-details-marker { display: none; }
+details:not(.more-menu):not(.cl-systemd) > summary::before { content: ""; flex: none; width: 0.45rem; height: 0.45rem; margin: 0 0.2rem 0 0.1rem; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); transition: transform 0.15s ease; opacity: 0.75; }
+details:not(.more-menu):not(.cl-systemd)[open] > summary::before { transform: rotate(45deg); }
+details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+@media (prefers-reduced-motion: reduce) { details > summary::before { transition: none; } }
+.cn-set-sum { margin-left: auto; text-align: right; min-width: 0; overflow-wrap: anywhere; }

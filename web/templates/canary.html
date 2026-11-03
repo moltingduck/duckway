@@ -45,7 +45,7 @@
     </section>
 
     <details class="card cn-card cn-settings" id="cn-settings">
-      <summary><h2>Settings</h2></summary>
+      <summary><h2>Settings</h2><span class="cn-set-sum text-sm text-muted" id="cn-set-sum">Alert email: checking&hellip;</span></summary>
       <form id="cn-form" data-on-submit="cnSave" novalidate>
         <div class="form-group">
           <label for="cn-email">Alert email</label>
@@ -390,15 +390,27 @@
     $('cn-ex-select').focus();
   };
 
+  // One-line summary beside the Settings heading; the address is masked (a***@example.com).
+  function maskEmail(v) {
+    var i = v.indexOf('@');
+    if (i < 1) return '';
+    return v.charAt(0) + '***' + v.slice(i);
+  }
+  function setSettingsSummary(email) {
+    $('cn-set-sum').textContent = email ? 'Alert email: ' + (maskEmail(email) || 'set') : 'Alert email: not set';
+  }
+
   function loadSettings() {
     return api('GET', '/api/canary/settings').then(function(d) {
       $('cn-email').value = d.email || '';
+      setSettingsSummary(d.email || '');
       allTypes = d.available_types || [];
       enabledTypes = d.enabled_types || [];
       excluded = (d.exclude_clients || []).slice();
       settingsLoaded = true;
       renderTypes(); renderExclude();
     }).catch(function(e) {
+      $('cn-set-sum').textContent = 'Alert email: unknown';
       $('cn-save-state').textContent = 'Could not load settings: ' + e.message;
     });
   }
@@ -416,6 +428,7 @@
       body: JSON.stringify({email: email, enabled_types: types, exclude_clients: excluded})
     }).then(function(r) { return r.json().catch(function() { return {}; }).then(function(d) { if (!r.ok || d.error) { var er = new Error(d.error || ('HTTP ' + r.status)); er.field = d.field; throw er; } }); })
     .then(function() {
+      setSettingsSummary(email);
       $('cn-save-state').textContent = 'Settings saved.'; DW.toast('Canary settings saved', 'success');
       return loadFleet();
     }).catch(function(e) {

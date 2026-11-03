@@ -71,3 +71,11 @@ func TestPrepareShellUsesAdminAndRequestHost(t *testing.T) {
 		t.Errorf("shell = %+v", d.Shell)
 	}
 }
+
+func TestOnboardingCrumbIsFleetClientsAddClient(t *testing.T) {
+	got := buildCrumbs("onboarding", pageData{Title: "Add client", Active: "clients", Crumb: "Add client"})
+	want := []Crumb{{Label: "Fleet"}, {Label: "Clients", Href: "/admin/clients"}, {Label: "Add client", Current: true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v want %+v", got, want)
+	}
+}
