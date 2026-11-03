@@ -279,7 +279,7 @@
       btn.disabled = false;
       $('cn-confirm-state').textContent = 'Failed: ' + e.message;
       // A token canarytokens.org will not delete (for example already gone) can be dropped from Duckway only.
-      if (p.local) { $('cn-confirm-local').hidden = false; $('cn-confirm-local').disabled = false; $('cn-confirm-state').textContent += '. If the token no longer exists on canarytokens.org you can remove it from Duckway only.'; $('cn-confirm-local').focus(); }
+      if (p.local) { $('cn-confirm-local').hidden = false; $('cn-confirm-local').disabled = false; $('cn-confirm-state').textContent += '. If the token no longer exists on canarytokens.org you can remove it from Duckway only.'; $('cn-confirm-cancel').focus(); }
     });
   };
   DW.actions.cnConfirmLocal = function() {
