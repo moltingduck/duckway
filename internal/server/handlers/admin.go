@@ -227,20 +227,13 @@ func (h *AdminHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
-	svcs, _ := h.services.List()
-	keys, _ := h.apiKeys.List("")
-	clients, _ := h.clients.List()
-	phs, _ := h.placeholders.List("", "")
+	// Counters and the attention queue load from GET /api/overview.
 	logs, _ := h.requestLog.Recent(10)
 
 	h.render(w, r, "dashboard", pageData{
-		Title:            "Overview",
-		Active:           "dashboard",
-		ServiceCount:     len(svcs),
-		KeyCount:         len(keys),
-		ClientCount:      len(clients),
-		PlaceholderCount: len(phs),
-		RecentLogs:       logs,
+		Title:      "Overview",
+		Active:     "dashboard",
+		RecentLogs: logs,
 	})
 }
 
