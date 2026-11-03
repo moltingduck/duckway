@@ -392,9 +392,101 @@ func (h *ServiceHandler) ApplyACLTemplate(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// UpdatePricing edits one price version. PUT /api/services/{id}/pricing/{pid}
+func (h *ServiceHandler) UpdatePricing(w http.ResponseWriter, r *http.Request) {
+	serviceID, pid := r.PathValue("id"), r.PathValue("pid")
+	if h.pricing == nil {
+		jsonError(w, "pricing unavailable", http.StatusInternalServerError)
+		return
+	}
+	cur, err := h.pricing.GetByID(serviceID, pid)
+	if err != nil {
+		jsonError(w, "pricing not found", http.StatusNotFound)
+		return
+	}
+	var req struct {
+		Model                         *string `json:"model"`
+		Version                       *string `json:"version"`
+		InputUSDMicrosPerMTok         *int64  `json:"input_usd_micros_per_mtok"`
+		OutputUSDMicrosPerMTok        *int64  `json:"output_usd_micros_per_mtok"`
+		CacheReadUSDMicrosPerMTok     *int64  `json:"cache_read_usd_micros_per_mtok"`
+		CacheCreationUSDMicrosPerMTok *int64  `json:"cache_creation_usd_micros_per_mtok"`
+		ReasoningUSDMicrosPerMTok     *int64  `json:"reasoning_usd_micros_per_mtok"`
+		EffectiveFrom                 *string `json:"effective_from"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Model != nil {
+		cur.Model = strings.TrimSpace(*req.Model)
+	}
+	if req.Version != nil {
+		cur.Version = strings.TrimSpace(*req.Version)
+	}
+	if cur.Model == "" || cur.Version == "" {
+		jsonError(w, "model and version are required", http.StatusBadRequest)
+		return
+	}
+	for _, f := range []struct {
+		src *int64
+		dst *int64
+	}{
+		{req.InputUSDMicrosPerMTok, &cur.InputUSDMicrosPerMTok},
+		{req.OutputUSDMicrosPerMTok, &cur.OutputUSDMicrosPerMTok},
+		{req.CacheReadUSDMicrosPerMTok, &cur.CacheReadUSDMicrosPerMTok},
+		{req.CacheCreationUSDMicrosPerMTok, &cur.CacheCreationUSDMicrosPerMTok},
+		{req.ReasoningUSDMicrosPerMTok, &cur.ReasoningUSDMicrosPerMTok},
+	} {
+		if f.src == nil {
+			continue
+		}
+		if *f.src < 0 {
+			jsonError(w, "pricing rates must be non-negative", http.StatusBadRequest)
+			return
+		}
+		*f.dst = *f.src
+	}
+	if req.EffectiveFrom != nil && strings.TrimSpace(*req.EffectiveFrom) != "" {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*req.EffectiveFrom))
+		if err != nil {
+			jsonError(w, "effective_from must be RFC3339", http.StatusBadRequest)
+			return
+		}
+		cur.EffectiveFrom = parsed.UTC().Format(time.RFC3339)
+	}
+	if err := h.pricing.Update(cur); err != nil {
+		jsonError(w, "failed to update model pricing", http.StatusConflict)
+		return
+	}
+	jsonResponse(w, cur)
+}
+
+// DeletePricing removes one price version. DELETE /api/services/{id}/pricing/{pid}
+func (h *ServiceHandler) DeletePricing(w http.ResponseWriter, r *http.Request) {
+	if h.pricing == nil {
+		jsonError(w, "pricing unavailable", http.StatusInternalServerError)
+		return
+	}
+	ok, err := h.pricing.Delete(r.PathValue("id"), r.PathValue("pid"))
+	if err != nil {
+		jsonError(w, "failed to delete model pricing", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		jsonError(w, "pricing not found", http.StatusNotFound)
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "ok"})
+}
+
 func (h *ServiceHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := h.services.Delete(id); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "foreign key") {
+			jsonError(w, "service is still referenced by other records", http.StatusConflict)
+			return
+		}
 		jsonError(w, "failed to delete service", http.StatusInternalServerError)
 		return
 	}

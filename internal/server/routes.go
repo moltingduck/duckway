@@ -182,6 +182,10 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/services/{id}/acl-templates", serviceH.ApplyACLTemplate)
 	adminAPIMux.HandleFunc("GET /api/services/{id}/pricing", serviceH.ListPricing)
 	adminAPIMux.HandleFunc("POST /api/services/{id}/pricing", serviceH.CreatePricing)
+	adminAPIMux.HandleFunc("PUT /api/services/{id}/pricing/{pid}", serviceH.UpdatePricing)
+	adminAPIMux.HandleFunc("DELETE /api/services/{id}/pricing/{pid}", serviceH.DeletePricing)
+	adminAPIMux.HandleFunc("GET /api/services/stats", handlers.NewServiceImpactHandler(s.db).Stats)
+	adminAPIMux.HandleFunc("GET /api/services/{id}/impact", handlers.NewServiceImpactHandler(s.db).Impact)
 
 	usageH := handlers.NewUsageHandler(ss.APIKeyQ, ss.RequestLogQ, ss.ConvUsageQ)
 	adminAPIMux.HandleFunc("GET /api/usage", usageH.List)

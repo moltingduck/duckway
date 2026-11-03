@@ -1252,3 +1252,60 @@ a.ro-stat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 }
 .cc-scrim[hidden], #cc-confirm[hidden] { display: none; }
 #cc-confirm { z-index: 130; }
+
+/* ---- Credentials: Services page (sv-*) ---- */
+.sv-syntax { margin: -0.25rem 0 0.75rem; }
+.sv-link { background: none; border: 0; padding: 0; min-height: 2.25rem; font: inherit; text-align: left; cursor: pointer; }
+.sv-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.sv-table td.sv-c-host { overflow-wrap: anywhere; }
+.sv-table { min-width: 56rem; }
+.modal.sv-drawer { max-width: 44rem; overflow-x: hidden; }
+.sv-head-text { min-width: 0; }
+.sv-head-text h2 { overflow-wrap: anywhere; }
+.sv-head-sub { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
+.sv-section { border: 0; border-top: 1px solid var(--line); margin: 0; padding: 1rem 0 0.25rem; min-width: 0; }
+.sv-section legend { float: left; width: 100%; padding: 0; margin: 0 0 0.25rem; font-size: 0.95rem; font-weight: 600; color: var(--ink); }
+.sv-section legend + * { clear: both; }
+.sv-step { display: inline-flex; align-items: center; justify-content: center; width: 1.4rem; height: 1.4rem; margin-right: 0.35rem; border-radius: 999px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-text); font-size: 0.75rem; }
+.sv-block h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
+.sv-block h4 { margin: 0.5rem 0; font-size: 0.875rem; }
+.sv-hint { display: block; margin-top: 0.25rem; color: var(--text-muted); font-size: 0.78rem; line-height: 1.45; }
+.sv-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1rem; }
+.sv-check { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 2.75rem; cursor: pointer; }
+.sv-check input { width: 1.125rem; height: 1.125rem; }
+.sv-savebar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.75rem 0; border-top: 1px solid var(--line); }
+.sv-savebtns, .sv-btnrow { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; }
+.sv-state { font-size: 0.8125rem; color: var(--text-muted); }
+.sv-state-bad { color: var(--danger-text); }
+.sv-cards, .sv-prices { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.75rem; }
+.sv-card { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; padding: 0.75rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.sv-card-active { border-color: var(--accent); }
+.sv-card-main { flex: 1 1 14rem; min-width: 0; overflow-wrap: anywhere; }
+.sv-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.sv-json summary { min-height: 2.75rem; display: flex; align-items: center; cursor: pointer; font-size: 0.8125rem; color: var(--text-muted); }
+.sv-json textarea { width: 100%; font-family: var(--mono); font-size: 0.75rem; }
+.sv-priceform { border-top: 1px dashed var(--line); padding-top: 0.5rem; }
+.sv-priceform input[type="datetime-local"] { width: 100%; }
+.sv-danger { margin-top: 0.75rem; padding-bottom: 1rem; }
+.sv-del { z-index: 130; }
+.sv-del .modal { max-width: 34rem; }
+.sv-h3 { margin: 0.75rem 0 0.25rem; font-size: 0.875rem; }
+.sv-impact { margin: 0; padding-left: 1.1rem; max-height: 10rem; overflow-y: auto; }
+.sv-impact li { margin: 0.2rem 0; overflow-wrap: anywhere; }
+.sv-blocked { padding: 0.5rem 0.75rem; border: 1px solid var(--danger); border-radius: var(--radius); color: var(--danger-text); }
+.sv-del-confirm { margin-top: 0.75rem; }
+@media (max-width: 900px) {
+  .sv-table { min-width: 0; }
+  .sv-table td.cl-c-name { grid-column: 1; grid-row: 1; }
+  .sv-table tr td:not(.cl-c-name):not(.cl-c-status) { grid-column: 1 / -1; font-size: 0.8125rem; }
+  .sv-drawer input[type="text"], .sv-drawer input[type="url"], .sv-drawer input[type="number"], .sv-drawer input[type="datetime-local"], .sv-drawer select, .sv-del input { min-height: 44px; }
+  .sv-drawer .btn, .sv-del .btn { min-height: 44px; }
+  .sv-close { min-width: 44px; }
+}
+@media (max-width: 560px) {
+  .sv-row { grid-template-columns: minmax(0, 1fr); }
+  .sv-savebtns { width: 100%; }
+  .sv-savebtns .btn { flex: 1 1 auto; justify-content: center; }
+  .sv-card-actions { width: 100%; }
+  .sv-card-actions .btn { flex: 1 1 auto; justify-content: center; }
+}

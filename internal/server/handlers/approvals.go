@@ -63,31 +63,13 @@ func (h *ApprovalHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	list, err := h.approvals.ListEnriched(statuses, limit)
+	list, err := h.approvals.ListEnrichedFiltered(statuses, q.Get("client_id"), q.Get("service_id"), limit)
 	if err != nil {
 		jsonError(w, "failed to list approvals", http.StatusInternalServerError)
 		return
 	}
 	if list == nil {
 		list = []queries.ApprovalListItem{}
-	}
-
-	// Apply client_id / service_id filters in Go since the query already
-	// joined those tables — keeps SQL composition simple.
-	clientID := q.Get("client_id")
-	serviceID := q.Get("service_id")
-	if clientID != "" || serviceID != "" {
-		filtered := make([]queries.ApprovalListItem, 0, len(list))
-		for _, a := range list {
-			if clientID != "" && a.ClientID != clientID {
-				continue
-			}
-			if serviceID != "" && a.ServiceID != serviceID {
-				continue
-			}
-			filtered = append(filtered, a)
-		}
-		list = filtered
 	}
 
 	jsonResponse(w, list)

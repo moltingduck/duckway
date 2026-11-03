@@ -3,6 +3,7 @@ package queries
 import (
 	"database/sql"
 	"strconv"
+	"strings"
 
 	"github.com/hackerduck/duckway/internal/models"
 )
@@ -153,6 +154,13 @@ type ApprovalListItem struct {
 // ListEnriched returns approvals filtered by status (any of the given values)
 // joined with client and service info. Pass empty statuses for "all".
 func (q *ApprovalQueries) ListEnriched(statuses []string, limit int) ([]ApprovalListItem, error) {
+	return q.ListEnrichedFiltered(statuses, "", "", limit)
+}
+
+// ListEnrichedFiltered is ListEnriched with optional client and service
+// filters applied in SQL before the limit, newest first (created_at, then id
+// as a deterministic tie-breaker).
+func (q *ApprovalQueries) ListEnrichedFiltered(statuses []string, clientID, serviceID string, limit int) ([]ApprovalListItem, error) {
 	query := `SELECT a.id, a.placeholder_id, p.env_name,
 	          p.client_id, COALESCE(c.name, ''),
 	          p.service_id, COALESCE(s.name, ''),
@@ -167,6 +175,7 @@ func (q *ApprovalQueries) ListEnriched(statuses []string, limit int) ([]Approval
 	          LEFT JOIN client_runtime_status rs ON rs.client_id = p.client_id`
 
 	args := []interface{}{}
+	conds := []string{}
 	if len(statuses) > 0 {
 		placeholders := ""
 		for i, st := range statuses {
@@ -176,9 +185,20 @@ func (q *ApprovalQueries) ListEnriched(statuses []string, limit int) ([]Approval
 			placeholders += "?"
 			args = append(args, st)
 		}
-		query += " WHERE a.status IN (" + placeholders + ")"
+		conds = append(conds, "a.status IN ("+placeholders+")")
 	}
-	query += " ORDER BY a.created_at DESC"
+	if clientID != "" {
+		conds = append(conds, "p.client_id = ?")
+		args = append(args, clientID)
+	}
+	if serviceID != "" {
+		conds = append(conds, "p.service_id = ?")
+		args = append(args, serviceID)
+	}
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
+	}
+	query += " ORDER BY a.created_at DESC, a.id DESC"
 	if limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, limit)

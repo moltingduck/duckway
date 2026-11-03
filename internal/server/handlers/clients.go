@@ -292,6 +292,10 @@ func (h *ClientHandler) ToggleCanary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, err := h.clients.GetByID(id); err != nil || h.clients.IsDraft(id) {
+		jsonError(w, "client not found", http.StatusNotFound)
+		return
+	}
 	if err := h.clients.UpdateCanaryEnabled(id, req.Enabled); err != nil {
 		jsonError(w, "failed to update", http.StatusInternalServerError)
 		return

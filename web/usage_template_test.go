@@ -34,7 +34,7 @@ func TestTokenAndServiceTemplatesExposeUsageAndPricing(t *testing.T) {
 	}{
 		{"templates/api_keys.html", []string{"LLM Tokens (90d)", "View usage details", "/api/usage/detail?key_id="}},
 		{"templates/oauth.html", []string{"LLM Tokens (90d)", "View usage details", "/api/usage/detail?key_id="}},
-		{"templates/services.html", []string{"Model Pricing", "USD / 1M", "/pricing", "usage_metering"}},
+		{"templates/services.html", []string{"Model pricing", "USD / 1M", "/pricing", "usage_metering"}},
 	} {
 		body, err := Content.ReadFile(tc.name)
 		if err != nil {
