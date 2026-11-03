@@ -52,10 +52,18 @@ func parseLogsFilterWindow(r *http.Request, now time.Time) (queries.RequestLogFi
 	if msg != "" {
 		return f, window, msg
 	}
-	// Text, held and credential searches scan joined rows; without an explicit
-	// time bound limit them to the last 7 days so they cannot walk the table.
-	if f.Since == "" && f.Until == "" && (f.Q != "" || f.Held || f.Credential != "") {
-		f.Since = now.Add(-logsRanges["7d"]).UTC().Format(logsTimeLayout)
+	// Any filter scans joined rows; without a lower time bound limit it to 7
+	// days (before `until` when only that is given) so it cannot walk the table.
+	filtered := f.Q != "" || f.Held || f.Credential != "" || f.ACLDenied ||
+		f.ClientID != "" || f.Service != "" || len(f.StatusClasses) > 0
+	if f.Since == "" && (filtered || f.Until != "") {
+		end := now
+		if f.Until != "" {
+			if t, err := time.Parse(logsTimeLayout, f.Until); err == nil {
+				end = t
+			}
+		}
+		f.Since = end.Add(-logsRanges["7d"]).UTC().Format(logsTimeLayout)
 		window = "7d"
 	}
 	return f, window, ""

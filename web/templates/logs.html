@@ -392,8 +392,12 @@ function rangeLabel() {
 }
 // The empty/error message lives outside the horizontally scrolling table so it
 // is fully visible on narrow screens.
+var emptyHadFocus = false;
 function showEmpty(html) {
   var box = $('log-empty');
+  // Retry / Clear filters vanish when rows replace this state; remember focus
+  // so render() can move it to the first row instead of dropping it to <body>.
+  emptyHadFocus = !html && box.contains(document.activeElement);
   if (html) DW.setHTML(box, html); else DW.setHTML(box, DW.raw(''));
   box.hidden = !html;
   $('log-tablewrap').hidden = !!html;
@@ -411,6 +415,11 @@ function render() {
       var sel = l.id === selectedId;
       return DW.html`<tr class="lg-tr${sel ? ' is-selected' : ''}" data-action="openRow" data-id="${l.id}"><td class="lg-t"><button type="button" class="lg-rowbtn" data-action="openRow" data-id="${l.id}"${sel ? DW.raw(' aria-current="true"') : ''} title="${l.created_at} UTC">${fmtTime(l.created_at)}</button></td><td>${l.client_name || dash}</td><td><span class="lg-svc">${l.service_name}</span>${cred}</td><td><span class="lg-tag">${l.method}</span> <span class="mono lg-path">${l.path}</span></td><td>${pill(l)}</td><td class="text-right lg-ms">${fmtMs(l.duration_ms)}</td></tr>`;
     })}`);
+  }
+  if (emptyHadFocus && items.length) {
+    emptyHadFocus = false;
+    var first = tbody.querySelector('.lg-rowbtn');
+    if (first) first.focus({preventScroll: true});
   }
   var a = data.offset + 1, b = data.offset + items.length;
   var total = fmtNum(data.total) + (data.total_capped ? '+' : '');

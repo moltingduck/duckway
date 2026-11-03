@@ -330,6 +330,15 @@ func TestLogsDefaultWindowAndEmptyAfterPage(t *testing.T) {
 	if _, p = getLogs(t, s, shared, "?q=item30", false); p.Total != 0 {
 		t.Fatalf("expected windowed out, total=%d", p.Total)
 	}
+	if _, p = getLogs(t, s, shared, "?status=2xx", false); p.Window != "7d" {
+		t.Fatalf("status window=%q", p.Window)
+	}
+	if _, p = getLogs(t, s, shared, "?acl_denied=1", false); p.Window != "7d" {
+		t.Fatalf("acl window=%q", p.Window)
+	}
+	if _, p = getLogs(t, s, shared, "?until="+url.QueryEscape(time.Now().UTC().Add(time.Hour).Format(time.RFC3339)), false); p.Window != "7d" {
+		t.Fatalf("until window=%q", p.Window)
+	}
 	// after_id past the newest row: empty page, no newer rows.
 	if _, p = getLogs(t, s, shared, "?after_id=999999", false); len(p.Items) != 0 || p.HasNewer {
 		t.Fatalf("after past end: items=%d newer=%v", len(p.Items), p.HasNewer)

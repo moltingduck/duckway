@@ -127,23 +127,32 @@ func (h *OverviewHandler) approvalTTL() time.Duration {
 // Get serves the overview, reusing a computed response for overviewCacheTTL so
 // many open dashboards (or SSE-triggered refreshes) do not repeat the queries.
 func (h *OverviewHandler) Get(w http.ResponseWriter, r *http.Request) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	wall := time.Now()
-	if h.cached != nil && h.cacheTTL > 0 && wall.Sub(h.cachedAt) < h.cacheTTL {
-		w.Header().Set("Cache-Control", "no-store")
-		jsonResponse(w, h.cached)
-		return
-	}
-	resp, err := h.build()
+	resp, err := h.snapshot()
 	if err != nil {
 		log.Printf("[overview] %v", err)
 		jsonError(w, "failed to load overview", http.StatusInternalServerError)
 		return
 	}
-	h.cached, h.cachedAt = &resp, wall
+	// The cached value is never mutated after publication, so it is encoded
+	// without holding the lock.
 	w.Header().Set("Cache-Control", "no-store")
 	jsonResponse(w, resp)
+}
+
+// snapshot returns the cached response or computes a fresh one under the lock.
+func (h *OverviewHandler) snapshot() (*OverviewResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	wall := time.Now()
+	if h.cached != nil && h.cacheTTL > 0 && wall.Sub(h.cachedAt) < h.cacheTTL {
+		return h.cached, nil
+	}
+	resp, err := h.build()
+	if err != nil {
+		return nil, err
+	}
+	h.cached, h.cachedAt = &resp, wall
+	return h.cached, nil
 }
 
 func (h *OverviewHandler) build() (OverviewResponse, error) {

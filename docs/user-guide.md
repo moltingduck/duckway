@@ -161,7 +161,7 @@ The admin panel uses the **same pattern across all pages**: click a row's name t
 | **Logs** | Recent proxy requests | Client, service, method, path, status |
 | **Settings** | Gateway URL + proxy port | (Required for split mode — see below) |
 
-**Request log API.** `GET /api/logs` with no parameters returns the latest 500 rows as a bare JSON array (legacy shape). With any parameter it returns a filtered page object (`items`, `next_before_id`, `total`, `total_capped`, `offset`, `has_newer`, `limit`, `window`). Supported parameters are `range`, `since`, `until`, `q`, `client`, `service`, `credential`, `status`, `held`, `acl_denied`, `before_id`, `after_id` and `limit` (1-200). **Unknown or repeated parameters, and invalid values, return HTTP 400.** A search by `q`, `held` or `credential` with no time bound is limited to the last 7 days (`"window":"7d"`); pass `range` or `since` to choose another window.
+**Request log API.** `GET /api/logs` with no parameters returns the latest 500 rows as a bare JSON array (legacy shape). With any parameter it returns a filtered page object (`items`, `next_before_id`, `total`, `total_capped`, `offset`, `has_newer`, `limit`, `window`). Supported parameters are `range`, `since`, `until`, `q`, `client`, `service`, `credential`, `status`, `held`, `acl_denied`, `before_id`, `after_id` and `limit` (1-200). **Unknown or repeated parameters, and invalid values, return HTTP 400.** Any filtered query (`q`, `client`, `service`, `credential`, `status`, `held`, `acl_denied`) with no `range` or `since` is limited to the last 7 days (`"window":"7d"`); when only `until` is given the window is the 7 days before it. Pass `range` or `since` to choose another window.
 
 ---
 

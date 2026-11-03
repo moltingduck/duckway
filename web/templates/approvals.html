@@ -246,6 +246,7 @@ function renderDetail(a) {
     DW.setHTML(box, DW.html`<div class="appr-empty appr-empty-detail"><strong>${currentTab === 'pending' ? 'No requests waiting' : 'Nothing selected'}</strong><span class="text-muted text-sm">Pending requests show up here for approval.</span></div>`);
     return;
   }
+  var hadFocus = box.contains(document.activeElement);
   var info = infoOf(a);
   var open = a.status === 'pending';
   var dash = DW.raw('<span class="text-muted">—</span>');
@@ -257,6 +258,7 @@ function renderDetail(a) {
   var pos = indexOfSelected();
   var topbar = DW.html`<div class="appr-topbar"><span>${pos + 1} of ${allApprovals.length} ${a.status === 'pending' ? 'pending' : 'decided'}</span>${a.status === 'pending' ? DW.html`<span class="appr-left" data-left="${String(expiryOf(a))}">${fmtLeft(expiryOf(a) - Date.now())}</span>` : ''}</div>`;
   DW.setHTML(box, DW.html`${topbar}<div class="appr-detail-head"><div class="appr-detail-title"><h2 id="appr-title" tabindex="-1">${a.client_name || 'Unknown client'} wants to call ${a.service_name || 'an unknown service'}</h2><div class="appr-reqline"><span class="appr-tag">${info.method || '—'}</span><span class="mono appr-path-full">${info.path || '—'}</span></div></div>${pill(a)}</div>${actions}<dl class="appr-dl"><dt>Phantom token</dt><dd><span class="mono">${a.env_name || '—'}</span>${a.credential_name ? DW.html` · ${a.credential_name}` : ''}</dd><dt>Why it was held</dt><dd>${a.requires_approval ? 'This phantom token requires admin approval before requests are forwarded.' : 'Phantom token approval requirement has since been turned off.'}</dd><dt>ACL check</dt><dd>Not recorded. ACLs are checked when a request is forwarded after approval.</dd><dt>Client</dt><dd>${a.client_name || dash} · ${seen} · ${ver}</dd><dt>Received</dt><dd>${fmtLocal(a.created_at)} <span class="text-muted">(${fmtAgo(parseTime(a.created_at))})</span></dd>${decided}</dl><div class="appr-body"><div class="text-muted text-sm">Request body</div><p class="appr-body-note text-sm">Not captured. Duckway stores only the method and path of a held request.</p></div>${bar}`);
+  if (hadFocus) { var ti = el('appr-title'); if (ti) ti.focus({preventScroll: true}); }
 }
 
 function selectById(id, scroll) {
