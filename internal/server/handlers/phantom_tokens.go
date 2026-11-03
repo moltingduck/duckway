@@ -147,13 +147,23 @@ func (h *AdminHandler) PhantomTokensPage(w http.ResponseWriter, r *http.Request)
 	}
 	memberCounts := map[string]int{}
 	if h.db != nil {
-		if rows, err := h.db.Query(`SELECT group_id, COUNT(*) FROM api_key_group_members GROUP BY group_id`); err == nil {
+		// Active keys only, matching what GetMembers returned before.
+		rows, err := h.db.Query(`SELECT m.group_id, COUNT(*) FROM api_key_group_members m
+			JOIN api_keys k ON k.id = m.api_key_id WHERE k.is_active = 1 GROUP BY m.group_id`)
+		if err != nil {
+			log.Printf("admin: phantom tokens page: member counts: %v", err)
+		} else {
 			for rows.Next() {
 				var gid string
 				var n int
-				if rows.Scan(&gid, &n) == nil {
-					memberCounts[gid] = n
+				if err := rows.Scan(&gid, &n); err != nil {
+					log.Printf("admin: phantom tokens page: member count scan: %v", err)
+					continue
 				}
+				memberCounts[gid] = n
+			}
+			if err := rows.Err(); err != nil {
+				log.Printf("admin: phantom tokens page: member counts: %v", err)
 			}
 			_ = rows.Close()
 		}

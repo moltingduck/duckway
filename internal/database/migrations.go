@@ -529,6 +529,7 @@ func runMigrations(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_conv_usage_key_day ON conversation_usage(api_key_id, created_at, client_id, model)`,
 		`CREATE INDEX IF NOT EXISTS idx_conv_usage_group_day ON conversation_usage(key_group_id, created_at, client_id, model)`,
 		`CREATE INDEX IF NOT EXISTS idx_conv_usage_created ON conversation_usage(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_conv_usage_pricing ON conversation_usage(service_name, model, pricing_version)`,
 		`UPDATE conversation_usage SET provider = service_name WHERE provider = '' AND service_name != ''`,
 		`UPDATE conversation_usage
 		SET billable_tokens = MAX(input_tokens, 0) + MAX(output_tokens, 0) +

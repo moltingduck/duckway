@@ -390,6 +390,11 @@ func (q *APIKeyQueries) deleteWithCleanup(id string, requireRefreshable bool, ex
 	}
 	defer tx.Rollback()
 
+	// PostgreSQL note: under READ COMMITTED a concurrent writer could add a
+	// reference between the impact read and the deletes. The repo has no
+	// dialect helper in the queries package for a PG-only `SELECT ... FOR UPDATE`
+	// on the key row, so this relies on the expect-count check and SQLite's
+	// single-connection serialization. Add the row lock here if one is introduced.
 	// The impact is computed inside the transaction so what is removed is
 	// exactly what is checked against the previewed counts.
 	impact, err := deleteImpactOn(tx, id, requireRefreshable)

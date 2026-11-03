@@ -113,8 +113,16 @@ func (q *ModelPricingQueries) Delete(serviceID, id string) (bool, error) {
 // the identity (model, version) of the version is what they point at, so it
 // must stay stable while they exist.
 func (q *ModelPricingQueries) UsageReferences(serviceID, model, version string) (int64, error) {
+	query := `SELECT COUNT(*) FROM conversation_usage u JOIN services s ON s.name = u.service_name
+		WHERE s.id = ? AND u.pricing_version = ?`
+	args := []interface{}{serviceID, version}
+	// A "*" price is the wildcard fallback: usage of any model of the service
+	// can have been priced with it, so match on service and version only.
+	if model != "*" {
+		query += ` AND u.model = ?`
+		args = append(args, model)
+	}
 	var n int64
-	err := q.db.QueryRow(`SELECT COUNT(*) FROM conversation_usage u JOIN services s ON s.name = u.service_name
-		WHERE s.id = ? AND u.model = ? AND u.pricing_version = ?`, serviceID, model, version).Scan(&n)
+	err := q.db.QueryRow(query, args...).Scan(&n)
 	return n, err
 }

@@ -280,3 +280,28 @@ func TestPricingReferencedVersionIsImmutable(t *testing.T) {
 		t.Fatalf("unreferenced delete: %d", rec.Code)
 	}
 }
+
+func TestPricingWildcardReferencedByOtherModel(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	if _, err := s.db.Exec(`INSERT INTO services (id, name, display_name, upstream_url, host_pattern) VALUES ('svc-wc', 'wc-svc', 'WC', 'https://w.example', 'w.example')`); err != nil {
+		t.Fatal(err)
+	}
+	rec := credAdminRequest(t, s, shared, http.MethodPost, "/api/services/svc-wc/pricing", `{"model":"*","version":"v1","input_usd_micros_per_mtok":1,"output_usd_micros_per_mtok":2}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	var c struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &c)
+	if _, err := s.db.Exec(`INSERT INTO conversation_usage (service_name, model, pricing_version, priced) VALUES ('wc-svc','some-other-model','v1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/services/svc-wc/pricing/" + c.ID
+	if rec := credAdminRequest(t, s, shared, http.MethodPut, path, `{"version":"v2"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("rename: %d", rec.Code)
+	}
+	if rec := credAdminRequest(t, s, shared, http.MethodDelete, path, ""); rec.Code != http.StatusConflict {
+		t.Fatalf("delete: %d", rec.Code)
+	}
+}
