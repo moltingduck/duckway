@@ -1,103 +1,90 @@
 {{define "content"}}
-<div class="page-header">
+<div class="page-header appr-header">
   <h1>Approvals</h1>
-  <div class="flex gap-sm">
-    <button class="btn btn-sm btn-primary" id="tab-pending" data-action="switchTab" data-tab="pending">Pending <span id="pending-count" class="text-muted text-sm"></span></button>
-    <button class="btn btn-sm" id="tab-history" data-action="switchTab" data-tab="history">History</button>
+  <div class="appr-tabs" role="tablist" aria-label="Queue">
+    <button type="button" role="tab" class="appr-tab" id="tab-pending" aria-selected="true" data-action="switchTab" data-tab="pending">Pending · <span id="pending-count">0</span></button>
+    <button type="button" role="tab" class="appr-tab" id="tab-history" aria-selected="false" data-action="switchTab" data-tab="history">History</button>
   </div>
 </div>
+<p class="text-muted text-sm appr-lead" id="ttl-note">Requests held because their phantom token requires admin approval.</p>
 
-<div class="card">
-  <div class="flex gap-md mb-1" style="flex-wrap:wrap">
-    <div class="form-group" style="flex:1;min-width:180px">
-      <label>Client</label>
-      <select id="f-client" data-on-change="onFilterChange">
-        <option value="">All clients</option>
-      </select>
-    </div>
-    <div class="form-group" style="flex:1;min-width:180px">
-      <label>Service</label>
-      <select id="f-service" data-on-change="onFilterChange">
-        <option value="">All services</option>
-      </select>
-    </div>
-    <div class="form-group" id="status-filter-row" style="flex:1;min-width:180px;display:none">
-      <label>Status</label>
-      <select id="f-status" data-on-change="onFilterChange">
-        <option value="approved,rejected,ignored">All non-pending</option>
-        <option value="approved">Approved only</option>
-        <option value="rejected">Rejected only</option>
-        <option value="ignored">Ignored only</option>
-      </select>
-    </div>
+<div class="appr-filters">
+  <div class="form-group">
+    <label>Client</label>
+    <select id="f-client" data-on-change="onFilterChange">
+      <option value="">All clients</option>
+    </select>
   </div>
-  <div class="flex-between mb-1">
-    <span class="text-sm"><span id="approval-count" class="text-muted"></span> <span id="approval-nudge" class="live-new" hidden role="status"><button type="button" class="btn btn-sm" data-action="flushApprovals">Updates available &mdash; Refresh</button></span></span>
-    <div class="flex gap-sm" style="align-items:center">
-      <label class="text-sm text-muted" for="f-perpage">Per page</label>
-      <select id="f-perpage" data-on-change="onPerPageChange" style="width:auto">
-        <option value="15">15</option>
-        <option value="30">30</option>
-        <option value="50">50</option>
-        <option value="100">100</option>
-      </select>
-      <button class="btn btn-sm" data-action="loadApprovals">Refresh</button>
-    </div>
+  <div class="form-group">
+    <label>Service</label>
+    <select id="f-service" data-on-change="onFilterChange">
+      <option value="">All services</option>
+    </select>
   </div>
+  <div class="form-group" id="status-filter-row" hidden>
+    <label>Result</label>
+    <select id="f-status" data-on-change="onFilterChange">
+      <option value="approved,rejected,ignored">All decided</option>
+      <option value="approved">Approved only</option>
+      <option value="rejected">Rejected only</option>
+      <option value="ignored">Ignored only</option>
+    </select>
+  </div>
+  <span id="approval-nudge" class="live-new" hidden role="status"><button type="button" class="btn btn-sm" data-action="flushApprovals">Updates available &mdash; Refresh</button></span>
+</div>
 
-  <div class="table-wrap">
-  <table>
-    <thead>
-      <tr><th>Time</th><th>Client</th><th>Service</th><th>Env</th><th>Method</th><th>Path</th><th>Status</th><th></th></tr>
-    </thead>
-    <tbody id="approval-body"></tbody>
-  </table>
-  </div>
-  <div id="approval-pager" class="pagination" style="display:none"></div>
-
-  <p class="text-sm text-muted mt-1" id="ttl-note"></p>
+<div class="appr-layout" id="appr-layout" data-view="list">
+  <section class="card appr-list" aria-label="Requests">
+    <div class="appr-count text-muted text-sm" id="approval-count" role="status"></div>
+    <div id="approval-list" class="appr-rows"></div>
+  </section>
+  <section class="card appr-detail" id="appr-detail" aria-live="off">
+    <button type="button" class="btn appr-back" data-action="backToList">&larr; Back to list</button>
+    <div id="appr-detail-body"></div>
+  </section>
 </div>
 
 <script nonce="{{$.CSPNonce}}">
 var allApprovals = [];
-var allClients = [];
-var allServices = [];
-var currentPage = 1;
-var perPage = 15;
 var currentTab = 'pending'; // 'pending' or 'history'
-
-function switchTab(tab) {
-  currentTab = tab;
-  document.getElementById('tab-pending').className = tab === 'pending' ? 'btn btn-sm btn-primary' : 'btn btn-sm';
-  document.getElementById('tab-history').className = tab === 'history' ? 'btn btn-sm btn-primary' : 'btn btn-sm';
-  document.getElementById('status-filter-row').style.display = tab === 'history' ? '' : 'none';
-  currentPage = 1;
-  loadApprovals();
-}
+var selectedId = '';
+var ttlMinutes = 60;
+var pendingTotal = 0;
 
 var loadSeq = 0;
 var queuedData = null; // live refetch held back while the user is interacting with the rows
 var queuedKey = '';    // approvalsKey() when queuedData was fetched
-var lastPointer = 0;   // last pointer activity over the rows
+var lastPointer = 0;   // last pointer activity over the list/detail
 var pointerType = 'mouse'; // 'mouse' | 'touch' | 'pen' of the last pointer event
 var queueTimer = null;
 
-function approvalsKey() {
-  return currentTab + '|' + document.getElementById('f-status').value + '|' +
-    document.getElementById('f-client').value + '|' + document.getElementById('f-service').value;
+function el(id) { return document.getElementById(id); }
+function isNarrow() { return window.matchMedia('(max-width: 900px)').matches; }
+
+function switchTab(tab) {
+  currentTab = tab;
+  el('tab-pending').setAttribute('aria-selected', tab === 'pending' ? 'true' : 'false');
+  el('tab-history').setAttribute('aria-selected', tab === 'history' ? 'true' : 'false');
+  el('status-filter-row').hidden = tab !== 'history';
+  selectedId = '';
+  setView('list');
+  loadApprovals();
 }
-// True while the pointer is over the rows (with recent pointer activity) or
-// keyboard focus is inside them: rows must not shift under an Approve/Reject
+
+function setView(v) { el('appr-layout').setAttribute('data-view', v); }
+
+function approvalsKey() {
+  return currentTab + '|' + el('f-status').value + '|' + el('f-client').value + '|' + el('f-service').value;
+}
+// True while the pointer is over the list/detail (with recent pointer activity)
+// or keyboard focus is inside them: rows must not shift under an Approve/Reject
 // click. Pointer focus (a button left focused after a click) does not count,
 // and a pointer resting for >5s (or sticky :hover on touch) stops holding.
 function interactingWithRows() {
-  var tbody = document.getElementById('approval-body');
-  if (tbody.querySelector(':focus-visible')) return true;
-  // Never flush while the pointer rests on a button in the rows.
-  if (tbody.querySelector('button:hover')) return true;
-  if (!tbody.matches(':hover')) return false;
-  // Mouse: hold while hovering (mouseleave and the nudge release it). Touch
-  // and pen have sticky :hover, so those expire after 5s without activity.
+  var box = el('appr-layout');
+  if (box.querySelector(':focus-visible')) return true;
+  if (box.querySelector('button:hover')) return true;
+  if (!box.matches(':hover')) return false;
   if (pointerType === 'mouse') return true;
   return Date.now() - lastPointer < 5000;
 }
@@ -105,7 +92,7 @@ function clearQueue() {
   queuedData = null;
   if (queueTimer) { clearInterval(queueTimer); queueTimer = null; }
 }
-function showNudge(on) { document.getElementById('approval-nudge').hidden = !on; }
+function showNudge(on) { el('approval-nudge').hidden = !on; }
 function flushQueued() {
   if (!queuedData) return;
   var data = queuedData, key = queuedKey;
@@ -119,230 +106,268 @@ function maybeFlushQueued() {
   if (queuedData && !interactingWithRows()) flushQueued();
 }
 
+function hasFilters() { return !!(el('f-client').value || el('f-service').value); }
+
+function fetchList(statuses, extra) {
+  var url = '/api/approvals/list?status=' + encodeURIComponent(statuses) + (extra || '');
+  return fetch(url, {credentials:'same-origin'}).then(function(r) {
+    if (r.status === 401) { window.location = '/admin/login'; return null; }
+    return r.json();
+  });
+}
+
+function loadPendingTotal(listData) {
+  if (listData) { pendingTotal = listData.length; renderCount(); return; }
+  fetchList('pending', '&limit=5000').then(function(d) {
+    if (!d) return;
+    pendingTotal = d.length;
+    renderCount();
+  });
+}
+function renderCount() { el('pending-count').textContent = String(pendingTotal); }
+
 // live=true: background refresh from the live channel (may be held back).
 function loadApprovals(live) {
-  var statuses = currentTab === 'pending' ? 'pending' : document.getElementById('f-status').value;
-  var url = '/api/approvals/list?status=' + encodeURIComponent(statuses);
-  var clientID = document.getElementById('f-client').value;
-  var serviceID = document.getElementById('f-service').value;
-  if (clientID) url += '&client_id=' + encodeURIComponent(clientID);
-  if (serviceID) url += '&service_id=' + encodeURIComponent(serviceID);
+  var statuses = currentTab === 'pending' ? 'pending' : el('f-status').value;
+  var extra = '';
+  var clientID = el('f-client').value;
+  var serviceID = el('f-service').value;
+  if (clientID) extra += '&client_id=' + encodeURIComponent(clientID);
+  if (serviceID) extra += '&service_id=' + encodeURIComponent(serviceID);
 
   var seq = ++loadSeq;
   var key = approvalsKey();
-  fetch(url, {credentials:'same-origin'})
-    .then(function(r) {
-      if (r.status === 401) { window.location = '/admin/login'; return; }
-      return r.json();
-    })
-    .then(function(data) {
-      // Drop out-of-order responses and ones for a tab/filter no longer shown.
-      if (!data || seq !== loadSeq || key !== approvalsKey()) return;
-      if (live === true && interactingWithRows()) {
-        queuedData = data;
-        queuedKey = key;
-        showNudge(true);
-        if (!queueTimer) queueTimer = setInterval(maybeFlushQueued, 1000);
-        return;
-      }
-      clearQueue();
-      showNudge(false);
-      allApprovals = data;
-      render();
-    });
+  fetchList(statuses, extra).then(function(data) {
+    // Drop out-of-order responses and ones for a tab/filter no longer shown.
+    if (!data || seq !== loadSeq || key !== approvalsKey()) return;
+    if (currentTab === 'pending' && !hasFilters()) loadPendingTotal(data); else loadPendingTotal(null);
+    if (live === true && interactingWithRows()) {
+      queuedData = data;
+      queuedKey = key;
+      showNudge(true);
+      if (!queueTimer) queueTimer = setInterval(maybeFlushQueued, 1000);
+      return;
+    }
+    clearQueue();
+    showNudge(false);
+    allApprovals = data;
+    render();
+  });
 }
 
-function onFilterChange() { currentPage = 1; render(); }
-function onPerPageChange() {
-  perPage = parseInt(document.getElementById('f-perpage').value, 10) || 15;
-  currentPage = 1;
-  render();
+function onFilterChange() { selectedId = ''; loadApprovals(); }
+
+function parseTime(s) {
+  if (!s) return NaN;
+  var t = Date.parse(String(s).replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? '' : 'Z'));
+  return t;
 }
-function goToPage(p) { currentPage = p; render(); }
+function expiryOf(a) { return parseTime(a.created_at) + ttlMinutes * 60000; }
+function fmtCountdown(ms) {
+  if (ms <= 0) return 'Expired';
+  var s = Math.ceil(ms / 1000), m = Math.floor(s / 60);
+  return m + ':' + (s % 60 < 10 ? '0' : '') + (s % 60);
+}
+function fmtAgo(ms) {
+  if (isNaN(ms)) return '';
+  var s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+  return Math.floor(s / 86400) + ' d ago';
+}
+function fmtLocal(s) {
+  var t = parseTime(s);
+  return isNaN(t) ? (s || '—') : new Date(t).toLocaleString();
+}
+function infoOf(a) {
+  var info = {};
+  try { info = JSON.parse(a.request_info || '{}') || {}; } catch(e) {}
+  return info;
+}
+function pill(a) {
+  switch (a.status) {
+    case 'pending':
+      var ms = expiryOf(a) - Date.now();
+      return DW.html`<span class="badge badge-yellow appr-pill" data-expires="${String(expiryOf(a))}">${ms <= 0 ? 'Expired' : 'Pending · ' + fmtCountdown(ms)}</span>`;
+    case 'approved': return DW.raw('<span class="badge badge-green appr-pill">Approved</span>');
+    case 'rejected': return DW.raw('<span class="badge badge-red appr-pill">Rejected</span>');
+    case 'ignored':  return DW.raw('<span class="badge badge-gray appr-pill">Ignored</span>');
+    default:         return DW.html`<span class="badge badge-gray appr-pill">${a.status}</span>`;
+  }
+}
+function indexOfSelected() {
+  for (var i = 0; i < allApprovals.length; i++) if (allApprovals[i].id === selectedId) return i;
+  return -1;
+}
 
 function render() {
-  var totalPages = Math.max(1, Math.ceil(allApprovals.length / perPage));
-  if (currentPage > totalPages) currentPage = totalPages;
-  if (currentPage < 1) currentPage = 1;
-
-  var start = (currentPage - 1) * perPage;
-  var end = Math.min(start + perPage, allApprovals.length);
-  var page = allApprovals.slice(start, end);
-
-  var counter = document.getElementById('approval-count');
-  if (allApprovals.length === 0) {
-    counter.textContent = 'No ' + currentTab + ' approvals matching filters';
-  } else {
-    counter.textContent = 'Showing ' + (start + 1) + '–' + end + ' of ' + allApprovals.length;
-  }
-
-  var tbody = document.getElementById('approval-body');
-  tbody.replaceChildren();
+  var counter = el('approval-count');
+  var list = el('approval-list');
+  list.replaceChildren();
 
   if (allApprovals.length === 0) {
-    DW.setHTML(tbody, DW.html`<tr><td colspan="8" class="text-muted">No approvals.</td></tr>`);
-    renderPager(totalPages);
+    selectedId = '';
+    counter.textContent = '';
+    DW.setHTML(list, DW.html`<div class="appr-empty"><strong>${currentTab === 'pending' ? 'No requests waiting' : 'No history yet'}</strong><span class="text-muted text-sm">${currentTab === 'pending' ? 'Held requests appear here as soon as a client sends one.' : 'Decided requests appear here.'}</span></div>`);
+    renderDetail(null);
+    setView('list');
     return;
   }
+  counter.textContent = allApprovals.length + (currentTab === 'pending' ? ' waiting' : ' decided');
 
+  if (indexOfSelected() < 0) { selectedId = allApprovals[0].id; if (isNarrow()) setView('list'); }
   var dash = DW.raw('<span class="text-muted">—</span>');
-  page.forEach(function(a) {
-    var info = {};
-    try { info = JSON.parse(a.request_info || '{}') || {}; } catch(e) {}
-    var actions = '';
-    if (a.status === 'pending') {
-      actions = DW.html`<button class="btn btn-sm btn-primary" data-action="approveOne" data-id="${a.id}">Approve</button> <button class="btn btn-sm btn-danger" data-action="rejectOne" data-id="${a.id}">Reject</button>`;
-    }
-    var tr = document.createElement('tr');
-    tr.id = 'approval-' + a.id;
-    DW.setHTML(tr, DW.html`<td class="text-muted text-sm" style="white-space:nowrap">${a.created_at}</td><td>${a.client_name || dash}</td><td><span class="badge badge-blue">${a.service_name || '?'}</span></td><td class="text-sm">${a.env_name || dash}</td><td>${info.method ? DW.html`<span class="badge badge-blue">${info.method}</span>` : '—'}</td><td class="mono text-sm">${info.path || '—'}</td><td>${renderStatus(a.status)}</td><td class="text-right" style="white-space:nowrap">${actions}</td>`);
-    tbody.appendChild(tr);
+  var rows = allApprovals.map(function(a) {
+    var info = infoOf(a);
+    var cur = a.id === selectedId;
+    return DW.html`<button type="button" class="appr-row${cur ? ' is-selected' : ''}" id="approval-${a.id}" data-action="selectApproval" data-id="${a.id}" aria-current="${cur ? 'true' : 'false'}"><span class="appr-row-top"><span class="appr-client">${a.client_name || dash}</span><span class="text-muted appr-arrow">→ ${a.service_name || '?'}</span>${pill(a)}</span><span class="appr-row-sub"><span class="appr-tag">${info.method || '—'}</span><span class="mono appr-path">${info.path || '—'}</span></span></button>`;
   });
+  DW.setHTML(list, DW.html`${rows}`);
+  renderDetail(allApprovals[indexOfSelected()]);
+}
 
-  renderPager(totalPages);
-
-  // Update tab pending counter
-  if (currentTab === 'pending') {
-    document.getElementById('pending-count').textContent = '(' + allApprovals.length + ')';
+function renderDetail(a) {
+  var box = el('appr-detail-body');
+  if (!a) {
+    DW.setHTML(box, DW.html`<div class="appr-empty appr-empty-detail"><strong>${currentTab === 'pending' ? 'No requests waiting' : 'Nothing selected'}</strong><span class="text-muted text-sm">Pending requests show up here for approval.</span></div>`);
+    return;
   }
+  var info = infoOf(a);
+  var open = a.status === 'pending';
+  var dash = DW.raw('<span class="text-muted">—</span>');
+  var actions = open ? DW.html`<div class="appr-actions"><button type="button" class="btn btn-primary appr-act" data-action="approveOne" data-id="${a.id}">Approve <kbd class="appr-kbd">A</kbd></button><button type="button" class="btn btn-danger appr-act" data-action="rejectOne" data-id="${a.id}">Reject <kbd class="appr-kbd">R</kbd></button><span class="text-muted text-sm appr-help">Approves this one request only. Next request asks again.</span></div>` : DW.raw('');
+  var bar = open ? DW.html`<div class="appr-bar"><button type="button" class="btn btn-danger appr-act" data-action="rejectOne" data-id="${a.id}">Reject</button><button type="button" class="btn btn-primary appr-act" data-action="approveOne" data-id="${a.id}">Approve</button></div>` : DW.raw('');
+  var seen = a.client_last_seen_at ? DW.html`last seen ${fmtAgo(parseTime(a.client_last_seen_at))}` : DW.raw('never seen');
+  var ver = a.client_version ? a.client_version : DW.raw('<span class="text-muted">version not reported</span>');
+  var decided = a.status === 'pending' ? DW.raw('') : DW.html`<dt>Decision</dt><dd>${a.status.charAt(0).toUpperCase() + a.status.slice(1)}${a.approved_at ? DW.html` at ${fmtLocal(a.approved_at)}` : ''}${a.expires_at && a.status === 'approved' ? DW.html` · grant until ${fmtLocal(a.expires_at)}` : ''}</dd>`;
+  DW.setHTML(box, DW.html`<div class="appr-detail-head"><div class="appr-detail-title"><h2 id="appr-title">${a.client_name || 'Unknown client'} wants to call ${a.service_name || 'an unknown service'}</h2><div class="appr-reqline"><span class="appr-tag">${info.method || '—'}</span><span class="mono appr-path-full">${info.path || '—'}</span></div></div>${pill(a)}</div>${actions}<dl class="appr-dl"><dt>Phantom token</dt><dd><span class="mono">${a.env_name || '—'}</span>${a.credential_name ? DW.html` · ${a.credential_name}` : ''}</dd><dt>Why it was held</dt><dd>${a.requires_approval ? 'This phantom token requires admin approval before requests are forwarded.' : 'Phantom token approval requirement has since been turned off.'}</dd><dt>ACL check</dt><dd>Not recorded. ACLs are checked when a request is forwarded after approval.</dd><dt>Client</dt><dd>${a.client_name || dash} · ${seen} · ${ver}</dd><dt>Received</dt><dd>${fmtLocal(a.created_at)} <span class="text-muted">(${fmtAgo(parseTime(a.created_at))})</span></dd>${decided}</dl><div class="appr-body"><div class="text-muted text-sm">Request body</div><p class="appr-body-note text-sm">Not captured. Duckway stores only the method and path of a held request.</p></div>${bar}`);
 }
 
-function renderStatus(s) {
-  switch (s) {
-    case 'pending':  return DW.raw('<span class="badge badge-yellow">Pending</span>');
-    case 'approved': return DW.raw('<span class="badge badge-green">Approved</span>');
-    case 'rejected': return DW.raw('<span class="badge badge-red">Rejected</span>');
-    case 'ignored':  return DW.raw('<span class="badge badge-gray">Ignored</span>');
-    default:         return DW.html`<span class="badge badge-gray">${s}</span>`;
-  }
-}
-
-function renderPager(totalPages) {
-  var pager = document.getElementById('approval-pager');
-  if (totalPages <= 1) { pager.style.display = 'none'; pager.replaceChildren(); return; }
-  pager.style.display = '';
-  pager.replaceChildren();
-
-  function btn(label, page, opts) {
-    opts = opts || {};
-    var b = document.createElement('button');
-    b.className = 'btn btn-sm' + (opts.active ? ' btn-primary' : '');
-    b.textContent = label;
-    if (opts.disabled) b.disabled = true;
-    else { b.setAttribute('data-action', 'goToPage'); b.dataset.page = String(page); }
-    return b;
-  }
-  pager.appendChild(btn('‹ Prev', currentPage - 1, {disabled: currentPage <= 1}));
-
-  var pages = [];
-  var add = function(p) { if (p >= 1 && p <= totalPages && pages.indexOf(p) === -1) pages.push(p); };
-  add(1);
-  for (var i = currentPage - 2; i <= currentPage + 2; i++) add(i);
-  add(totalPages);
-  pages.sort(function(a, b) { return a - b; });
-
-  var prev = 0;
-  pages.forEach(function(p) {
-    if (p - prev > 1) {
-      var span = document.createElement('span');
-      span.className = 'text-muted';
-      span.style.padding = '0 0.25rem';
-      span.textContent = '…';
-      pager.appendChild(span);
-    }
-    pager.appendChild(btn(String(p), p, {active: p === currentPage}));
-    prev = p;
+function selectById(id, scroll) {
+  selectedId = id;
+  var list = el('approval-list');
+  list.querySelectorAll('.appr-row').forEach(function(b) {
+    var cur = b.getAttribute('data-id') === id;
+    b.classList.toggle('is-selected', cur);
+    b.setAttribute('aria-current', cur ? 'true' : 'false');
+    if (cur && scroll) b.scrollIntoView({block: 'nearest'});
   });
-  pager.appendChild(btn('Next ›', currentPage + 1, {disabled: currentPage >= totalPages}));
+  var i = indexOfSelected();
+  renderDetail(i >= 0 ? allApprovals[i] : null);
+}
+function moveSelection(delta) {
+  if (!allApprovals.length) return;
+  var i = indexOfSelected();
+  var n = Math.min(allApprovals.length - 1, Math.max(0, (i < 0 ? 0 : i + delta)));
+  selectById(allApprovals[n].id, true);
 }
 
-function approveOne(id) {
-  fetch('/api/approvals/' + encodeURIComponent(id) + '/approve', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: '{}',
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(d) {
-    if (d.error) { showToast(d.error, 'error'); return; }
-    showToast('Approved', 'success');
-    loadApprovals();
-  });
+var acting = false;
+function decide(id, verb) {
+  if (acting) return;
+  acting = true;
+  // Choose the neighbour to select next before the row disappears.
+  var i = -1;
+  for (var k = 0; k < allApprovals.length; k++) if (allApprovals[k].id === id) i = k;
+  var next = i >= 0 ? (allApprovals[i + 1] || allApprovals[i - 1]) : null;
+  var opts = {method: 'POST', credentials: 'same-origin'};
+  if (verb === 'approve') { opts.headers = {'Content-Type': 'application/json'}; opts.body = '{}'; }
+  fetch('/api/approvals/' + encodeURIComponent(id) + '/' + verb, opts)
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      acting = false;
+      if (d.error) { showToast(d.error, 'error'); loadApprovals(); return; }
+      showToast(verb === 'approve' ? 'Approved' : 'Rejected', 'success');
+      if (selectedId === id) selectedId = next ? next.id : '';
+      if (isNarrow()) setView('list');
+      loadApprovals();
+    })
+    .catch(function() { acting = false; showToast('Request failed', 'error'); });
 }
+function approveOne(id) { decide(id, 'approve'); }
+function rejectOne(id) { decide(id, 'reject'); }
 
-function rejectOne(id) {
-  fetch('/api/approvals/' + encodeURIComponent(id) + '/reject', {
-    method: 'POST',
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(d) {
-    if (d.error) { showToast(d.error, 'error'); return; }
-    showToast('Rejected', 'success');
-    loadApprovals();
-  });
-}
-
-DW.actions.switchTab = function(el) { switchTab(el.dataset.tab); };
+DW.actions.switchTab = function(e) { switchTab(e.dataset.tab); };
 DW.actions.loadApprovals = function() { loadApprovals(); };
 DW.actions.onFilterChange = function() { onFilterChange(); };
-DW.actions.onPerPageChange = function() { onPerPageChange(); };
-DW.actions.goToPage = function(el) { goToPage(parseInt(el.dataset.page, 10) || 1); };
-DW.actions.approveOne = function(el) { approveOne(el.dataset.id); };
-DW.actions.rejectOne = function(el) { rejectOne(el.dataset.id); };
-
-// Live: refetch on approval changes. Filters, page and tab live in module
-// state and render() clamps the page, so the view is preserved. Deferred while
-// a modal/confirm is open or the tab is hidden, then runs once.
-DW.live.on('approvals', function() { loadApprovals(true); }, {defer: true});
+DW.actions.approveOne = function(e) { approveOne(e.dataset.id); };
+DW.actions.rejectOne = function(e) { rejectOne(e.dataset.id); };
+DW.actions.selectApproval = function(e) { selectById(e.dataset.id, false); setView('detail'); window.scrollTo(0, 0); };
+DW.actions.backToList = function() { setView('list'); };
 DW.actions.flushApprovals = function() { flushQueued(); };
+
+// Live: refetch on approval changes. Deferred while a modal/confirm is open
+// or the tab is hidden, then runs once.
+DW.live.on('approvals', function() { loadApprovals(true); }, {defer: true});
+
 (function() {
-  var tbody = document.getElementById('approval-body');
+  var box = el('appr-layout');
   ['pointermove', 'pointerdown'].forEach(function(t) {
-    tbody.addEventListener(t, function(e) {
+    box.addEventListener(t, function(e) {
       lastPointer = Date.now();
       pointerType = e.pointerType || 'mouse';
     });
   });
-  tbody.addEventListener('mouseleave', function() {
+  box.addEventListener('mouseleave', function() {
     // A button focused by a click (not the keyboard) must not hold the queue.
     var a = document.activeElement;
-    if (a && tbody.contains(a) && !a.matches(':focus-visible')) a.blur();
+    if (a && box.contains(a) && !a.matches(':focus-visible')) a.blur();
     maybeFlushQueued();
   });
-  tbody.addEventListener('focusout', function() { setTimeout(maybeFlushQueued, 0); });
+  box.addEventListener('focusout', function() { setTimeout(maybeFlushQueued, 0); });
+
+  document.addEventListener('keydown', function(e) {
+    if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+    var t = e.target;
+    if (t && t.closest && t.closest('input,select,textarea,[contenteditable="true"]')) return;
+    if (DW.live.modalOpen()) return;
+    var k = e.key;
+    if (k === 'j' || k === 'ArrowDown') { e.preventDefault(); moveSelection(1); }
+    else if (k === 'k' || k === 'ArrowUp') { e.preventDefault(); moveSelection(-1); }
+    else if ((k === 'a' || k === 'A' || k === 'r' || k === 'R') && !e.repeat) {
+      var i = indexOfSelected();
+      if (i < 0 || allApprovals[i].status !== 'pending') return;
+      if (isNarrow() && box.getAttribute('data-view') !== 'detail') return;
+      e.preventDefault();
+      decide(allApprovals[i].id, (k === 'a' || k === 'A') ? 'approve' : 'reject');
+    }
+  });
+
+  // Live countdown: updates text only, never rebuilds the rows.
+  setInterval(function() {
+    document.querySelectorAll('[data-expires]').forEach(function(p) {
+      var ms = parseInt(p.getAttribute('data-expires'), 10) - Date.now();
+      p.textContent = ms <= 0 ? 'Expired' : 'Pending · ' + fmtCountdown(ms);
+      p.classList.toggle('badge-red', ms <= 60000);
+      p.classList.toggle('badge-yellow', ms > 60000);
+    });
+  }, 1000);
 })();
 
 document.addEventListener('DOMContentLoaded', function() {
-  // Populate filter dropdowns from /api/clients and /api/services
   fetch('/api/clients', {credentials:'same-origin'}).then(function(r) { return r.json(); }).then(function(cs) {
-    allClients = cs || [];
-    var sel = document.getElementById('f-client');
-    allClients.forEach(function(c) {
+    var sel = el('f-client');
+    (cs || []).forEach(function(c) {
       var opt = document.createElement('option');
       opt.value = c.id; opt.textContent = c.name;
       sel.appendChild(opt);
     });
   });
   fetch('/api/services', {credentials:'same-origin'}).then(function(r) { return r.json(); }).then(function(ss) {
-    allServices = ss || [];
-    var sel = document.getElementById('f-service');
-    allServices.forEach(function(s) {
+    var sel = el('f-service');
+    (ss || []).forEach(function(s) {
       if (!s.is_active) return;
       var opt = document.createElement('option');
       opt.value = s.id; opt.textContent = s.display_name || s.name;
       sel.appendChild(opt);
     });
   });
-
-  // Show TTL note
   fetch('/api/settings', {credentials:'same-origin'}).then(function(r) { return r.json(); }).then(function(s) {
-    var ttl = s.approval_request_ttl_minutes || '60';
-    document.getElementById('ttl-note').textContent =
-      'Pending approvals are auto-marked as "ignored" after ' + ttl + ' minutes (configurable in Settings).';
+    ttlMinutes = parseInt(s.approval_request_ttl_minutes, 10) || 60;
+    el('ttl-note').textContent = 'Requests held because their phantom token requires admin approval. Undecided requests are ignored after ' + ttlMinutes + ' min (Settings).';
+    render();
   });
-
   loadApprovals();
 });
 </script>
