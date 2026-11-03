@@ -59,6 +59,8 @@ var setup = {apiKeyId: '', guilds: [], categories: [], bot: null, invite: '', se
 var opener = null;
 var seq = 0;           // invalidates async work when the drawer content changes
 var busy = false;
+var run = {msg: false, verify: false, fix: false};
+var cancelPoll = null;
 
 function $(id) { return document.getElementById(id); }
 function sel(b) { return b ? DW.raw('selected') : ''; }
@@ -151,7 +153,7 @@ function openDrawer() {
 function closeDrawer(restore) {
   if (!drawerOpen()) return;
   seq++;
-  mode = ''; cur = null; form = null; busy = false;
+  mode = ''; cur = null; form = null; busy = false; run.msg = run.verify = run.fix = false; cancelPoll = null;
   $('cc-drawer').classList.remove('open');
   $('cc-drawer').setAttribute('aria-hidden', 'true');
   $('cc-scrim').hidden = true;
@@ -313,41 +315,43 @@ function runCheckFix(keyID, guildID, catID, panel, my) {
 }
 
 DW.actions.checkFixView = function() {
-  if (!cur || busy) return;
+  if (!cur || run.fix) return;
   var cfg = parseCfg(cur);
   var panel = $('cc-result');
   if (!cfg.guild_id || !cfg.category_id) { DW.setHTML(panel, resultCard(false, 'Server and category are not set', 'Edit this control channel and choose a server and category.', [], '')); return; }
-  var ids = ['cc-act-msg', 'cc-act-verify', 'cc-act-fix'];
-  setBusy(ids, true); busy = true;
+  var ids = ['cc-act-fix'];
+  setBusy(ids, true); run.fix = true;
   var my = seq;
-  runCheckFix(cur.api_key_id, cfg.guild_id, cfg.category_id, panel, my).then(function() { if (my === seq) { busy = false; setBusy(ids, false); } });
+  runCheckFix(cur.api_key_id, cfg.guild_id, cfg.category_id, panel, my).then(function() { run.fix = false; if (my === seq) setBusy(ids, false); });
 };
 
 DW.actions.verifyChannel = function() {
-  if (!cur || busy) return;
-  var ids = ['cc-act-msg', 'cc-act-verify', 'cc-act-fix'];
+  if (!cur || run.verify) return;
+  var ids = ['cc-act-verify'];
   var panel = $('cc-result'), my = seq;
-  setBusy(ids, true); busy = true;
+  setBusy(ids, true); run.verify = true;
   DW.setHTML(panel, pending('Verifying: creating and deleting a temporary channel'));
   fetchJSON('/api/cc/' + encodeURIComponent(cur.id) + '/test', {method: 'POST'}).then(function(d) {
+    run.verify = false;
     if (my !== seq) return;
-    busy = false; setBusy(ids, false);
+    setBusy(ids, false);
     if (d.error) { DW.setHTML(panel, resultCard(false, 'Verification failed', d.error, [], '')); return; }
     DW.setHTML(panel, resultCard(!!d.ok, d.ok ? 'Bot token, server, category and channel permissions all work' : 'A permission check failed', '', d.steps, d.ok ? '' : DW.raw('<p class="text-sm">Run Check &amp; fix to try granting the missing access.</p>')));
   }).catch(function(err) {
+    run.verify = false;
     if (my !== seq) return;
-    busy = false; setBusy(ids, false);
+    setBusy(ids, false);
     DW.setHTML(panel, resultCard(false, 'Request failed', err.message, [], ''));
   });
 };
 
 DW.actions.sendTestMessage = function() {
-  if (!cur || busy) return;
-  var ids = ['cc-act-msg', 'cc-act-verify', 'cc-act-fix'];
+  if (!cur || run.msg) return;
+  var ids = ['cc-act-msg'];
   var panel = $('cc-result'), my = seq, c = cur;
-  setBusy(ids, true); busy = true;
+  setBusy(ids, true); run.msg = true;
   DW.setHTML(panel, pending('Sending test message to the ' + agentLabel(c.agent_type) + ' agent'));
-  function done() { if (my === seq) { busy = false; setBusy(ids, false); } }
+  function done() { run.msg = false; cancelPoll = null; if (my === seq) setBusy(ids, false); }
   fetchJSON('/api/cc/' + encodeURIComponent(c.id) + '/test-agent', {method: 'POST'}).then(function(d) {
     if (my !== seq) return;
     if (d.error) { done(); DW.setHTML(panel, resultCard(false, 'Test message failed', d.error, [], '')); return; }
@@ -363,13 +367,18 @@ DW.actions.sendTestMessage = function() {
   }).catch(function(err) { done(); if (my === seq) DW.setHTML(panel, resultCard(false, 'Request failed', err.message, [], '')); });
 };
 
+DW.actions.cancelTest = function() { if (cancelPoll) cancelPoll(); };
 var TEST_LABEL = {queued: 'Queued in inbox', received: 'Watcher received it', started: 'Agent started', replied: 'Agent replied', failed: 'Test failed'};
 function pollTest(ccID, testID, handle, panel, my, done) {
-  var started = Date.now();
+  var started = Date.now(), stopped = false;
+  cancelPoll = function() {
+    stopped = true; done();
+    DW.setHTML(panel, resultCard(false, 'Stopped waiting', 'The test message was already sent; the agent may still reply later. You can run the test again.', [], ''));
+  };
   function tick() {
-    if (my !== seq) return;
+    if (my !== seq || stopped) return;
     fetchJSON('/api/cc/' + encodeURIComponent(ccID) + '/test-agent/' + encodeURIComponent(testID)).then(function(t) {
-      if (my !== seq) return;
+      if (my !== seq || stopped) return;
       if (t.error) throw new Error(t.error);
       var st = t.status || 'queued';
       var fin = st === 'replied' || st === 'failed';
@@ -382,12 +391,12 @@ function pollTest(ccID, testID, handle, panel, my, done) {
       }
       if (Date.now() - started > 120000) {
         done();
-        DW.setHTML(panel, resultCard(false, 'Still waiting after 120s', '', steps, DW.raw('<p class="text-sm">Check <code>duckway cc watch status</code> and <code>cc-watch.log</code> on the client.</p>')));
+        DW.setHTML(panel, resultCard(false, 'No reply after 120 seconds', 'The agent did not answer in time. The message may still be queued. You can run the test again.', steps, DW.raw('<p class="text-sm">Check <code>duckway cc watch status</code> and <code>cc-watch.log</code> on the client.</p>')));
         return;
       }
-      DW.setHTML(panel, DW.html`<div class="cc-card"><div class="cc-card-head"><span class="badge badge-gray">Working</span><strong>${title}</strong></div>${stepList(steps)}</div>`);
+      DW.setHTML(panel, DW.html`<div class="cc-card"><div class="cc-card-head"><span class="badge badge-gray">Working</span><strong>${title}</strong></div>${stepList(steps)}<p class="mt-2"><button type="button" class="btn btn-sm" data-action="cancelTest">Stop waiting</button></p></div>`);
       setTimeout(tick, 1000);
-    }).catch(function(err) { done(); if (my === seq) DW.setHTML(panel, resultCard(false, 'Status request failed', err.message, [], '')); });
+    }).catch(function(err) { if (stopped) return; done(); if (my === seq) DW.setHTML(panel, resultCard(false, 'Status request failed', err.message, [], '')); });
   }
   tick();
 }

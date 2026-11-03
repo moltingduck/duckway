@@ -1001,6 +1001,7 @@ a.ro-stat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .cl-tablecard { padding: 0; overflow: hidden; }
 .cl-table { min-width: 52rem; }
 .cl-table td { vertical-align: middle; }
+@media (min-width: 901px) { .cl-table th, .cl-table td.cl-c-canary, .cl-table td.cl-c-seen, .cl-table td.cl-c-status { white-space: nowrap; } }
 .cl-name { font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
 .cl-name:hover { color: var(--accent-text); }
 .cl-id { display: block; color: var(--muted); font-family: var(--mono); font-size: 0.72rem; }
