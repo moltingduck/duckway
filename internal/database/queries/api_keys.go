@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/models"
 )
@@ -574,4 +575,28 @@ func (q *APIKeyQueries) IncrementUsage(id string) error {
 func (q *APIKeyQueries) UpdateUsageSnapshot(id, snapshot string) error {
 	_, err := q.db.Exec("UPDATE api_keys SET usage_snapshot = ? WHERE id = ?", snapshot, id)
 	return err
+}
+
+// TokensSince returns, per credential id, input+output tokens recorded in
+// conversation_usage at or after since. One aggregate query; the cutoff is
+// formatted in Go so the SQL stays portable. Credentials with no usage rows
+// in the window are absent from the map (no token data).
+func (q *APIKeyQueries) TokensSince(since time.Time) (map[string]int64, error) {
+	rows, err := q.db.Query(`SELECT api_key_id, CAST(SUM(input_tokens + output_tokens) AS INTEGER)
+		FROM conversation_usage WHERE api_key_id <> '' AND created_at >= ? GROUP BY api_key_id`,
+		since.UTC().Format(OverviewTimeFormat))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var n int64
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
 }

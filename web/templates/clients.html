@@ -15,7 +15,7 @@
   <span class="cd-banner-actions"><a class="btn btn-sm" href="https://canarytokens.org" target="_blank" rel="noopener noreferrer">Open canarytokens.org</a><button type="button" class="btn btn-sm" data-action="dismissFlash">Dismiss</button></span>
 </div>
 
-<nav class="cl-subtabs" aria-label="Fleet views"><a href="/admin/clients" aria-current="page">All clients</a><a href="/admin/clients/rollouts">Rollouts</a></nav>
+<nav class="cl-subtabs" aria-label="Clients sections"><a href="/admin/clients" aria-current="page">Clients · <span id="cl-nav-count">{{len .Clients}}</span></a><a href="/admin/clients/rollouts">Rollouts</a></nav>
 
 <div class="cl-tabs" role="tablist" aria-label="Client status" id="cl-tablist">
   <button type="button" role="tab" class="cl-tab" id="cl-tab-all" aria-selected="true" aria-controls="cl-panel" data-action="pickTab" data-tab="all">All · <span id="cnt-all">0</span></button>
@@ -212,6 +212,7 @@ function setTabLabelCounts(all) {
   el('cnt-offline').textContent = base.filter(function(d) { return d.status === 'offline'; }).length;
   el('cnt-update').textContent = base.filter(function(d) { return d.needsUpdate; }).length;
   el('cl-total') && (el('cl-total').textContent = all.length);
+  el('cl-nav-count').textContent = all.length;
 }
 function row(d) {
   var c = d.c, sp = STATUS_PILL[d.status];

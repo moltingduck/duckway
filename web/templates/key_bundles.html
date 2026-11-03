@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="page-header kb-header">
   <div>
-    <h1>Key bundles</h1>
+    <div class="dp-titlerow"><h1>Key bundles</h1><button type="button" class="term-hint" data-term="key-bundle" aria-label="What is a key bundle?">ⓘ</button></div>
     <p class="kb-sub">Named sets of keys, one per service, that you assign to clients in one step.</p>
   </div>
   <div class="kb-header-actions">
@@ -174,8 +174,9 @@
           <p class="text-sm text-muted">${plural(entries.length, 'entry')} · ${plural(clients.length, 'client')} assigned</p></div>
         <div class="kb-card-actions">
           <button type="button" class="btn btn-sm btn-primary" data-action="openAssign">Assign to client</button>
-          <button type="button" class="btn btn-sm" data-action="openRename" data-name="${d.name}" data-desc="${d.description || ''}">Rename</button>
-          <button type="button" class="btn btn-sm btn-danger" data-action="askDeleteBundle" data-name="${d.name}">Delete</button>
+          <details class="more-menu"><summary class="btn btn-sm" aria-label="More actions for ${d.name}">More</summary><div class="more-menu-list" role="menu">
+            <button type="button" role="menuitem" data-action="openRename" data-name="${d.name}" data-desc="${d.description || ''}">Rename</button>
+            <button type="button" role="menuitem" class="dp-menu-dz" data-action="askDeleteBundle" data-name="${d.name}">Delete</button></div></details>
         </div>
       </div>
       <h3>Entries</h3>
