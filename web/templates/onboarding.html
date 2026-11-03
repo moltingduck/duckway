@@ -33,6 +33,7 @@
   </div>
 </div>
 
+<script nonce="{{$.CSPNonce}}" src="/static/cc-form.js"></script>
 <script nonce="{{$.CSPNonce}}">
 (function () {
 'use strict';
@@ -41,11 +42,6 @@ var STEPS = [
   {title: 'Credentials', sub: 'Key bundle'},
   {title: 'Control channel', sub: 'Optional'},
   {title: 'Install', sub: 'One-time command'}
-];
-var AGENTS = [
-  {value: 'claude_code', label: 'Claude Code'},
-  {value: 'codex', label: 'Codex'},
-  {value: 'openclaw', label: 'OpenClaw'}
 ];
 var S = {
   step: 1, draft: null, name: '', policy: 'managed', suiteID: '', suites: [], suiteDetail: {}, gone: false,
@@ -146,45 +142,25 @@ function discordKeys() {
   return svc ? S.keys.filter(function (k) { return k.service_id === svc.id && k.is_active; }) : [];
 }
 function ccFields() {
-  var f = S.ccf;
-  var keys = discordKeys();
-  var keyOpts = [DW.html`<option value="">Select a bot credential</option>`].concat(keys.map(function (k) {
-    return DW.html`<option value="${k.id}"${k.id === f.keyID ? DW.raw(' selected') : ''}>${k.name}</option>`;
-  }));
-  var agentOpts = AGENTS.map(function (a) { return DW.html`<option value="${a.value}"${a.value === f.agent ? DW.raw(' selected') : ''}>${a.label}</option>`; });
-  var sandbox = '';
-  if (f.agent === 'codex') {
-    sandbox = DW.html`<div class="form-group"><label for="wz-sandbox">Codex sandbox</label><select id="wz-sandbox" data-on-change="onCCField">${['workspace-write', 'read-only', 'danger-full-access', 'none'].map(function (v) { return DW.html`<option value="${v}"${v === f.sandbox ? DW.raw(' selected') : ''}>${v}</option>`; })}</select><span class="text-sm text-muted">Use danger-full-access only on trusted machines.</span></div>`;
-  }
+  var f = S.ccf, F = DW.ccForm;
+  var sandbox = f.agent === 'codex'
+    ? F.sandboxField({id: 'wz-sandbox', value: f.sandbox, action: 'onCCField', hint: DW.raw('<span class="text-sm text-muted">Use danger-full-access only on trusted machines.</span>')})
+    : '';
   var dest = '';
   if (f.keyID) {
     if (f.loading === 'setup') dest = DW.raw('<p class="text-muted text-sm" role="status">Loading servers&hellip;</p>');
     else if (f.setup && (f.setup.guilds || []).length) {
-      var guildOpts = f.setup.guilds.map(function (g) { return DW.html`<option value="${g.id}"${g.id === f.guildID ? DW.raw(' selected') : ''}>${g.name}</option>`; });
-      var catOpts = [DW.html`<option value="__new__"${f.categoryID === '__new__' ? DW.raw(' selected') : ''}>+ Create “${S.name}”</option>`].concat((f.categories || []).map(function (c) {
-        return DW.html`<option value="${c.id}"${c.id === f.categoryID ? DW.raw(' selected') : ''}>${c.name}</option>`;
-      }));
-      dest = DW.html`<div class="wz-grid"><div class="form-group"><label for="wz-guild">Server</label><select id="wz-guild" data-on-change="onGuild">${guildOpts}</select></div><div class="form-group"><label for="wz-category">Category</label><select id="wz-category" data-on-change="onCCField">${catOpts}</select></div></div>${checkRow()}`;
+      dest = DW.html`${F.grid(DW.html`${F.serverField({id: 'wz-guild', label: 'Server', items: f.setup.guilds, value: f.guildID, action: 'onGuild'})}${F.categoryField({id: 'wz-category', label: 'Category', items: f.categories, value: f.categoryID, action: 'onCCField', leading: [{value: '__new__', label: '+ Create “' + S.name + '”'}]})}`)}${checkRow()}`;
     } else {
       var why = f.setup && f.setup.guilds_error ? 'Could not list servers: ' + f.setup.guilds_error : 'The bot is not in any server yet.';
       var invite = f.setup && f.setup.invite_url && /^https?:\/\//i.test(f.setup.invite_url) ? DW.html` <a href="${f.setup.invite_url}" target="_blank" rel="noopener">Invite the bot</a>` : '';
       dest = DW.html`<p class="text-muted text-sm">${why}${invite} <button type="button" class="ro-linkbtn" data-action="reloadSetup">Refresh servers</button></p>`;
     }
   }
-  return DW.html`<div class="wz-grid"><div class="form-group"><label for="wz-agent">Agent</label><select id="wz-agent" data-on-change="onCCField">${agentOpts}</select></div><div class="form-group"><label for="wz-bot">Discord bot</label><select id="wz-bot" data-on-change="onBot">${keyOpts}</select></div></div>${sandbox}${dest}`;
+  return DW.html`${F.grid(DW.html`${F.agentField({id: 'wz-agent', value: f.agent, action: 'onCCField'})}${F.credentialField({id: 'wz-bot', label: 'Discord bot', keys: discordKeys(), value: f.keyID, action: 'onBot', prompt: 'Select a bot credential'})}`)}${sandbox}${dest}`;
 }
 function checkRow() {
-  var c = S.ccf.check;
-  var pill, text;
-  if (S.ccf.categoryID === '__new__') { pill = DW.raw('<span class="ro-pill ro-pill-mute">Not checked</span>'); text = 'The category is created with bot access when you continue.'; }
-  else if (!c) { pill = DW.raw('<span class="ro-pill ro-pill-mute">Not checked</span>'); text = 'Check that the bot can create channels and post in this category.'; }
-  else if (c.busy) { pill = DW.raw('<span class="ro-pill ro-pill-mute">Checking</span>'); text = 'Checking Discord permissions…'; }
-  else if (c.ok) { pill = DW.raw('<span class="ro-pill ro-pill-ok">Ready</span>'); text = 'Bot can create channels and post in this category.'; }
-  else { pill = DW.raw('<span class="ro-pill ro-pill-bad">Needs permissions</span>'); text = c.error || 'Permission check failed.'; }
-  var steps = c && !c.busy && !c.ok && c.steps ? DW.html`<ul class="wz-checks">${c.steps.map(function (s) { return DW.html`<li>${s.ok ? 'Pass' : 'Fail'} · ${s.name}${s.note ? ' — ' + s.note : ''}</li>`; })}</ul>` : '';
-  var fix = c && !c.busy && !c.ok ? DW.html` <button type="button" class="btn btn-sm" data-action="grantAccess">Grant access</button>` : '';
-  var dis = S.ccf.categoryID === '__new__' ? DW.raw(' disabled') : '';
-  return DW.html`<div class="wz-check" id="wz-check">${pill}<span class="wz-check-text">${text}</span>${fix}<button type="button" class="btn btn-sm" id="wz-check-btn" data-action="checkCC"${dis}>Check again</button></div>${steps}`;
+  return DW.ccForm.checkRow({rowId: 'wz-check', buttonId: 'wz-check-btn', skipped: S.ccf.categoryID === '__new__', check: S.ccf.check, checkAction: 'checkCC', grantAction: 'grantAccess'});
 }
 function step3() {
   var body;
