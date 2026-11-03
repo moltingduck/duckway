@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -358,33 +359,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if result.NeedApproval {
-		approvalID, err := CreatePendingApproval(h.approvals, result.PlaceholderID, r.Method, upstreamPath)
-		if err != nil {
-			log.Printf("failed to create approval: %v", err)
-			jsonError(w, "failed to create approval request", http.StatusInternalServerError)
-			return
-		}
-
-		// Send notification
-		if h.notifier != nil {
-			h.notifier.NotifyApprovalNeeded(services.ApprovalNotification{
-				ApprovalID:    approvalID,
-				PlaceholderID: result.PlaceholderID,
-				ClientName:    client.Name,
-				ServiceName:   serviceName,
-				Method:        r.Method,
-				Path:          upstreamPath,
-				AdminURL:      "/admin/approvals",
-			})
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error":       "duckway_approval_pending",
-			"message":     "This API key usage requires admin approval. Retry after approval.",
-			"approval_id": approvalID,
-		})
+		h.holdForApproval(w, r, client, serviceName, result.PlaceholderID, r.Method, upstreamPath, "", "")
 		return
 	}
 
@@ -447,15 +422,41 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Any deny wins (403). Otherwise, if some layer matched an approve rule the
+	// request is held in the same approval flow as token-wide requires_approval
+	// and forwarded only once an admin has approved that exact request.
+	var approveLayer, approveRule string
 	for _, layer := range aclLayers {
 		if layer.config == "" {
 			continue
 		}
 		permResult := h.permissions.Check(layer.config, result.PlaceholderID, aclMethod, aclPath, bodyBytes)
+		if permResult.NeedsApproval {
+			if approveLayer == "" {
+				approveLayer, approveRule = layer.name, permResult.RuleName
+			}
+			continue
+		}
 		if !permResult.Allowed {
 			jsonError(w, "permission denied ("+layer.name+"): "+permResult.Reason, http.StatusForbidden)
 			return
 		}
+	}
+	if approveLayer != "" && h.approvals != nil {
+		scope := ruleApprovalScope(aclMethod, aclPath)
+		if _, err := h.approvals.GetValidScopedApproval(result.PlaceholderID, scope); err != nil {
+			if err != sql.ErrNoRows {
+				log.Printf("check rule approval for %s: %v", result.PlaceholderID, err)
+				jsonError(w, "failed to check approval", http.StatusInternalServerError)
+				return
+			}
+			h.holdForApproval(w, r, client, serviceName, result.PlaceholderID, aclMethod, aclPath, scope, approveRule+" ("+approveLayer+")")
+			return
+		}
+	} else if approveLayer != "" {
+		// No approval store wired: never forward an approve-gated request.
+		jsonError(w, "permission denied ("+approveLayer+"): approval required", http.StatusForbidden)
+		return
 	}
 
 	// Build upstream URL
@@ -1530,6 +1531,57 @@ func isGitHubSmartHTTPPath(path string) bool {
 	return strings.HasSuffix(path, ".git/info/refs") ||
 		strings.HasSuffix(path, ".git/git-upload-pack") ||
 		strings.HasSuffix(path, ".git/git-receive-pack")
+}
+
+// ruleApprovalScope is the request signature a per-rule approval is bound to:
+// an approval for POST /repos/a/b/issues never unlocks DELETE or another path.
+func ruleApprovalScope(method, path string) string {
+	return "rule:" + strings.ToUpper(method) + " " + path
+}
+
+// holdForApproval records (or reuses) a pending approval, notifies the admin
+// channels and answers 403 duckway_approval_pending. scope is "" for the
+// token-wide flow; for an approve rule it is the request signature and rule
+// describes which rule/layer asked for approval.
+func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, client *models.Client, serviceName, placeholderID, method, path, scope, rule string) {
+	approvalID := ""
+	if scope != "" {
+		if p, err := h.approvals.GetPendingScoped(placeholderID, scope); err == nil {
+			approvalID = p.ID
+		}
+	}
+	if approvalID == "" {
+		var err error
+		approvalID, err = CreatePendingApproval(h.approvals, placeholderID, method, path, scope, rule)
+		if err != nil {
+			log.Printf("failed to create approval: %v", err)
+			jsonError(w, "failed to create approval request", http.StatusInternalServerError)
+			return
+		}
+		if h.notifier != nil {
+			h.notifier.NotifyApprovalNeeded(services.ApprovalNotification{
+				ApprovalID:    approvalID,
+				PlaceholderID: placeholderID,
+				ClientName:    client.Name,
+				ServiceName:   serviceName,
+				Method:        method,
+				Path:          path,
+				Rule:          rule,
+				AdminURL:      "/admin/approvals",
+			})
+		}
+	}
+	msg := "This API key usage requires admin approval. Retry after approval."
+	if scope != "" {
+		msg = "This request matches an approval rule and needs admin approval. Retry after approval."
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	json.NewEncoder(w).Encode(map[string]string{
+		"error":       "duckway_approval_pending",
+		"message":     msg,
+		"approval_id": approvalID,
+	})
 }
 
 func proxyACLRequest(method, upstreamPath, rawQuery string) (string, string) {

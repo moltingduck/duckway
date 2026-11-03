@@ -242,7 +242,17 @@ func (h *APIKeyHandler) ListGitHubAppRepositories(w http.ResponseWriter, r *http
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	minted, err := mintGitHubInstallationToken(ctx, h.client, cred, baseURL, jwt, []byte(`{}`), time.Now())
+	// Mint audit: this token is only used to list the installation's
+	// repositories, so request the one permission every GitHub App has
+	// (metadata: read) instead of an empty body, which would grant the whole
+	// installation's permissions on every repository. The token never leaves
+	// this function: it is not returned, logged or used to proxy.
+	body, err := json.Marshal(githubInstallationTokenRequest{Permissions: map[string]string{"metadata": "read"}})
+	if err != nil {
+		jsonError(w, "failed to encode github app token request", http.StatusInternalServerError)
+		return
+	}
+	minted, err := mintGitHubInstallationToken(ctx, h.client, cred, baseURL, jwt, body, time.Now())
 	if err != nil {
 		jsonError(w, "github app token mint failed: "+err.Error(), http.StatusBadGateway)
 		return
@@ -253,11 +263,18 @@ func (h *APIKeyHandler) ListGitHubAppRepositories(w http.ResponseWriter, r *http
 		jsonError(w, "github app repository list failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+	// What the installation is granted comes from the app JWT, not from a
+	// broadly scoped token.
+	perms, err := githubInstallationPermissions(ctx, h.client, baseURL, cred.InstallationID, jwt)
+	if err != nil {
+		jsonError(w, "github app installation lookup failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
 	jsonResponse(w, map[string]interface{}{
 		"key_id":                   key.ID,
 		"total_count":              len(repos),
 		"repositories":             repos,
-		"installation_permissions": minted.Permissions,
+		"installation_permissions": perms,
 	})
 }
 
@@ -325,6 +342,41 @@ func (h *APIKeyHandler) LoadGitHubAppRepositories(w http.ResponseWriter, r *http
 		return
 	}
 	jsonResponse(w, map[string]interface{}{"total_count": len(repos), "repositories": repos})
+}
+
+// githubInstallationPermissions returns the permissions granted to an app
+// installation (GET /app/installations/{id}, authenticated with the app JWT).
+func githubInstallationPermissions(ctx context.Context, httpClient *http.Client, baseURL string, installationID int64, jwt string) (map[string]string, error) {
+	u := fmt.Sprintf("%s/app/installations/%d", strings.TrimRight(baseURL, "/"), installationID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGitHubAppTokenResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read installation response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("github returned %d", resp.StatusCode)
+	}
+	var parsed struct {
+		Permissions map[string]string `json:"permissions"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("decode installation: %w", err)
+	}
+	if parsed.Permissions == nil {
+		parsed.Permissions = map[string]string{}
+	}
+	return parsed.Permissions, nil
 }
 
 func listGitHubInstallationRepositories(ctx context.Context, httpClient *http.Client, baseURL, token string) ([]map[string]interface{}, error) {

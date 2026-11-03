@@ -113,7 +113,7 @@ func (h *LoanHandler) Issue(w http.ResponseWriter, r *http.Request) {
 	// valid one, block. The user accepted coarse-grained ACL/approval for
 	// loan_proxy, so we only check at the loan level — not per request.
 	if result.NeedApproval {
-		approvalID, err := CreatePendingApproval(h.approvals, result.PlaceholderID, "LOAN", "/proxy/"+serviceName)
+		approvalID, err := CreatePendingApproval(h.approvals, result.PlaceholderID, "LOAN", "/proxy/"+serviceName, "", "")
 		if err != nil {
 			log.Printf("failed to create loan approval: %v", err)
 			jsonError(w, "failed to create approval request", http.StatusInternalServerError)

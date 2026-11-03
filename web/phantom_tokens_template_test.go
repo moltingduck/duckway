@@ -24,7 +24,7 @@ func TestPhantomTokensPagesSupportGitHubRepoScopedAssignments(t *testing.T) {
 		`body.permission_config = JSON.stringify(PT.gitACLForRepos(repos`,
 		`Client commands for`,
 		`function gitGrantsFromACL(configJSON)`,
-		`DW.actions.ptGhApply`,
+		`DW.actions.ptGhAdd`,
 		`function gitACLForRepos(repos, mode, workflows, refs, environments)`,
 		`function parseGitRepoList(value)`,
 		`.replace(/\.git$/, '')`,

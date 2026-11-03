@@ -1527,6 +1527,7 @@ a.pt-layer:hover { border-color: var(--accent); color: var(--ink); }
 .pt-rulelist { list-style: none; margin: 0 0 0.75rem; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
 .pt-rule { display: flex; flex-wrap: wrap; gap: 0.6rem 0.75rem; align-items: flex-start; padding: 0.75rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--raised); }
 .pt-rule-custom { border-style: dashed; }
+.pt-rule-gh { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .pt-hit { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
 .pt-rule-n { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 1.6rem; height: 1.6rem; border-radius: 50%; background: var(--surface); border: 1px solid var(--line); font-size: 0.75rem; font-weight: 700; color: var(--muted); }
 .pt-rule-body { flex: 1 1 18rem; min-width: 0; display: flex; flex-direction: column; gap: 0.5rem; }
@@ -1542,6 +1543,7 @@ a.pt-layer:hover { border-color: var(--accent); color: var(--ink); }
 .pt-effect { min-height: 2.5rem; width: auto; min-width: 7rem; font-weight: 600; }
 .pt-eff-allow { color: var(--ok-text); }
 .pt-eff-deny { color: var(--danger-text); }
+.pt-eff-approve { color: var(--warn-text); }
 .pt-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
 .pt-chip { min-height: 2.25rem; padding: 0 0.7rem; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--muted); font: 600 0.75rem var(--mono); cursor: pointer; }
 .pt-chip-on { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); border-color: var(--accent); color: var(--accent-text); }
@@ -1564,6 +1566,7 @@ a.pt-layer:hover { border-color: var(--accent); color: var(--ink); }
 .pt-result { margin-top: 0.9rem; padding: 0.8rem 0.9rem; border: 1px solid var(--line); border-left-width: 4px; border-radius: var(--radius); background: var(--raised); font-size: 0.875rem; }
 .pt-result-allow { border-left-color: var(--ok); }
 .pt-result-deny { border-left-color: var(--danger); }
+.pt-result-approve { border-left-color: var(--warn); }
 .pt-result p { margin: 0 0 0.5rem; overflow-wrap: anywhere; }
 .pt-layers-table { min-width: 28rem; }
 .pt-layers-table th, .pt-layers-table td { padding: 0.4rem 0.5rem; vertical-align: top; }
@@ -1582,6 +1585,16 @@ a.pt-layer:hover { border-color: var(--accent); color: var(--ink); }
 .pt-dim { opacity: 0.6; }
 .pt-big { font-size: 0.95rem; }
 .pt-gh-clone { margin-top: 1rem; }
+.pt-gh-list { list-style: none; margin: 0 0 0.75rem; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+.pt-gh-row { padding: 0.6rem 0.7rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--raised); display: flex; flex-direction: column; gap: 0.5rem; }
+.pt-gh-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; }
+.pt-gh-head .btn { margin-left: auto; min-height: 2.25rem; }
+.pt-gh-caps { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: 0.5rem; }
+.pt-gh-cap select { min-height: 2.5rem; width: 100%; }
+.pt-gh-add { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.6rem; margin-top: 0.5rem; }
+.pt-gh-add input[type="text"] { min-height: 2.5rem; }
+.pt-gh-add .btn { min-height: 2.5rem; }
+#pt-preset-modal .modal-actions .btn, #pt-v2-modal .modal-actions .btn { min-height: 44px; }
 .pt-bar { display: none; }
 @media (max-width: 900px) {
   .pt-main, .pt-side { flex-basis: 100%; }
@@ -1593,6 +1606,8 @@ a.pt-layer:hover { border-color: var(--accent); color: var(--ink); }
   .pt-tab { min-height: 44px; }
   .pt-chip { min-height: 44px; min-width: 44px; }
   .pt-rule-ctl .btn { min-height: 44px; min-width: 44px; }
+  .pt-gh-head .btn, .pt-gh-cap select, .pt-gh-add .btn { min-height: 44px; }
+  .pt-gh-add .pt-fld { flex: 1 1 100%; }
   .pt-fld-path input, .pt-test-form input[type="text"], .pt-effect, .pt-test-form select, .pt-ttl-ctl input, .pt-ttl-ctl select, #pt-root .btn { min-height: 44px; }
   .pt-body-opt summary { min-height: 44px; }
   #pt-root input[type="radio"] { min-width: 1.4rem; min-height: 1.4rem; }
