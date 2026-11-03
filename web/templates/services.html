@@ -75,6 +75,7 @@
             <option value="loan_proxy">loan_proxy: sidecar calls the upstream directly</option>
           </select>
           <span class="sv-hint"><strong>MITM</strong> (man-in-the-middle) means the gateway terminates TLS for this host, so it can check ACL rules, ask for approval and log each request. Use <code>proxy</code> by default. <code>loan_proxy</code> lets the sidecar cache the token and skip the gateway for high-bandwidth services, with coarser approval and audit.</span></div>
+        <div class="form-group"><label class="sv-check"><input type="checkbox" id="sv-enc-slash" data-on-change="svDirty"> Allow encoded slashes (<code>%2F</code>) in request paths</label><span class="sv-hint">Off by default. Turn it on for APIs that put a slash inside one path segment, for example GitLab project paths such as <code>/projects/group%2Fproject</code>. Access rules then see <code>%2F</code> as part of its segment, so a rule for <code>/projects/*</code> matches but <code>/projects/group/project</code> does not. <code>%5C</code>, <code>?</code>, <code>#</code> and control characters in a path are always refused.</span></div>
         <div class="form-group sv-active" id="sv-active-wrap" hidden><label class="sv-check"><input type="checkbox" id="sv-active" data-on-change="svDirty"> Active</label><span class="sv-hint">Inactive services stay configured but are not offered for new credentials.</span></div>
       </fieldset>
 
@@ -270,6 +271,7 @@ function fillForm(s) {
   setSelect('sv-category', s ? (s.category || '') : '');
   setSelect('sv-delivery', s ? (s.delivery_mode || 'proxy') : 'proxy');
   el('sv-active').checked = s ? !!s.is_active : true;
+  el('sv-enc-slash').checked = s ? !!s.allow_encoded_slash : false;
   if (!s) { el('sv-auth-header').value = 'Authorization'; }
   SV.cat0 = s ? (s.category || '') : '';
   el('sv-active-wrap').hidden = !s;
@@ -314,7 +316,8 @@ function payload() {
     key_length: parseInt(el('sv-key-length').value, 10) || 64,
     key_directory: el('sv-key-dir').value.trim(),
     category: cat,
-    delivery_mode: el('sv-delivery').value
+    delivery_mode: el('sv-delivery').value,
+    allow_encoded_slash: el('sv-enc-slash').checked
   };
   // Only touch usage metadata when the category itself changes.
   if (cat !== SV.cat0) body.usage_metering = cat === 'llm' ? '{"source":"provider"}' : '';

@@ -48,7 +48,7 @@
   var wn = document.getElementById('wn-dialog');
   var wnSaved = false;
   // Persist "Don't show again" if the box is ticked. Returns false on failure.
-  async function whatsNewSave() {
+  async function whatsNewSave(closing) {
     var box = document.getElementById('wn-dismiss');
     if (!box || !box.checked || wnSaved) return true;
     try {
@@ -60,7 +60,7 @@
       if (!res.ok) throw new Error('HTTP ' + res.status);
       wnSaved = true;
     } catch (err) {
-      DW.toast('Could not save your choice. Try again.', 'error');
+      DW.toast(closing ? "Couldn't save. Reopen it from Docs \u2192 What's new to try again." : 'Could not save your choice. Try again.', 'error');
       return false;
     }
     return true;
@@ -74,7 +74,7 @@
   // buttons: a ticked "Don't show again" must still be saved.
   if (wn) {
     new MutationObserver(function () {
-      if (wn.hidden || wn.style.display === 'none') whatsNewSave();
+      if (wn.hidden || wn.style.display === 'none') whatsNewSave(true);
     }).observe(wn, { attributes: true, attributeFilter: ['style', 'hidden'] });
   }
   DW.actions.whatsNewOpen = function () { if (wn) DW.modal.open(wn); };
