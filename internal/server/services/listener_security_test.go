@@ -81,3 +81,31 @@ func TestGuardChannelActionChecksDBAtCallTime(t *testing.T) {
 		t.Fatalf("deleted channel must be refused: %v", err)
 	}
 }
+
+func TestGuardChannelActionComparesCanonicalJSON(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	q := queries.NewNotificationQueries(db)
+	started := `{"bot_token":"t","chat_id":"1"}`
+	if err := q.Create(&queries.NotificationChannel{ID: "ch1", ChannelType: "telegram", Name: "n", Config: started, IsActive: true}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	g := GuardChannelAction(q, "ch1", started, func(string) error { calls++; return nil })
+	// Formatting-only change (whitespace, key order): still the same config.
+	if err := q.UpdateFull("ch1", "n", "{ \"chat_id\": \"1\",\n  \"bot_token\": \"t\" }"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g("a"); err != nil || calls != 1 {
+		t.Fatalf("formatting-only change must still approve: err=%v", err)
+	}
+	if err := q.UpdateFull("ch1", "n", `{"bot_token":"t","chat_id":"2"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := g("a"); !errors.Is(err, ErrChannelNotAuthoritative) || calls != 1 {
+		t.Fatalf("semantic change must refuse: err=%v", err)
+	}
+}

@@ -705,7 +705,13 @@ DW.actions.dzConfirm = function() {
   return Promise.resolve().then(function() { return cfg.run(); }).then(function() {
     if (dz === cfg) DW.modal.close('#dz-modal');
   }).catch(function(err) {
-    dzError(err && err.message ? err.message : 'Action failed');
+    var msg = err && err.message ? err.message : 'Action failed';
+    if (err && err.status === 502 && cfg.canaryLink) {
+      // canarytokens.org could not delete the token: the canary page owns the follow-up choices.
+      var err1 = el('dz-error');
+      DW.setHTML(err1, DW.html`${msg} <a href="${'/admin/canary?client=' + enc(CID)}">Manage on Canary page</a>`);
+      err1.hidden = false;
+    } else dzError(msg);
     b.disabled = !!cfg.typeName && el('dz-type').value !== cfg.typeName;
   });
 };
@@ -855,17 +861,18 @@ DW.actions.genCanary = function() {
   return sendJSON('POST', '/api/canary/clients/' + enc(CID) + '/generate').then(function(data) {
     var n = (data && data.created) || 0, bad = data && (data.failed_types > 0 || data.delete_failed > 0);
     var msg = n + ' canary tokens generated' + (data && data.notice ? '. ' + data.notice : '');
+    if (data && data.failed_types > 0 && !(data.notice && /could not be regenerated/.test(data.notice))) msg += '. ' + data.failed_types + ' types could not be regenerated; their existing tokens were kept';
     if (data && data.delete_failed > 0) msg += '. ' + data.delete_failed + ' old tokens could not be removed from canarytokens.org and were kept';
     showToast(msg, bad || !n ? 'error' : 'success'); return refresh();
   }).catch(function(err) { showToast(err.message, 'error'); });
 };
 DW.actions.dzRemoveCanary = function(b) {
   var id = b.dataset.id;
-  openDz({title: 'Remove canary token', confirmLabel: 'Remove token', danger: true, body: DW.html`<p>Remove this canary token? It is deleted from canarytokens.org and no longer deployed to the client.</p>`,
+  openDz({title: 'Remove canary token', confirmLabel: 'Remove token', danger: true, canaryLink: true, body: DW.html`<p>Remove this canary token? It is deleted from canarytokens.org and no longer deployed to the client.</p>`,
     run: function() { return sendJSON('DELETE', '/api/canary/tokens/' + enc(id)).then(function() { showToast('Canary token removed', 'success'); return refresh(); }); }});
 };
 DW.actions.dzRemoveCanaryAll = function() {
-  openDz({title: 'Remove all canary tokens', confirmLabel: 'Remove all', danger: true, body: DW.html`<p>Remove all ${plural(canary.tokens.length, 'canary token')} for <strong>${C.name}</strong>?</p>`,
+  openDz({title: 'Remove all canary tokens', confirmLabel: 'Remove all', danger: true, canaryLink: true, body: DW.html`<p>Remove all ${plural(canary.tokens.length, 'canary token')} for <strong>${C.name}</strong>?</p>`,
     run: function() { return sendJSON('DELETE', '/api/canary/clients/' + enc(CID)).then(function() { showToast('Canary tokens removed', 'success'); return refresh(); }); }});
 };
 

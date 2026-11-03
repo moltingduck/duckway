@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -486,6 +487,19 @@ func scrubNetErr(err error) error {
 // listener whose notification channel is now disabled, deleted or edited.
 var ErrChannelNotAuthoritative = errors.New("this notification channel is disabled or was changed; approvals from it are refused")
 
+// sameConfig compares two config JSON documents semantically, so a
+// formatting-only change (whitespace, key order) does not count as an edit.
+func sameConfig(a, b string) bool {
+	if a == b {
+		return true
+	}
+	var x, y interface{}
+	if json.Unmarshal([]byte(a), &x) != nil || json.Unmarshal([]byte(b), &y) != nil {
+		return false
+	}
+	return reflect.DeepEqual(x, y)
+}
+
 // GuardChannelAction wraps an approve/reject callback so it only runs while
 // the channel it came from is still active and its stored config still equals
 // the one the listener started with. The DB is consulted on every call and
@@ -494,7 +508,7 @@ var ErrChannelNotAuthoritative = errors.New("this notification channel is disabl
 func GuardChannelAction(q *queries.NotificationQueries, channelID, startedConfig string, fn func(string) error) func(string) error {
 	return func(approvalID string) error {
 		cur, err := q.GetByID(channelID)
-		if err != nil || !cur.IsActive || cur.Config != startedConfig {
+		if err != nil || !cur.IsActive || !sameConfig(cur.Config, startedConfig) {
 			return ErrChannelNotAuthoritative
 		}
 		return fn(approvalID)

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -241,10 +242,11 @@ func TestCanaryDeleteEndpointsKeepRowsOnRemoteFailureAndLocalOnly(t *testing.T) 
 	s, shared := newClientDetailServer(t)
 	seedDetailClient(t, s, "c1", "alpha", "tok1")
 	svcExec(t, s, `INSERT INTO canary_tokens (id, client_id, token_type, canary_token, auth_token, token_value, memo, deploy_path, deploy_content) VALUES ('t1','c1','env_file','TOK','AUTH','v','m','.x/a','c')`)
-	// Remote delete cannot succeed in tests (no network): the row must be kept.
+	// Inject a failing transport: the test never touches the network.
+	shared.CanarySvc.SetHTTPClient(&http.Client{Transport: failingRT{}})
 	rec := svcDo(s, shared, http.MethodDelete, "/api/canary/tokens/t1", "", true)
 	if rec.Code != http.StatusBadGateway {
-		t.Skipf("environment reached canarytokens.org (%d); skipping offline assertion", rec.Code)
+		t.Fatalf("token delete with failing remote => %d %s", rec.Code, rec.Body.String())
 	}
 	var n int
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM canary_tokens WHERE id='t1'`).Scan(&n)
@@ -260,5 +262,24 @@ func TestCanaryDeleteEndpointsKeepRowsOnRemoteFailureAndLocalOnly(t *testing.T) 
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM canary_tokens WHERE id='t1'`).Scan(&n)
 	if n != 0 {
 		t.Fatal("local_only must remove the row")
+	}
+}
+
+type failingRT struct{}
+
+func (failingRT) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("network disabled in test")
+}
+
+func TestCanaryGenerateRejectsDraftClient(t *testing.T) {
+	s, shared := newClientDetailServer(t)
+	seedDetailClient(t, s, "c3", "drafty", "tok3")
+	svcExec(t, s, `INSERT INTO client_drafts (client_id) VALUES ('c3')`)
+	if rec := svcDo(s, shared, http.MethodPost, "/api/canary/settings", `{"email":"a@b.co"}`, true); rec.Code != 200 {
+		t.Fatal(rec.Code)
+	}
+	shared.CanarySvc.SetHTTPClient(&http.Client{Transport: failingRT{}})
+	if rec := svcDo(s, shared, http.MethodPost, "/api/canary/clients/c3/generate", "", true); rec.Code != http.StatusNotFound {
+		t.Fatalf("draft client => %d, want 404", rec.Code)
 	}
 }

@@ -408,6 +408,9 @@ type CanaryService struct {
 	locks   sync.Map // clientID -> *sync.Mutex
 }
 
+// SetHTTPClient replaces the HTTP client used for canarytokens.org (tests inject a transport).
+func (s *CanaryService) SetHTTPClient(c *http.Client) { s.client = c }
+
 func NewCanaryService(canaryQ *queries.CanaryQueries) *CanaryService {
 	return &CanaryService{
 		canaryQ: canaryQ,
@@ -756,6 +759,10 @@ func (s *CanaryService) DeleteToken(tokenID string, localOnly bool) error {
 	}
 	unlock := s.clientLock(token.ClientID)
 	defer unlock()
+	// Re-fetch under the lock: a concurrent regenerate or delete may have removed it.
+	if token, err = s.canaryQ.GetByID(tokenID); err != nil {
+		return ErrCanaryTokenNotFound
+	}
 	if !localOnly {
 		if err := s.DeleteRemoteToken(token.CanaryToken, token.AuthToken); err != nil {
 			log.Printf("Warning: kept canary token %s: remote delete failed: %v", token.ID, err)

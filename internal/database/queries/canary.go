@@ -153,7 +153,7 @@ func (q *CanaryQueries) ClientCanaryEnabled(clientID string) (enabled, found boo
 
 // ClientNameAndShortID resolves a client's name and short ID by its ID.
 func (q *CanaryQueries) ClientNameAndShortID(clientID string) (name, shortID string, found bool, err error) {
-	err = q.db.QueryRow("SELECT name, short_id FROM clients WHERE id = ?", clientID).Scan(&name, &shortID)
+	err = q.db.QueryRow("SELECT name, short_id FROM clients WHERE id = ? AND id NOT IN (SELECT client_id FROM client_drafts)", clientID).Scan(&name, &shortID)
 	if err == sql.ErrNoRows {
 		return "", "", false, nil
 	}

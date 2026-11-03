@@ -104,7 +104,7 @@
       <span class="text-sm" id="cn-confirm-state" role="status"></span>
       <div class="modal-actions cn-modalbtns">
         <button type="button" class="btn" data-action="modal-close" id="cn-confirm-cancel">Cancel</button>
-        <button type="button" class="btn" data-action="cnConfirmLocal" id="cn-confirm-local" hidden>Remove locally only</button>
+        <button type="button" class="btn btn-danger" data-action="cnConfirmLocal" id="cn-confirm-local" hidden>Remove from Duckway only (token stays live on canarytokens.org)</button>
         <button type="button" class="btn btn-danger" data-action="cnConfirmGo" id="cn-confirm-go">Confirm</button>
       </div>
     </div>
@@ -210,7 +210,7 @@
       renderTokens();
     });
   }
-  DW.actions.cnRetryTokens = function() { loadTokens(); };
+  DW.actions.cnRetryTokens = function() { tokensError = ''; renderTokens(); loadTokens(); };
 
   function renderTokens() {
     var box = $('cn-tokens');
@@ -279,7 +279,7 @@
       btn.disabled = false;
       $('cn-confirm-state').textContent = 'Failed: ' + e.message;
       // A token canarytokens.org will not delete (for example already gone) can be dropped from Duckway only.
-      if (p.local) { $('cn-confirm-local').hidden = false; $('cn-confirm-state').textContent += '. If the token no longer exists on canarytokens.org you can remove it from Duckway only.'; }
+      if (p.local) { $('cn-confirm-local').hidden = false; $('cn-confirm-local').disabled = false; $('cn-confirm-state').textContent += '. If the token no longer exists on canarytokens.org you can remove it from Duckway only.'; $('cn-confirm-local').focus(); }
     });
   };
   DW.actions.cnConfirmLocal = function() {
@@ -289,7 +289,7 @@
     $('cn-confirm-state').textContent = 'Removing locally…';
     p.run(true).then(closeConfirm).catch(function(e) {
       btn.disabled = false;
-      $('cn-confirm-state').textContent = 'Failed: ' + e.message;
+      $('cn-confirm-state').textContent = 'Failed: ' + e.message + '. Nothing was removed from Duckway. Try again later, or manage the token on canarytokens.org first.';
     });
   };
 
@@ -422,7 +422,14 @@
     .then(function() { btn.disabled = false; });
   };
 
-  document.addEventListener('DOMContentLoaded', function() { loadFleet(); loadSettings(); });
+  document.addEventListener('DOMContentLoaded', function() {
+    loadFleet().then(function() {
+      // ?client=<id> preselects a client (used by links from the client page).
+      var c = new URLSearchParams(location.search).get('client');
+      if (c && byId[c]) selectClient(c, true);
+    });
+    loadSettings();
+  });
 })();
 </script>
 {{end}}

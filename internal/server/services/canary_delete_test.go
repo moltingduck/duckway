@@ -107,3 +107,19 @@ func TestRegenerateDBDeleteFailureCountsAndContinues(t *testing.T) {
 		t.Fatal("row should remain")
 	}
 }
+
+// A token removed while a delete waits for the client lock is reported as not found, not double-processed.
+func TestDeleteTokenRefetchesAfterLock(t *testing.T) {
+	svc, q := newRegenFixture(t, "a@b.co", failingDelete())
+	unlock := svc.clientLock("c1")
+	res := make(chan error, 1)
+	go func() { res <- svc.DeleteToken("old1", false) }()
+	time.Sleep(150 * time.Millisecond)
+	if err := q.DeleteByID("old1"); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	if err := <-res; !errors.Is(err, ErrCanaryTokenNotFound) {
+		t.Fatalf("err=%v, want not found after re-fetch", err)
+	}
+}
