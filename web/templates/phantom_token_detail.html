@@ -1,0 +1,180 @@
+{{define "content"}}
+{{if eq .Error "not_found"}}
+<div class="cd-crumb"><a href="/admin/phantom-tokens">Phantom tokens</a> / <span>Not found</span></div>
+<div class="card cd-notfound" role="alert">
+  <h1>Phantom token not found</h1>
+  <p class="text-muted">No phantom token with this id exists. It may have been unassigned.</p>
+  <a class="btn btn-primary" href="/admin/phantom-tokens">Back to phantom tokens</a>
+</div>
+{{else}}
+<div class="cd-crumb"><a href="/admin/phantom-tokens">Phantom tokens</a> / <span>{{.Placeholders.EnvName}}</span></div>
+<script type="application/json" id="pt-data" nonce="{{$.CSPNonce}}">{{.Placeholders.Data}}</script>
+<div id="pt-root" data-id="{{.Placeholders.ID}}">
+  <div class="pt-head">
+    <div class="pt-head-main">
+      <div class="pt-title">
+        <h1 class="mono">{{.Placeholders.EnvName}}</h1>
+        <span id="pt-source" class="cl-pill cl-pill-mute"></span>
+        <span id="pt-inactive" class="cl-pill cl-pill-bad" hidden>Inactive</span>
+        <span id="pt-dirty" class="cl-pill cl-pill-warn" role="status" hidden>Unsaved changes</span>
+      </div>
+      <p class="pt-sub" id="pt-sub"></p>
+    </div>
+    <div class="pt-actions">
+      <span class="pt-note" data-pt-note role="status"></span>
+      <button type="button" class="btn" data-action="ptDiscard" data-pt-discard disabled>Discard</button>
+      <button type="button" class="btn btn-primary" data-action="ptSave" data-pt-save disabled>Save changes</button>
+    </div>
+  </div>
+  <p id="pt-banner" class="pt-banner" hidden></p>
+
+  <div class="pt-layout">
+    <div class="pt-main">
+      <section class="card pt-card" aria-labelledby="pt-rules-h">
+        <div class="pt-card-head">
+          <h2 id="pt-rules-h">Access rules</h2>
+          <div class="pt-tabs" role="tablist" aria-label="Rules editor" id="pt-tablist">
+            <button type="button" role="tab" class="pt-tab" id="pt-tab-rules" aria-selected="true" aria-controls="pt-panel-rules" data-action="ptTab" data-tab="rules">Rules</button>
+            <button type="button" role="tab" class="pt-tab" id="pt-tab-json" aria-selected="false" tabindex="-1" aria-controls="pt-panel-json" data-action="ptTab" data-tab="json">Advanced JSON</button>
+          </div>
+        </div>
+        <p class="pt-lede">Evaluated in order. Each layer can only narrow the one before:</p>
+        <div class="pt-layers" id="pt-layers"></div>
+
+        <div id="pt-panel-rules" role="tabpanel" aria-labelledby="pt-tab-rules">
+          <div id="pt-rules"></div>
+          <p class="pt-hint" id="pt-default-note">The first rule that matches a request decides it. A request that matches no rule is allowed by this token, subject to the service and credential rules.</p>
+          <div class="pt-builder-bar">
+            <button type="button" class="btn" id="pt-add-rule" data-action="ptAddRule">Add rule</button>
+            <div class="pt-presets" role="group" aria-label="Presets">
+              <span class="pt-presets-k">Presets</span>
+              <button type="button" class="btn btn-sm" data-action="ptPreset" data-preset="readonly" title="Allows GET, HEAD and OPTIONS anywhere and denies every other method.">Read-only</button>
+              <button type="button" class="btn btn-sm" data-action="ptPreset" data-preset="nodeletes" title="Denies DELETE requests; everything else stays allowed.">No deletes</button>
+              <button type="button" class="btn btn-sm" id="pt-clear-rules" data-action="ptClearRules">Clear rules</button>
+            </div>
+          </div>
+          <p class="pt-hint" id="pt-rules-status" role="status"></p>
+          <p class="pt-hint">Path patterns match whole segments: <code>*</code> stands for any one segment and a trailing <code>*</code> matches everything below. Per-rule approval is not available; approval applies to every request (see Require approval).</p>
+        </div>
+
+        <div id="pt-panel-json" role="tabpanel" aria-labelledby="pt-tab-json" hidden>
+          <label for="pt-json" class="pt-fld-k">permission_config</label>
+          <textarea id="pt-json" class="pt-json mono" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="pt-json-err pt-json-help" data-on-input="ptJsonInput"></textarea>
+          <p class="pt-bad pt-hint" id="pt-json-err" role="alert" hidden></p>
+          <p class="pt-ok pt-hint" id="pt-json-ok">Valid. Edits here are checked and reflected in the rule list.</p>
+          <p class="pt-hint" id="pt-json-help">Advanced. Leave empty to add no rules on this token. Rules the builder cannot show (rate limits, body constraints, several paths in one rule) stay editable here and are never dropped.</p>
+          <button type="button" class="btn btn-sm" data-action="ptJsonFormat">Format JSON</button>
+        </div>
+      </section>
+
+      <section class="card pt-card" aria-labelledby="pt-test-h">
+        <h2 id="pt-test-h">Test a request</h2>
+        <p class="pt-lede">Runs the gateway's real access rules against the draft above, the service and the credential. Nothing is sent upstream and nothing is saved or counted.</p>
+        <form class="pt-test-form" id="pt-test-form" data-on-submit="ptTest">
+          <label class="pt-fld"><span class="pt-fld-k">Method</span>
+            <select id="pt-test-method">
+              <option>GET</option><option>HEAD</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option><option>OPTIONS</option>
+            </select>
+          </label>
+          <label class="pt-fld pt-fld-grow"><span class="pt-fld-k">Path</span>
+            <input type="text" id="pt-test-path" class="mono" value="/" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="/repos/acme/app/issues">
+          </label>
+          <button type="submit" class="btn btn-primary" id="pt-test-go">Check</button>
+        </form>
+        <details class="pt-body-opt">
+          <summary>Request body (only needed for rules with body constraints)</summary>
+          <label class="pt-fld"><span class="sr-only">Request body</span><textarea id="pt-test-body" class="mono pt-textarea-sm" spellcheck="false" placeholder="{&quot;model&quot;: &quot;gpt-4o&quot;}"></textarea></label>
+        </details>
+        <p class="pt-bad pt-hint" id="pt-test-err" role="alert" hidden></p>
+        <p class="pt-bad pt-hint" id="pt-test-blocked" hidden>Fix the JSON error before testing.</p>
+        <div id="pt-test-out" aria-live="polite"></div>
+      </section>
+    </div>
+
+    <aside class="pt-side">
+      <section class="card pt-card" id="pt-github" aria-labelledby="pt-gh-h" hidden>
+        <h2 id="pt-gh-h">GitHub repositories</h2>
+        <div id="pt-gh-grants"></div>
+        <div class="form-group">
+          <label for="pt-gh-repos">Authorized repositories</label>
+          <textarea id="pt-gh-repos" class="pt-textarea-sm mono" placeholder="OWNER/REPO&#10;OWNER/ANOTHER_REPO"></textarea>
+        </div>
+        <div class="form-group"><label for="pt-gh-mode">Access</label>
+          <select id="pt-gh-mode">
+            <option value="deploy">Read only (pull)</option>
+            <option value="dev">Developer</option>
+            <option value="cicd">CI/CD operator</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="pt-gh-wf">Workflow constraints</label>
+          <input type="text" id="pt-gh-wf" placeholder="Workflows: ci.yml" aria-label="Workflows">
+          <input type="text" id="pt-gh-refs" class="mt-1" placeholder="Refs: main, release/*" aria-label="Refs">
+          <input type="text" id="pt-gh-envs" class="mt-1" placeholder="Environments: staging" aria-label="Environments">
+        </div>
+        <p class="pt-bad pt-hint" id="pt-gh-err" role="alert" hidden></p>
+        <button type="button" class="btn" data-action="ptGhApply">Update rules from repositories</button>
+        <p class="pt-hint" id="pt-gh-status" role="status"></p>
+        <div class="form-group pt-gh-clone">
+          <label for="pt-gh-clone">Client commands for</label>
+          <select id="pt-gh-clone" data-on-change="ptGhClone"></select>
+          <pre class="cd-pre" id="pt-gh-cmds"></pre>
+        </div>
+      </section>
+
+      <section class="card pt-card" aria-labelledby="pt-appr-h">
+        <h2 id="pt-appr-h">Require approval</h2>
+        <fieldset class="pt-fieldset">
+          <legend class="pt-fld-k">Which requests</legend>
+          <label class="cd-check"><input type="radio" name="pt-appr" id="pt-appr-off" value="off" data-on-change="ptApproval"> Not required</label>
+          <label class="cd-check"><input type="radio" name="pt-appr" id="pt-appr-on" value="on" data-on-change="ptApproval"> Every request</label>
+        </fieldset>
+        <div class="pt-ttl" id="pt-ttl-row">
+          <label for="pt-ttl-val" class="pt-fld-k">An approval stays valid for</label>
+          <div class="pt-ttl-ctl">
+            <input type="number" id="pt-ttl-val" min="1" step="1" inputmode="numeric" data-on-input="ptTTL">
+            <select id="pt-ttl-unit" aria-label="Unit" data-on-change="ptTTL"><option value="minutes">minutes</option><option value="hours">hours</option></select>
+          </div>
+        </div>
+        <p class="pt-hint">The first request waits in Approvals. After an admin approves, this token works until the time is up, then asks again.</p>
+      </section>
+
+      <section class="card pt-card" aria-labelledby="pt-client-h">
+        <h2 id="pt-client-h">On the client</h2>
+        <div id="pt-client-body"></div>
+      </section>
+
+      <section class="cd-danger" aria-labelledby="pt-dz-h">
+        <h2 id="pt-dz-h">Danger zone</h2>
+        <div class="cd-danger-item">
+          <button type="button" class="btn btn-dz" data-action="ptAskUnassign">Unassign phantom token…</button>
+          <span class="cd-dz-note">The client stops receiving this credential.</span>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <div class="pt-bar">
+    <span class="pt-note" data-pt-note></span>
+    <button type="button" class="btn" data-action="ptDiscard" data-pt-discard disabled>Discard</button>
+    <button type="button" class="btn btn-primary" data-action="ptSave" data-pt-save disabled>Save changes</button>
+  </div>
+</div>
+
+<div id="pt-del-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pt-del-h">
+    <h2 id="pt-del-h">Unassign phantom token</h2>
+    <p>Remove <span class="cd-confirm-name">{{.Placeholders.EnvName}}</span> from this client? Pending approvals for it are removed too.</p>
+    <p class="text-sm cl-warn" id="pt-del-err" role="alert" hidden></p>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="modal-close">Cancel</button>
+      <button type="button" class="btn btn-danger" id="pt-del-go" data-action="ptDoUnassign">Unassign</button>
+    </div>
+  </div>
+</div>
+
+<script nonce="{{$.CSPNonce}}" src="/static/phantom-common.js"></script>
+<script nonce="{{$.CSPNonce}}" src="/static/phantom-acl.js"></script>
+<script nonce="{{$.CSPNonce}}" src="/static/phantom-token-detail.js"></script>
+{{end}}
+{{end}}

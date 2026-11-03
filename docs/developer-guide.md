@@ -105,6 +105,8 @@ internal/
       services.go              service CRUD + ACL templates
       clients.go               client CRUD
       placeholders.go          phantom token CRUD
+      phantom_tokens.go        phantom token list + detail pages (/admin/phantom-tokens)
+      phantom_tokens_api.go    POST /api/placeholders/{id}/acl/test (dry-run ACL evaluation)
       groups.go                key-group CRUD
       oauth.go                 refreshable-token upload + client credentials endpoint
       approvals.go             approval workflow
@@ -275,6 +277,8 @@ If the placeholder has `requires_approval = 1` and there's no valid approval row
 ### Step 5 — ACL evaluation (three-layer narrow-only)
 
 For each non-empty layer (service.default_acl, api_key.acl, placeholder.permission_config), `PermissionChecker.Check` evaluates the JSON ACL against the request method, path, and body. **All non-empty layers must pass** — each can only narrow, never widen.
+
+The admin console's phantom token detail page (`/admin/phantom-tokens/{id}`) has a "Test a request" box backed by `POST /api/placeholders/{id}/acl/test` (admin session only). Body: `{"method","path","body"?,"permission_config"?,"requires_approval"?,"approval_ttl_minutes"?}`; `permission_config` is the unsaved draft (omit to use the stored one). It runs `PermissionChecker.Explain`, the same evaluation as `Check` minus rate-limit counting, against the service, credential and token layers and returns the decision, the deciding layer and rule index, and a per-layer breakdown. It stores nothing, creates no approval and makes no upstream call.
 
 ### Step 6 — Build upstream request
 

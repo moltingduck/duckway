@@ -24,6 +24,7 @@ type MovedNotice struct {
 var movedPages = map[string]MovedPage{
 	"/admin/client-updates": {NewPath: "/admin/clients/rollouts", NewName: "Clients › Rollouts"},
 	"/admin/onboarding":     {NewPath: "/admin/clients/new", NewName: "Clients › Add client"},
+	"/admin/placeholders":   {NewPath: "/admin/phantom-tokens", NewName: "Access › Phantom tokens"},
 }
 
 // MovedPaths returns the registered old paths in sorted order.
