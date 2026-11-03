@@ -228,3 +228,27 @@ func mustJSON(t *testing.T, v interface{}) string {
 	}
 	return string(b)
 }
+
+// The "Approve writes" preset ends with a catch-all approve rule so an exotic
+// method cannot slip through; endpoint methods compare case-insensitively.
+func TestApproveCatchAllAndMethodCase(t *testing.T) {
+	const preset = `{"version":"1","provider":"x","rules":[
+	 {"name":"r1","endpoints":[{"method":"GET","path":"/*","allow":true},{"method":"HEAD","path":"/*","allow":true}]},
+	 {"name":"r2","endpoints":[{"method":"POST","path":"/*","approve":true},{"method":"PUT","path":"/*","approve":true},{"method":"PATCH","path":"/*","approve":true},{"method":"DELETE","path":"/*","approve":true}]},
+	 {"name":"r3","endpoints":[{"method":"*","path":"/*","approve":true}]}]}`
+	pc := NewPermissionChecker()
+	for _, m := range []string{"PROPFIND", "PURGE", "MKCOL", "TRACE", "LOCK"} {
+		if got := pc.Check(preset, "ph", m, "/any/path", nil); got.Allowed || !got.NeedsApproval {
+			t.Errorf("%s: %+v, want needs approval", m, got)
+		}
+	}
+	for _, m := range []string{"GET", "HEAD"} {
+		if got := pc.Check(preset, "ph", m, "/x", nil); !got.Allowed || got.NeedsApproval {
+			t.Errorf("%s: %+v, want allowed", m, got)
+		}
+	}
+	lower := `{"version":"1","provider":"x","rules":[{"name":"r","endpoints":[{"method":"delete","path":"/*","allow":false}]}]}`
+	if got := pc.Check(lower, "ph", "DELETE", "/x", nil); got.Allowed {
+		t.Errorf("lower-case rule method must still match DELETE: %+v", got)
+	}
+}

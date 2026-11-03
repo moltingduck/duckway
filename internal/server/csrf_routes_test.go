@@ -38,8 +38,16 @@ func TestAdminMutationsRequireSameOrigin(t *testing.T) {
 	if rec := csrfReq(s, "POST", "/api/clients", body, with("Sec-Fetch-Site", "cross-site"), cookie); rec.Code != 403 {
 		t.Fatalf("sec-fetch cross-site: %d", rec.Code)
 	}
-	if rec := csrfReq(s, "POST", "/api/clients", body, js, cookie); rec.Code != 403 {
-		t.Fatalf("cookie without any origin headers: %d", rec.Code)
+	// No Origin / Sec-Fetch-Site / Referer at all can only be non-browser tooling
+	// (old `duckway init`): it is allowed, a browser always sends one of the three.
+	if rec := csrfReq(s, "POST", "/api/clients", body, js, cookie); rec.Code == 403 {
+		t.Fatalf("headerless request must not be blocked: %d", rec.Code)
+	}
+	if rec := csrfReq(s, "POST", "/api/clients", body, with("Referer", "http://evil.example/x"), cookie); rec.Code != 403 {
+		t.Fatalf("foreign referer: %d", rec.Code)
+	}
+	if rec := csrfReq(s, "POST", "/api/clients", body, with("Sec-Fetch-Site", "same-site"), cookie); rec.Code != 403 {
+		t.Fatalf("same-site (not same-origin): %d", rec.Code)
 	}
 	if rec := csrfReq(s, "POST", "/api/clients", body, with("Origin", "http://console.example"), cookie); rec.Code == 403 {
 		t.Fatalf("same-origin blocked: %s", rec.Body.String())
@@ -72,8 +80,8 @@ func TestLoginFormCSRF(t *testing.T) {
 	if rec.Code != 403 || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("cross-site login form: %d cookies=%v", rec.Code, rec.Result().Cookies())
 	}
-	if rec := csrfReq(s, "POST", "/admin/login", form, map[string]string{"Content-Type": "application/x-www-form-urlencoded"}); rec.Code != 403 {
-		t.Fatalf("headerless login form: %d", rec.Code)
+	if rec := csrfReq(s, "POST", "/admin/login", form, map[string]string{"Content-Type": "application/x-www-form-urlencoded"}); rec.Code != http.StatusSeeOther {
+		t.Fatalf("headerless login form (non-browser tooling) must work: %d", rec.Code)
 	}
 	if rec := csrfReq(s, "POST", "/admin/login", form, fh("Origin", "http://console.example")); rec.Code != http.StatusSeeOther || len(rec.Result().Cookies()) == 0 {
 		t.Fatalf("same-origin login form: %d", rec.Code)
@@ -81,6 +89,9 @@ func TestLoginFormCSRF(t *testing.T) {
 	api := `{"username":"duckway","password":"correct-horse-battery"}`
 	if rec := csrfReq(s, "POST", "/api/auth/login", api, map[string]string{"Origin": "http://evil.example"}); rec.Code != 403 {
 		t.Fatalf("cross-site api login: %d", rec.Code)
+	}
+	if rec := csrfReq(s, "POST", "/api/auth/login", api, map[string]string{"Content-Type": "application/json"}); rec.Code != 200 {
+		t.Fatalf("headerless api login (old duckway init): %d", rec.Code)
 	}
 	if rec := csrfReq(s, "POST", "/api/auth/login", api, map[string]string{"Origin": "http://console.example"}); rec.Code != 200 {
 		t.Fatalf("same-origin api login: %d", rec.Code)

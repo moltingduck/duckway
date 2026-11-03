@@ -31,8 +31,21 @@ func NewSettingsHandler(s *queries.SettingsQueries) *SettingsHandler {
 	return &SettingsHandler{settings: s}
 }
 
+// reservedSetting reports keys the settings API never exposes or accepts: the
+// session epoch (writing it would revoke or resurrect sessions) and the
+// per-admin What's-new dismissal records.
+func reservedSetting(key string) bool {
+	return key == queries.SettingSessionEpoch || strings.HasPrefix(key, "whats_new_seen_version:")
+}
+
 func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
-	jsonResponse(w, h.settings.GetAll())
+	all := h.settings.GetAll()
+	for k := range all {
+		if reservedSetting(k) {
+			delete(all, k)
+		}
+	}
+	jsonResponse(w, all)
 }
 
 // ValidateSetting returns an error message for an invalid known setting, or "".
@@ -97,6 +110,12 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	// Validate everything before writing anything.
 	for k, v := range req {
+		if reservedSetting(k) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "this setting is managed by the server", "field": k})
+			return
+		}
 		if msg := ValidateSetting(k, v); msg != "" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)

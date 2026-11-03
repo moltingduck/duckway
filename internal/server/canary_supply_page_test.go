@@ -134,7 +134,10 @@ func TestSupplyChainErrorPaths(t *testing.T) {
 		t.Fatal("anonymous list must not be served")
 	}
 	// Storage failure surfaces as a 500 JSON error, which the page shows with Retry.
-	_ = s.db.Close()
+	// (Closing the DB would now sign the admin out first: the session epoch cannot
+	// be read, so the session fails closed. Fail only the write instead.)
+	svcExec(t, s, `CREATE TRIGGER fail_settings_ins BEFORE INSERT ON settings BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+	svcExec(t, s, `CREATE TRIGGER fail_settings_upd BEFORE UPDATE ON settings BEGIN SELECT RAISE(ABORT, 'boom'); END`)
 	rec := svcDo(s, shared, http.MethodPost, "/api/supply-chain/min-age", `{"days":5}`, true)
 	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), `"error"`) {
 		t.Fatalf("closed db => %d %s", rec.Code, rec.Body.String())

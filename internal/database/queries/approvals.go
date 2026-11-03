@@ -2,9 +2,10 @@ package queries
 
 import (
 	"database/sql"
-	"regexp"
+	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/models"
 )
@@ -137,20 +138,24 @@ func (q *ApprovalQueries) CreateScoped(a *models.Approval, scope string) error {
 	return err
 }
 
-// approvalExpiryExpr matches the relative expiry callers pass to Approve.
-var approvalExpiryExpr = regexp.MustCompile(`^datetime\('now', '\+(\d{1,9}) (minutes|hours)'\)$`)
+// ApprovalTimeLayout is the stored timestamp format (UTC), identical to what
+// SQLite's datetime('now') returns, so stored values compare correctly in SQL.
+const ApprovalTimeLayout = "2006-01-02 15:04:05"
 
-// Approve marks an approval granted. expiresAt is either a concrete timestamp
-// or a relative expression such as datetime('now', '+60 minutes'), which is
-// evaluated by the database. (It used to be bound as a literal string, which
-// sorted after every real timestamp and so never expired.)
+// ApprovalExpiry returns the UTC expiry timestamp string for an approval
+// granted now that lasts d. Computed in Go so it is portable across SQLite and
+// PostgreSQL.
+func ApprovalExpiry(d time.Duration) string {
+	return time.Now().UTC().Add(d).Format(ApprovalTimeLayout)
+}
+
+// Approve marks an approval granted until expiresAt, a UTC timestamp in
+// ApprovalTimeLayout (see ApprovalExpiry). Anything else is an error: the
+// value is stored as text and compared with datetime('now'), so an
+// unrecognised string would sort wrongly and might never expire.
 func (q *ApprovalQueries) Approve(id string, expiresAt string) error {
-	if m := approvalExpiryExpr.FindStringSubmatch(expiresAt); m != nil {
-		_, err := q.db.Exec(
-			"UPDATE approvals SET status = 'approved', approved_at = datetime('now'), expires_at = datetime('now', '+' || ? || ' ' || ?) WHERE id = ?",
-			m[1], m[2], id,
-		)
-		return err
+	if _, err := time.Parse(ApprovalTimeLayout, expiresAt); err != nil {
+		return fmt.Errorf("approval expiry %q must be a UTC timestamp %q", expiresAt, ApprovalTimeLayout)
 	}
 	_, err := q.db.Exec(
 		"UPDATE approvals SET status = 'approved', approved_at = datetime('now'), expires_at = ? WHERE id = ?",

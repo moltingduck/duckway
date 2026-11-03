@@ -19,6 +19,16 @@ func (q *SettingsQueries) Get(key string) string {
 	return val
 }
 
+// GetE is Get with the read error surfaced: an unset key is ("", nil).
+func (q *SettingsQueries) GetE(key string) (string, error) {
+	var val string
+	err := q.db.QueryRow("SELECT value FROM settings WHERE key = ?", key).Scan(&val)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return val, err
+}
+
 func (q *SettingsQueries) Set(key, value string) error {
 	_, err := q.db.Exec(
 		"INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",

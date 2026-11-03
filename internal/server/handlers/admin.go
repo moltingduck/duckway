@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -390,7 +391,9 @@ func (h *AdminHandler) NotificationsPage(w http.ResponseWriter, r *http.Request)
 
 func (h *AdminHandler) ApproveAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	h.approvals.Approve(id, "datetime('now', '+24 hours')")
+	if err := h.approvals.Approve(id, queries.ApprovalExpiry(24*time.Hour)); err != nil {
+		log.Printf("approve %s: %v", id, err)
+	}
 	http.Redirect(w, r, "/admin/approvals", http.StatusSeeOther)
 }
 

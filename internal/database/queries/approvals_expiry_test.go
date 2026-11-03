@@ -3,11 +3,12 @@ package queries
 import (
 	"database/sql"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-func TestApproveRelativeExpiryIsEvaluatedByDatabase(t *testing.T) {
+func TestApproveStoresGoComputedUTCExpiry(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +27,7 @@ func TestApproveRelativeExpiryIsEvaluatedByDatabase(t *testing.T) {
 	if _, err := db.Exec(`UPDATE approvals SET scope='rule:POST /x' WHERE id='scoped'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Approve("future", "datetime('now', '+60 minutes')"); err != nil {
+	if err := q.Approve("future", ApprovalExpiry(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	var exp string
@@ -39,7 +40,7 @@ func TestApproveRelativeExpiryIsEvaluatedByDatabase(t *testing.T) {
 	if err := q.Approve("past", "2000-01-01 00:00:00"); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Approve("scoped", "datetime('now', '+1 hours')"); err != nil {
+	if err := q.Approve("scoped", ApprovalExpiry(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := q.GetValidScopedApproval("p", "rule:POST /x"); err != nil || got.ID != "scoped" {
@@ -51,9 +52,12 @@ func TestApproveRelativeExpiryIsEvaluatedByDatabase(t *testing.T) {
 	if _, err := q.GetValidScopedApproval("p", ""); err != sql.ErrNoRows {
 		t.Fatalf("empty scope must never match: %v", err)
 	}
-	// Injection-shaped expressions are bound as data, not evaluated.
-	if err := q.Approve("past", "datetime('now', '+1 minutes'); DROP TABLE approvals"); err != nil {
-		t.Fatal(err)
+	// Anything that is not a UTC timestamp is an error (no SQL expressions, no
+	// relative strings, no other layouts) and changes nothing.
+	for _, bad := range []string{"datetime('now', '+60 minutes')", "datetime('now', '+1 minutes'); DROP TABLE approvals", "", "2099-01-01", "2099-01-01T00:00:00Z", "tomorrow"} {
+		if err := q.Approve("future", bad); err == nil {
+			t.Errorf("Approve(%q) must be rejected", bad)
+		}
 	}
 	if _, err := db.Exec(`SELECT 1 FROM approvals`); err != nil {
 		t.Fatal(err)

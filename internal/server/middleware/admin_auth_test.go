@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -278,8 +279,8 @@ func TestMiddleware_CookieValue_ContainsTimestamp(t *testing.T) {
 
 type memEpoch map[string]string
 
-func (m memEpoch) Get(k string) string   { return m[k] }
-func (m memEpoch) Set(k, v string) error { m[k] = v; return nil }
+func (m memEpoch) GetE(k string) (string, error) { return m[k], nil }
+func (m memEpoch) Set(k, v string) error         { m[k] = v; return nil }
 
 func TestSessionEpochRevokesOldCookiesImmediately(t *testing.T) {
 	store := memEpoch{}
@@ -326,5 +327,44 @@ func TestSessionEpochCannotBeForgedInCookie(t *testing.T) {
 	parts[2] = "4" // signature no longer matches
 	if _, ok := a.validateSession(strings.Join(parts, "|")); ok {
 		t.Fatal("tampered epoch accepted")
+	}
+}
+
+type failingEpoch struct{ fail bool }
+
+func (f *failingEpoch) GetE(string) (string, error) {
+	if f.fail {
+		return "", errors.New("db unavailable")
+	}
+	return "", nil
+}
+func (f *failingEpoch) Set(string, string) error { return nil }
+
+// A store read error must reject sessions (fail closed), never fall back to epoch 0.
+func TestSessionEpochReadErrorFailsClosed(t *testing.T) {
+	store := &failingEpoch{}
+	a := newTestAuth().WithEpochStore(store)
+	c := a.CreateSession("alice", httptest.NewRequest(http.MethodGet, "/", nil))
+	if _, ok := a.validateSession(c.Value); !ok {
+		t.Fatal("healthy store: cookie rejected")
+	}
+	store.fail = true
+	if _, ok := a.validateSession(c.Value); ok {
+		t.Fatal("cookie accepted while the epoch cannot be read")
+	}
+	if _, err := a.BumpEpoch(); err == nil {
+		t.Fatal("BumpEpoch must report the read error")
+	}
+	bad := a.CreateSession("alice", httptest.NewRequest(http.MethodGet, "/", nil))
+	store.fail = false
+	if _, ok := a.validateSession(bad.Value); ok {
+		t.Fatal("a cookie issued during a store outage must never validate")
+	}
+}
+
+func TestSessionEpochCorruptValueFailsClosed(t *testing.T) {
+	a := newTestAuth().WithEpochStore(memEpoch{"session_epoch": "garbage"})
+	if _, err := a.Epoch(); err == nil {
+		t.Fatal("corrupt epoch must be an error")
 	}
 }

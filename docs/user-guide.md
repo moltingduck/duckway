@@ -122,6 +122,14 @@ Client tokens do not expire automatically. If a token is lost, open the client i
 2. Pick service, client, and the API key to back it
 3. Toggle "Require admin approval" if you want first-use to need approval
 
+Besides the token-wide toggle, an access rule can use the **approve** effect
+(for example the *Approve writes* preset). An approval granted for such a rule
+covers exactly that request (method, path, query string and body) for the
+approval time-to-live. Repeating the identical request is allowed; any change
+to the method, path, query or body asks again. Methods are matched
+case-insensitively, and the *Approve writes* preset also holds any method it
+does not list.
+
 ### 5. Set up the agent machine
 
 ```bash
@@ -459,6 +467,17 @@ location /api/events {
 
 (Duckway also sends `X-Accel-Buffering: no`; keep the `location /` block's
 `proxy_pass` and do not use `add_header Content-Security-Policy` there.)
+
+**Admin writes need the original Host.** The console rejects a state-changing
+request (POST/PUT/PATCH/DELETE) whose `Origin` (or `Referer`) is a different
+site. A proxy that rewrites `Host` makes the browser's Origin look foreign, so
+in the `location /` block keep `proxy_set_header Host $host;` (or send
+`X-Forwarded-Host` and `X-Forwarded-Proto`). Alternatively set the **Gateway
+URL** in Settings or the `DUCKWAY_PUBLIC_ORIGIN` environment variable to the
+public origin (`https://console.example.com`, comma-separated for several);
+an Origin equal to one of them is accepted. Requests with no Origin,
+Sec-Fetch-Site or Referer header at all (non-browser tools such as
+`duckway init`) are not affected.
 
 Caddy:
 

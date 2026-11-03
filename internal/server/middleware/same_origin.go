@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 )
 
 // SameOrigin blocks cross-site state-changing requests to the admin console.
@@ -15,8 +16,20 @@ import (
 //  1. Origin header present: its scheme and host must match this request's.
 //  2. Origin absent: Sec-Fetch-Site must be "same-origin" or "none".
 //  3. Neither: the Referer host must match.
-//  4. Nothing at all: rejected. Browsers always send Origin on these methods;
-//     non-browser admin tooling must send "Origin: <server base URL>".
+//  4. Nothing at all: allowed. Every browser attaches Origin (or at least
+//     Sec-Fetch-Site) to a cross-site POST/PUT/PATCH/DELETE, so a CSRF attack
+//     can never arrive without any of the three headers. Only non-browser
+//     tooling omits them, notably already-deployed `duckway init` binaries that
+//     log in and register a client through the admin API; rejecting those would
+//     lock out every installed client. A header that IS present must still
+//     match: a foreign Origin, Sec-Fetch-Site cross-site/same-site, or a foreign
+//     Referer is rejected.
+//
+// Deployments behind a reverse proxy that rewrites Host can name the public
+// origin(s) via SetTrustedOrigins (the configured gateway URL and the
+// DUCKWAY_PUBLIC_ORIGIN environment variable); an Origin equal to one of them
+// is accepted. Preferably the proxy forwards the original Host
+// (proxy_set_header Host $host) or X-Forwarded-Host.
 //
 // The server derives its own origin the way it does elsewhere (Host header,
 // X-Forwarded-Proto/Host from a fronting proxy). The scheme is compared only
@@ -57,6 +70,38 @@ func sameOriginRequest(r *http.Request) bool {
 	if ref := r.Header.Get("Referer"); ref != "" {
 		return originMatches(r, ref, false)
 	}
+	// Nothing proves a browser cross-site origin: see rule 4 above.
+	return true
+}
+
+var trustedOrigins atomic.Value // func() []string
+
+// SetTrustedOrigins registers a provider of extra origins (scheme://host[:port])
+// that count as the console's own origin, for proxies that rewrite Host.
+func SetTrustedOrigins(f func() []string) { trustedOrigins.Store(f) }
+
+func originOf(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host)
+}
+
+func trustedOrigin(raw string) bool {
+	f, _ := trustedOrigins.Load().(func() []string)
+	if f == nil {
+		return false
+	}
+	o := originOf(raw)
+	if o == "" {
+		return false
+	}
+	for _, t := range f() {
+		if t = originOf(t); t != "" && t == o {
+			return true
+		}
+	}
 	return false
 }
 
@@ -72,7 +117,7 @@ func originMatches(r *http.Request, raw string, checkScheme bool) bool {
 		}
 	}
 	if !strings.EqualFold(u.Host, host) {
-		return false
+		return trustedOrigin(raw)
 	}
 	if !checkScheme {
 		return true

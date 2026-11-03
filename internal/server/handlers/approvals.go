@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -99,8 +100,10 @@ func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		req.DurationMinutes = 1440
 	}
 
-	expiresAt := fmt.Sprintf("datetime('now', '+%d minutes')", req.DurationMinutes)
-	if err := h.approvals.Approve(id, expiresAt); err != nil {
+	if req.DurationMinutes > 60*24*365 {
+		req.DurationMinutes = 60 * 24 * 365
+	}
+	if err := h.approvals.Approve(id, queries.ApprovalExpiry(time.Duration(req.DurationMinutes)*time.Minute)); err != nil {
 		jsonError(w, "failed to approve", http.StatusInternalServerError)
 		return
 	}

@@ -50,38 +50,47 @@ func ccKeySegments(key string) []string {
 	return segs
 }
 
-// ccTokenCountWords mark a key that merely mentions "token" as a unit of LLM
-// usage or a descriptive setting (max_tokens, token_limit, tokenType), not a
-// credential.
-var ccTokenCountWords = map[string]bool{
-	"max": true, "min": true, "limit": true, "limits": true, "count": true, "budget": true,
-	"ttl": true, "type": true, "usage": true, "remaining": true, "endpoint": true, "total": true,
-	"tokens": true, "maxtokens": true, "mintokens": true,
+// ccPlainTokenKeys are the only token-ish keys that stay visible even when the
+// value is not a number or boolean: descriptive settings, not credentials.
+var ccPlainTokenKeys = map[string]bool{
+	"max_tokens": true, "maxtokens": true, "min_tokens": true, "mintokens": true, "token_type": true, "tokentype": true,
 }
 
-// ccIsTokenCountKey reports whether key names a token quantity or descriptor
-// rather than a token secret: *_tokens (plural), max_tokens, token_limit,
-// token_count, tokenType, and so on.
-func ccIsTokenCountKey(key string) bool {
-	k := strings.ToLower(key)
-	if strings.HasSuffix(k, "tokens") || strings.HasPrefix(k, "maxtoken") || strings.HasPrefix(k, "mintoken") {
+// ccIsPlainTokenKey reports whether key is on the explicit allow-list:
+// max_tokens, min_tokens, token_type and *_token_limit / *_token_count.
+func ccIsPlainTokenKey(key string) bool {
+	k := strings.ToLower(strings.ReplaceAll(key, "-", "_"))
+	if ccPlainTokenKeys[k] {
 		return true
 	}
-	for _, seg := range ccKeySegments(key) {
-		if ccTokenCountWords[seg] {
-			return true
-		}
+	return strings.HasSuffix(k, "_token_limit") || strings.HasSuffix(k, "_token_count") ||
+		strings.HasSuffix(k, "tokenlimit") || strings.HasSuffix(k, "tokencount")
+}
+
+// ccShouldMask decides whether the value under key is replaced by the mask.
+// A secret-looking key (anything mentioning token, secret, password, ...) is
+// masked, except: a number or boolean (a token count, never a credential) and
+// the explicit allow-list above. Strings, arrays and objects under any
+// token-ish key stay masked (access_tokens, refresh_tokens, bot_tokens, tokens,
+// githubTokens, endpoint_token, usage_token ...).
+func ccShouldMask(key string, val interface{}) bool {
+	if val == nil || !ccIsSecretKey(key) {
+		return false
 	}
-	return false
+	switch val.(type) {
+	case float64, bool, json.Number, int, int64:
+		return false
+	}
+	if s, ok := val.(string); ok && s == "" {
+		return false
+	}
+	return !ccIsPlainTokenKey(key)
 }
 
 func ccIsSecretKey(key string) bool {
 	k := strings.ToLower(key)
 	for _, hint := range ccSecretKeyHints {
 		if !strings.Contains(k, hint) {
-			continue
-		}
-		if hint == "token" && ccIsTokenCountKey(key) {
 			continue
 		}
 		return true
@@ -99,11 +108,10 @@ func maskCCValue(v interface{}) interface{} {
 	case map[string]interface{}:
 		for k, val := range t {
 			if ccIsSecretKey(k) {
-				if s, ok := val.(string); ok && s == "" {
-					continue
-				}
-				if val != nil {
+				if ccShouldMask(k, val) {
 					t[k] = ccSecretMask
+				} else if _, nested := val.(map[string]interface{}); nested {
+					t[k] = maskCCValue(val)
 				}
 				continue
 			}

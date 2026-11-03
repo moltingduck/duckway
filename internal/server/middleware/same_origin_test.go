@@ -40,8 +40,8 @@ func TestSameOriginDecisions(t *testing.T) {
 		{"sec-fetch none", "POST", set("Sec-Fetch-Site", "none"), 200},
 		{"referer same host", "POST", set("Referer", "http://console.example/admin/settings"), 200},
 		{"referer other host", "POST", set("Referer", "http://evil.example/"), 403},
-		{"cookie only, no headers", "POST", func(r *http.Request) { r.AddCookie(&http.Cookie{Name: "duckway_session", Value: "x"}) }, 403},
-		{"no headers", "PATCH", nil, 403},
+		{"cookie only, no headers (non-browser tooling)", "POST", func(r *http.Request) { r.AddCookie(&http.Cookie{Name: "duckway_session", Value: "x"}) }, 200},
+		{"no headers at all (old duckway init)", "PATCH", nil, 200},
 		{"GET never checked", "GET", set("Origin", "http://evil.example"), 200},
 		{"HEAD never checked", "HEAD", nil, 200},
 		{"scheme mismatch behind proxy", "POST", func(r *http.Request) {
@@ -77,5 +77,26 @@ func TestSameOriginRejectionBody(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != 403 || rec.Body.String() != `{"error":"cross-site request blocked"}` {
 		t.Fatalf("%d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSameOriginTrustedOriginsBehindRewritingProxy(t *testing.T) {
+	SetTrustedOrigins(func() []string { return []string{"https://public.example", "", "not a url"} })
+	t.Cleanup(func() { SetTrustedOrigins(func() []string { return nil }) })
+	set := func(k, v string) func(*http.Request) { return func(r *http.Request) { r.Header.Set(k, v) } }
+	if got := sameOriginStatus("POST", set("Origin", "https://public.example")); got != 200 {
+		t.Errorf("configured public origin: %d, want 200", got)
+	}
+	if got := sameOriginStatus("POST", set("Origin", "https://PUBLIC.example")); got != 200 {
+		t.Errorf("origin compare is case-insensitive: %d", got)
+	}
+	if got := sameOriginStatus("POST", set("Origin", "http://public.example")); got != 403 {
+		t.Errorf("scheme must match the trusted origin: %d, want 403", got)
+	}
+	if got := sameOriginStatus("POST", set("Origin", "https://evil.example")); got != 403 {
+		t.Errorf("other origin: %d, want 403", got)
+	}
+	if got := sameOriginStatus("POST", set("Referer", "https://public.example/admin/x")); got != 200 {
+		t.Errorf("referer from trusted origin: %d", got)
 	}
 }

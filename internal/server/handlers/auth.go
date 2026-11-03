@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -102,17 +103,21 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to hash password", http.StatusInternalServerError)
 		return
 	}
-	if err := h.users.UpdatePassword(username, string(hash)); err != nil {
-		jsonError(w, "failed to update password", http.StatusInternalServerError)
-		return
-	}
-	// Revoke every other session, then re-issue this one under the new epoch
-	// so the current tab stays signed in.
+	// Revoke every session first, then change the password. If the password
+	// update then fails, the worst case is that everyone (including this tab,
+	// which is re-issued below) was signed out and the old password still
+	// works; the reverse order could leave a new password with old sessions
+	// still alive.
 	if _, err := h.auth.BumpEpoch(); err != nil {
-		jsonError(w, "password changed but failed to revoke other sessions", http.StatusInternalServerError)
+		log.Printf("change-password: bump session epoch: %v", err)
+		jsonError(w, "could not revoke other sessions; password not changed", http.StatusInternalServerError)
 		return
 	}
 	http.SetCookie(w, h.auth.CreateSession(username, r))
+	if err := h.users.UpdatePassword(username, string(hash)); err != nil {
+		jsonError(w, "failed to update password (other sessions were signed out)", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	jsonResponse(w, map[string]string{"status": "ok"})
 }

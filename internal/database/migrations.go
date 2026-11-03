@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -561,12 +562,25 @@ func runMigrations(db *sql.DB) error {
 		// Live-update watcher fingerprints (internal/server/events). Append-only;
 		// shared by SQLite and PostgreSQL because both run runMigrations.
 		`CREATE INDEX IF NOT EXISTS idx_approvals_watch ON approvals(status, approved_at, created_at)`,
+		// One pending approval per (token, request signature): concurrent
+		// retries of the same gated request collapse onto it. Partial unique
+		// index syntax is shared by SQLite and PostgreSQL.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_pending_scope ON approvals(placeholder_id, scope) WHERE status = 'pending' AND scope <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_client_update_jobs_watch ON client_update_jobs(status, updated_at)`,
 	}
 	for i, statement := range required {
 		if _, err := db.Exec(statement); err != nil {
 			return fmt.Errorf("post migration statement %d: %w", i, err)
 		}
+	}
+
+	// Legacy rows stored a literal "datetime('now', '+N minutes')" string as
+	// expires_at. It sorts after every real timestamp, so those approvals never
+	// expired. Expire them now (portable: the timestamp is bound from Go, and
+	// the statement is a no-op once no such row remains).
+	if _, err := db.Exec(`UPDATE approvals SET expires_at = ? WHERE expires_at LIKE 'datetime(%'`,
+		time.Now().UTC().Format("2006-01-02 15:04:05")); err != nil {
+		return fmt.Errorf("expire legacy approvals: %w", err)
 	}
 
 	// CC v2: drop the old assignment table (subsumed by control_channels.client_id)

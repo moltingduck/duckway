@@ -113,3 +113,24 @@ func TestSettingsDocsAndNotificationsPagesRenderNewStructure(t *testing.T) {
 		t.Error("notifications must not render config in a <pre>")
 	}
 }
+
+func TestSettingsAPIHidesAndRejectsReservedKeys(t *testing.T) {
+	s, shared := newClientDetailServer(t)
+	for _, k := range []string{"session_epoch", "whats_new_seen_version:duckway"} {
+		body := `{"` + k + `":"99"}`
+		rec := svcDo(s, shared, http.MethodPost, "/api/settings", body, true)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"field"`) {
+			t.Errorf("POST %s => %d %s, want 400", k, rec.Code, rec.Body.String())
+		}
+	}
+	// A mixed batch is rejected whole: nothing is written.
+	if rec := svcDo(s, shared, http.MethodPost, "/api/settings", `{"gateway_url":"http://ok.example","session_epoch":"5"}`, true); rec.Code != http.StatusBadRequest {
+		t.Fatalf("mixed batch => %d", rec.Code)
+	}
+	svcExec(t, s, `INSERT INTO settings (key, value) VALUES ('session_epoch','3') ON CONFLICT(key) DO UPDATE SET value='3'`)
+	svcExec(t, s, `INSERT INTO settings (key, value) VALUES ('whats_new_seen_version:duckway','2026.11')`)
+	rec := svcDo(s, shared, http.MethodGet, "/api/settings", "", true)
+	if rec.Code != 200 || strings.Contains(rec.Body.String(), "session_epoch") || strings.Contains(rec.Body.String(), "whats_new_seen_version") || strings.Contains(rec.Body.String(), "ok.example") {
+		t.Fatalf("GET exposes reserved keys or wrote a rejected batch: %d %s", rec.Code, rec.Body.String())
+	}
+}

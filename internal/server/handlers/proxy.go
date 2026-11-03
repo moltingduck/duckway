@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -286,8 +288,42 @@ func isSensitiveBodyKey(key string) bool {
 	return false
 }
 
+// validateProxiedPath rejects decoded proxy paths that cannot be forwarded
+// byte-for-byte: a decoded '?' or '#' (from %3F / %23) would turn path text into
+// a query or fragment upstream, control characters (including NUL) are never
+// legitimate, and an encoded slash or backslash (%2F, %5C) is decoded by the ACL
+// as a path separator but is kept as part of one segment by many upstreams.
+// Spaces, unicode and other encoded characters are fine: the upstream URL is
+// rebuilt with escapedUpstreamPath, so upstream sees exactly the path the ACL
+// evaluated.
+func validateProxiedPath(r *http.Request) string {
+	for _, c := range r.URL.Path {
+		if c == '?' || c == '#' || c < 0x20 || c == 0x7f {
+			return "invalid character in proxied path"
+		}
+	}
+	raw := strings.ToLower(r.URL.EscapedPath())
+	if strings.Contains(raw, "%2f") || strings.Contains(raw, "%5c") {
+		return "encoded slash in proxied path is not allowed"
+	}
+	return ""
+}
+
+// escapedUpstreamPath is the canonical escaped form of the decoded path the ACL
+// checked, so decode(escapedUpstreamPath(p)) == p and nothing else.
+func escapedUpstreamPath(decoded string) string {
+	return (&url.URL{Path: decoded}).EscapedPath()
+}
+
 func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
+	// Methods are case-sensitive on the wire: normalise once so the ACL and the
+	// upstream request see the same, upper-case method.
+	r.Method = strings.ToUpper(r.Method)
+	if msg := validateProxiedPath(r); msg != "" {
+		jsonError(w, msg, http.StatusBadRequest)
+		return
+	}
 	path := r.URL.Path
 	if !strings.HasPrefix(path, "/proxy/") {
 		jsonError(w, "invalid proxy path", http.StatusBadRequest)
@@ -443,7 +479,19 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if approveLayer != "" && h.approvals != nil {
-		scope := ruleApprovalScope(aclMethod, aclPath)
+		// The approval covers this exact request, body included, so the body
+		// must be in hand (and replayed from memory) even if no rule inspected it.
+		if !bodyRequired && r.Body != nil {
+			var rerr error
+			bodyBytes, rerr = io.ReadAll(http.MaxBytesReader(w, r.Body, maxInspectableRequestBodyBytes))
+			r.Body.Close()
+			if rerr != nil {
+				jsonError(w, "request body too large or unreadable for approval", http.StatusRequestEntityTooLarge)
+				return
+			}
+			bodyRequired = true
+		}
+		scope := ruleApprovalScope(aclMethod, aclPath, r.URL.RawQuery, bodyBytes)
 		if _, err := h.approvals.GetValidScopedApproval(result.PlaceholderID, scope); err != nil {
 			if err != sql.ErrNoRows {
 				log.Printf("check rule approval for %s: %v", result.PlaceholderID, err)
@@ -464,7 +512,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		upstreamBaseURL = svc.UpstreamURL
 	}
 	upstreamBaseURL = effectiveProxyUpstreamBaseURL(serviceName, upstreamBaseURL, upstreamPath)
-	upstreamURL := strings.TrimRight(upstreamBaseURL, "/") + upstreamPath
+	upstreamURL := strings.TrimRight(upstreamBaseURL, "/") + escapedUpstreamPath(upstreamPath)
 	if r.URL.RawQuery != "" {
 		upstreamURL += "?" + r.URL.RawQuery
 	}
@@ -1043,7 +1091,7 @@ func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	upstreamURL := "https://auth.openai.com" + upstreamPath
+	upstreamURL := "https://auth.openai.com" + escapedUpstreamPath(upstreamPath)
 	if r.URL.RawQuery != "" {
 		upstreamURL += "?" + r.URL.RawQuery
 	}
@@ -1534,9 +1582,12 @@ func isGitHubSmartHTTPPath(path string) bool {
 }
 
 // ruleApprovalScope is the request signature a per-rule approval is bound to:
-// an approval for POST /repos/a/b/issues never unlocks DELETE or another path.
-func ruleApprovalScope(method, path string) string {
-	return "rule:" + strings.ToUpper(method) + " " + path
+// "rule:METHOD path?query#sha256(body)". An approval covers exactly that
+// request (method, path, query and body) for its TTL: it never unlocks another
+// method, path, query string or body.
+func ruleApprovalScope(method, path, rawQuery string, body []byte) string {
+	sum := sha256.Sum256(body)
+	return "rule:" + strings.ToUpper(method) + " " + path + "?" + rawQuery + "#" + hex.EncodeToString(sum[:])
 }
 
 // holdForApproval records (or reuses) a pending approval, notifies the admin
@@ -1553,12 +1604,20 @@ func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, c
 	if approvalID == "" {
 		var err error
 		approvalID, err = CreatePendingApproval(h.approvals, placeholderID, method, path, scope, rule)
+		created := err == nil
+		if err != nil && scope != "" && queries.IsUniqueViolation(err) {
+			// A concurrent identical request won the insert (partial unique
+			// index on pending scoped approvals): reuse its approval.
+			if p, perr := h.approvals.GetPendingScoped(placeholderID, scope); perr == nil {
+				approvalID, err = p.ID, nil
+			}
+		}
 		if err != nil {
 			log.Printf("failed to create approval: %v", err)
 			jsonError(w, "failed to create approval request", http.StatusInternalServerError)
 			return
 		}
-		if h.notifier != nil {
+		if h.notifier != nil && created {
 			h.notifier.NotifyApprovalNeeded(services.ApprovalNotification{
 				ApprovalID:    approvalID,
 				PlaceholderID: placeholderID,

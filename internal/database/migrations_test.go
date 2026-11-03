@@ -1,6 +1,9 @@
 package database
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestRunMigrationsAddsUsageGroupAttributionToExistingDatabase(t *testing.T) {
 	db, err := Open(t.TempDir())
@@ -113,5 +116,41 @@ func TestRunMigrationsCreatesWatcherIndexesIdempotently(t *testing.T) {
 		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`, name).Scan(&got); err != nil {
 			t.Fatalf("%s missing: %v", name, err)
 		}
+	}
+}
+
+// Legacy approvals stored a literal "datetime('now', ...)" string as expires_at,
+// which never expired. The migration expires them and is idempotent.
+func TestMigrationExpiresLegacyApprovalExpiryStrings(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id, short_id, name, token_hash, is_active) VALUES ('c1','s1','n','h',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO placeholder_keys (id, client_id, env_name, placeholder, service_id, api_key_id) VALUES ('p1','c1','E','ph','s','k')`); err != nil {
+		t.Fatal(err)
+	}
+	for id, exp := range map[string]string{"legacy": "datetime('now', '+60 minutes')", "real": "2099-01-01 00:00:00"} {
+		if _, err := db.Exec(`INSERT INTO approvals (id, placeholder_id, status, expires_at) VALUES (?, 'p1', 'approved', ?)`, id, exp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ { // second run proves idempotence
+		if err := runMigrations(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var legacy, real string
+	_ = db.QueryRow(`SELECT expires_at FROM approvals WHERE id='legacy'`).Scan(&legacy)
+	_ = db.QueryRow(`SELECT expires_at FROM approvals WHERE id='real'`).Scan(&real)
+	if len(legacy) != 19 || legacy > time.Now().UTC().Add(time.Minute).Format("2006-01-02 15:04:05") || real != "2099-01-01 00:00:00" {
+		t.Fatalf("legacy=%q real=%q", legacy, real)
 	}
 }

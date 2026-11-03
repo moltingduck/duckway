@@ -381,7 +381,7 @@ func (s *Server) startApprovalListeners() {
 				ttl = ph.ApprovalTTLMinutes
 			}
 		}
-		return approvalQ.Approve(approvalID, fmt.Sprintf("datetime('now', '+%d minutes')", ttl))
+		return approvalQ.Approve(approvalID, queries.ApprovalExpiry(time.Duration(ttl)*time.Minute))
 	}
 	rejectFunc := func(approvalID string) error {
 		return approvalQ.Reject(approvalID)

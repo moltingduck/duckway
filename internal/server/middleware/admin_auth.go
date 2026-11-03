@@ -15,7 +15,9 @@ import (
 
 // EpochStore persists the admin session epoch (settings.session_epoch).
 type EpochStore interface {
-	Get(key string) string
+	// GetE returns "" with a nil error when the key is simply unset, and a
+	// non-nil error when the store cannot be read (the caller then fails closed).
+	GetE(key string) (string, error)
 	Set(key, value string) error
 }
 
@@ -41,17 +43,28 @@ func (a *AdminAuth) WithEpochStore(s EpochStore) *AdminAuth {
 	return a
 }
 
-// Epoch returns the current session epoch (0 when unset or unparsable). It is
-// read from the store on every call so a bump takes effect immediately.
-func (a *AdminAuth) Epoch() int64 {
+// Epoch returns the current session epoch (0 when unset). It is read from the
+// store on every call so a bump takes effect immediately. A store read error or
+// a corrupt value is returned as an error: callers must fail closed (reject
+// the session) rather than treat it as epoch 0, which would silently
+// resurrect revoked sessions.
+func (a *AdminAuth) Epoch() (int64, error) {
 	if a.epochs == nil {
-		return 0
+		return 0, nil
 	}
-	n, err := strconv.ParseInt(strings.TrimSpace(a.epochs.Get(epochSettingKey)), 10, 64)
+	raw, err := a.epochs.GetE(epochSettingKey)
+	if err != nil {
+		return 0, fmt.Errorf("read session epoch: %w", err)
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || n < 0 {
-		return 0
+		return 0, fmt.Errorf("session epoch %q is not a valid number", raw)
 	}
-	return n
+	return n, nil
 }
 
 // BumpEpoch invalidates every previously issued session cookie.
@@ -61,7 +74,11 @@ func (a *AdminAuth) BumpEpoch() (int64, error) {
 	}
 	a.epochMu.Lock()
 	defer a.epochMu.Unlock()
-	n := a.Epoch() + 1
+	cur, err := a.Epoch()
+	if err != nil {
+		return 0, err
+	}
+	n := cur + 1
 	if err := a.epochs.Set(epochSettingKey, strconv.FormatInt(n, 10)); err != nil {
 		return 0, err
 	}
@@ -114,7 +131,11 @@ func (a *AdminAuth) unauthorized(w http.ResponseWriter, r *http.Request) {
 
 func (a *AdminAuth) CreateSession(username string, r *http.Request) *http.Cookie {
 	ts := time.Now().Unix()
-	data := fmt.Sprintf("%s|%d|%d", username, ts, a.Epoch())
+	epoch, err := a.Epoch()
+	if err != nil {
+		epoch = -1 // unreadable epoch: issue a cookie validateSession always rejects
+	}
+	data := fmt.Sprintf("%s|%d|%d", username, ts, epoch)
 	sig := a.sign(data)
 	value := data + "|" + sig
 
@@ -173,8 +194,9 @@ func (a *AdminAuth) validateSession(value string) (string, bool) {
 		return "", false
 	}
 
-	if epoch != a.Epoch() {
-		return "", false
+	current, err := a.Epoch()
+	if err != nil || epoch != current {
+		return "", false // fail closed on a store error
 	}
 	return username, true
 }

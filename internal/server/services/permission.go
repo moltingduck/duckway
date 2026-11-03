@@ -480,7 +480,7 @@ func (pc *PermissionChecker) checkRule(provider string, rule PermissionRule, pla
 }
 
 func matchEndpoint(provider string, ep EndpointRule, method, path string) bool {
-	if ep.Method != "*" && ep.Method != method {
+	if ep.Method != "*" && !strings.EqualFold(ep.Method, method) {
 		return false
 	}
 	if provider == "github" && matchGitHubRepoPath(ep.Path, path) {

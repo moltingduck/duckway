@@ -1,7 +1,10 @@
 package handlers_test
 
 import (
+	"time"
+
 	"encoding/json"
+	"github.com/hackerduck/duckway/internal/database/queries"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -82,7 +85,7 @@ func TestProxyApproveRuleHoldsUntilApproved(t *testing.T) {
 	}
 
 	// Approval (with a relative TTL) releases exactly that request.
-	if err := rig.f.approvalQ.Approve(id, "datetime('now', '+60 minutes')"); err != nil {
+	if err := rig.f.approvalQ.Approve(id, queries.ApprovalExpiry(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := rig.do("POST", "/v1/messages"); code != http.StatusOK {
@@ -102,7 +105,7 @@ func TestProxyApproveRuleApprovalIsScopedToRequest(t *testing.T) {
 		{"method":"POST","path":"/v1/a","approve":true},{"method":"DELETE","path":"/v1/a","approve":true},{"method":"POST","path":"/v1/b","approve":true}]}]}`
 	rig := newApproveRig(t, acl)
 	_, resp := rig.do("POST", "/v1/a")
-	if err := rig.f.approvalQ.Approve(resp["approval_id"], "datetime('now', '+60 minutes')"); err != nil {
+	if err := rig.f.approvalQ.Approve(resp["approval_id"], queries.ApprovalExpiry(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := rig.do("POST", "/v1/a"); code != http.StatusOK {
