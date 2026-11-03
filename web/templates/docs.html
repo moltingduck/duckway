@@ -35,6 +35,7 @@
       <li><a class="dc-toc-link" href="#cli">14. CLI Reference</a></li>
       <li><a class="dc-toc-link" href="#api">15. API Reference</a></li>
       <li><a class="dc-toc-link" href="#docker">16. Docker &amp; Deployment</a></li>
+      <li><a class="dc-toc-link" href="#whats-new">17. What's new</a></li>
     </ol>
   </nav>
 
@@ -99,7 +100,7 @@
   </table>
   </div>
   <p class="text-sm text-muted mt-1">In split mode, agents only access the gateway. The admin panel runs on a separate node protected by Tailscale ACL. Use <code>./scripts/prod.sh</code> to start production profiles. This table used to live on the Settings page.</p>
-  <p class="mt-1">Single Go binary (~14MB server, ~7.5MB client). SQLite embedded, no external DB. Admin panel: Go templates + vendored HTMX. Zero npm.</p>
+  <p class="mt-1">Single Go binary (~14MB server, ~7.5MB client). SQLite embedded, no external DB. Admin panel: Go templates + a small vanilla-JS layer. Zero npm.</p>
 </section>
 
 <!-- 3 -->
@@ -784,6 +785,29 @@ cp .env.example .dev.env
   <h3 class="mt-1">Tailscale Integration</h3>
   <p>Production compose uses unprivileged userspace Tailscale sidecars. Each app shares its sidecar network namespace and listens only on loopback; Tailscale forwards tailnet TCP port 80 to that listener without certificate-domain or HTTP Host matching.</p>
   <p class="text-sm text-muted">No host ports, <code>/dev/net/tun</code>, or added Linux capabilities are required. In split mode, use separate tagged admin and gateway auth keys with a deny-by-default Headscale policy; hostnames are not security identities.</p>
+</section>
+
+<!-- 17 -->
+<section class="card dc-sec" id="whats-new" aria-labelledby="whats-new-h">
+  <h2 id="whats-new-h">17. What's new</h2>
+  <p>The console has a new layout. Your clients, credentials and rules are exactly as they were; pages were regrouped and a few were combined. Old URLs are not redirected: they answer a page-moved 404 inside the console with a link to the new location.</p>
+  <h3>Where things went</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th scope="col">Before</th><th scope="col">Now</th></tr></thead>
+    <tbody>
+      {{range .WhatsNewMoves}}<tr><td>{{.Old}}</td><td><a href="{{.Path}}">{{.New}}</a></td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  </div>
+  <h3 class="mt-1">Also new</h3>
+  <ul>
+    <li><strong>Command palette.</strong> Press <kbd>Ctrl</kbd>+<kbd>K</kbd> (<kbd>&#8984;K</kbd> on a Mac), or use the Search button in the top bar, to jump to any page or find a client, credential, key pool, bundle, phantom token, service or notification channel by name.</li>
+    <li><strong>Approve rules.</strong> Phantom-token ACL rules can route a matching request into the approval flow instead of allowing or denying it.</li>
+    <li><strong>Stricter browser policy.</strong> The console enforces Trusted Types and a nonce-only script policy.</li>
+  </ul>
+  <p class="mt-1"><button type="button" class="btn" data-action="whatsNewOpen">Show the first-login dialog again</button></p>
 </section>
 
   </div>

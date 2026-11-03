@@ -158,8 +158,8 @@ assert_eq "Login page returns 200" "200" "$STATUS"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/static/style.css")
 assert_eq "Static CSS serves" "200" "$STATUS"
 
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/static/htmx.min.js")
-assert_eq "Static HTMX serves" "200" "$STATUS"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/static/dw.js")
+assert_eq "Static dw.js serves" "200" "$STATUS"
 
 SKILL=$(curl -s "$BASE/skill/duckway-agent.md" | head -1)
 assert_contains "Skill file serves" "Duckway" "$SKILL"

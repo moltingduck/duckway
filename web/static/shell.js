@@ -1,4 +1,4 @@
-/* shell.js - admin shell behavior (theme, drawer, logout, htmx errors). Requires dw.js. */
+/* shell.js - admin shell behavior (theme, drawer, logout, what's-new dialog). Requires dw.js. */
 (function () {
   'use strict';
   var root = document.documentElement;
@@ -44,14 +44,33 @@
     }
   };
 
-  document.body.addEventListener('htmx:afterRequest', function (e) {
-    if (e.detail.xhr && e.detail.xhr.status >= 400) {
+  /* ---- What's-new dialog ---- */
+  var wn = document.getElementById('wn-dialog');
+  async function whatsNewFinish() {
+    var box = document.getElementById('wn-dismiss');
+    if (box && box.checked) {
       try {
-        var err = JSON.parse(e.detail.xhr.responseText);
-        DW.toast(err.error || 'Request failed', 'error');
-      } catch (ex) {
-        DW.toast('Request failed', 'error');
+        var res = await fetch('/api/whats-new/dismiss', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ version: wn.dataset.version })
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+      } catch (err) {
+        DW.toast('Could not save your choice. Try again.', 'error');
+        return false;
       }
     }
-  });
+    DW.modal.close(wn);
+    return true;
+  }
+  DW.actions.whatsNewOpen = function () { if (wn) DW.modal.open(wn); };
+  DW.actions.whatsNewClose = function () { return whatsNewFinish(); };
+  DW.actions.whatsNewNotes = async function (el) {
+    if (await whatsNewFinish()) window.location.href = el.getAttribute('href');
+  };
+  if (wn && wn.dataset.autoopen === '1') {
+    var openWn = function () { DW.modal.open(wn); };
+    if (document.readyState === 'complete') openWn(); else window.addEventListener('load', openWn);
+  }
 })();

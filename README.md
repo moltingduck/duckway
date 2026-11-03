@@ -10,7 +10,7 @@ API proxy that manages real API keys centrally. AI agents use **phantom tokens**
 - **Approval workflow** — admin approves via Discord reactions / Telegram buttons / web panel, configurable TTL per key
 - **Key pools** — per-request rotation (round-robin, least-used, failover) or quota-aware leases to avoid rate limits; **Key bundles** assign one key per service to a client in one step
 - **16 canary token types** — auto-deployed honeypots via [canarytokens.org](https://canarytokens.org), per-client Gmail `+` tagging
-- **Admin panel** — dark theme, Go templates + HTMX, search/filter/pagination, live ACL preview
+- **Admin panel** — dark theme, Go templates + vanilla JS, search/filter/pagination, live ACL preview
 - **Discord Gateway WSS + Telegram polling** — interactive approval without public endpoints
 - **Control Channels (Discord)** — agents talk to humans in a Discord category via MCP tools; real channel IDs / guild IDs / bot tokens never leave the server
 - **196 E2E tests** + unit tests
@@ -336,7 +336,7 @@ The daemon reads `~/.duckway/config.yaml` + `cc.json`, connects to the server's 
 - **Server**: Go, single binary (~14MB)
 - **Client**: Go, single binary (~7.5MB)
 - **Database**: SQLite (embedded, no external DB)
-- **Admin panel**: Go `html/template` + vendored HTMX + CSS
+- **Admin panel**: Go `html/template` + vanilla JS + CSS
 - **Encryption**: AES-256-GCM for API keys at rest
 - **Proxy**: Go `net/http` + `crypto/tls` for MITM
 - **Zero npm, zero runtime dependencies**

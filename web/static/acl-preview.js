@@ -40,11 +40,11 @@ function renderACLSummary(json) {
 
   var ruleBlocks = config.rules.map(function(rule) {
     var name = rule.name || 'unnamed';
-    var denyBadge = rule.deny_all_other ? DW.html` <span class="badge badge-yellow" style="font-size:0.6rem">deny unlisted</span>` : '';
+    var denyBadge = rule.deny_all_other ? DW.html` <span class="badge badge-yellow acl-deny-badge">deny unlisted</span>` : '';
 
     var rows = (rule.endpoints || []).map(function(ep) {
       var icon = ep.allow !== false ? '✅' : '🚫';
-      var rowStyle = ep.allow !== false ? '' : 'opacity:0.6';
+      var rowClass = ep.allow !== false ? '' : 'acl-ep-deny';
       var constraints = '';
       if (ep.constraints && ep.constraints.body) {
         var parts = [];
@@ -57,7 +57,7 @@ function renderACLSummary(json) {
         }
         if (parts.length) constraints = DW.html` <span class="text-muted">(${parts.join(', ')})</span>`;
       }
-      return DW.html`<tr style="${rowStyle}"><td>${icon}</td><td><code>${ep.method}</code></td><td><code>${ep.path}</code></td><td>${constraints}</td></tr>`;
+      return DW.html`<tr class="${rowClass}"><td>${icon}</td><td><code>${ep.method}</code></td><td><code>${ep.path}</code></td><td>${constraints}</td></tr>`;
     });
 
     var rateLimit = '';
@@ -68,7 +68,7 @@ function renderACLSummary(json) {
       if (rule.rate_limit.requests_per_day) rl.push(rule.rate_limit.requests_per_day + '/day');
       if (rl.length) rateLimit = DW.html`<span class="text-muted text-sm">Rate limit: ${rl.join(', ')}</span>`;
     }
-    return DW.html`<div class="acl-rule"><strong class="text-sm">${name}</strong>${denyBadge}<table style="margin:0.25rem 0;font-size:0.75rem"><tbody>${rows}</tbody></table>${rateLimit}</div>`;
+    return DW.html`<div class="acl-rule"><strong class="text-sm">${name}</strong>${denyBadge}<table class="acl-rule-table"><tbody>${rows}</tbody></table>${rateLimit}</div>`;
   });
 
   return DW.html`<div class="acl-preview-rules">${ruleBlocks}</div>`;

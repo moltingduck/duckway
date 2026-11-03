@@ -22,8 +22,10 @@ func TestPluginsPageExplainsServerAndClientLifecycle(t *testing.T) {
 	}
 	var output bytes.Buffer
 	err = tmpl.ExecuteTemplate(&output, "layout", struct {
-		Title, Active, CSPNonce string
-		PendingApprovals        int
+		Title, Active, CSPNonce, WhatsNewVersion string
+		PendingApprovals                         int
+		WhatsNewShow                             bool
+		WhatsNewMoves                            []struct{ Old, New, Path string }
 	}{Title: `<script>alert("title")</script>`, Active: "plugins", CSPNonce: "testnonce"})
 	if err != nil {
 		t.Fatal(err)

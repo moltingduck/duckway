@@ -5,13 +5,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark light">
-  <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"selfRequestsOnly":true}'>
   <title>{{.Title}} — Duckway</title>
   <script nonce="{{$.CSPNonce}}">(function(){var m='auto';try{var v=localStorage.getItem('dw-theme');if(v==='light'||v==='dark')m=v}catch(e){}document.documentElement.setAttribute('data-theme',m)})();</script>
   <link rel="stylesheet" href="/static/style.css">
   <script nonce="{{$.CSPNonce}}" src="/static/dw.js"></script>
   <script nonce="{{$.CSPNonce}}" src="/static/live.js"></script>
-  <script nonce="{{$.CSPNonce}}" src="/static/htmx.min.js"></script>
   <script nonce="{{$.CSPNonce}}" src="/static/search.js"></script>
   <script nonce="{{$.CSPNonce}}" src="/static/acl-preview.js"></script>
   <script nonce="{{$.CSPNonce}}" src="/static/usage-snapshot.js"></script>
@@ -73,6 +71,7 @@
       <header class="topbar">
         <button type="button" class="btn btn-sm menu-btn" id="menu-btn" data-action="toggleNav" aria-controls="sidebar" aria-expanded="false" aria-label="Menu">&#9776; Menu</button>
         <span class="topbar-title">{{.Title}}</span>
+        <button type="button" class="btn btn-sm pal-trigger" id="pal-trigger" data-action="openPalette" aria-haspopup="dialog" aria-keyshortcuts="Control+K Meta+K"><span class="pal-trigger-icon" aria-hidden="true">&#9906;</span><span class="pal-trigger-label">Search</span><kbd class="pal-kbd" id="pal-kbd" aria-hidden="true">Ctrl K</kbd></button>
         <span class="sr-only" id="live-announce" role="status" aria-live="polite"></span>
         <span class="live-status" id="live-status" data-state="connecting"><span class="live-icon" aria-hidden="true">&#9676;</span><span class="live-text">Connecting&hellip;</span></span>
       </header>
@@ -82,7 +81,38 @@
     </div>
   </div>
   <div id="toast" aria-live="polite" aria-atomic="false"></div>
+
+  <div class="modal-backdrop" id="palette" hidden>
+    <div class="modal pal" aria-label="Command palette">
+      <input type="text" id="pal-input" class="pal-input" role="combobox" aria-label="Search pages and items" aria-expanded="true" aria-controls="pal-list" aria-autocomplete="list" aria-activedescendant="" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Search pages, clients, credentials&hellip;" maxlength="100">
+      <ul class="pal-list" id="pal-list" role="listbox" aria-label="Results"></ul>
+      <p class="pal-empty text-muted text-sm" id="pal-empty" hidden>No matches</p>
+      <p class="pal-foot text-muted text-sm"><span class="pal-foot-keys">Up/Down to move, Enter to open, Esc to close</span><button type="button" class="btn btn-sm" data-action="modal-close">Close</button></p>
+      <span class="sr-only" id="pal-status" role="status" aria-live="polite"></span>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="wn-dialog" hidden data-version="{{.WhatsNewVersion}}" data-autoopen="{{if .WhatsNewShow}}1{{end}}">
+    <div class="modal wn" aria-labelledby="wn-title">
+      <span class="badge badge-gray wn-version">v{{.WhatsNewVersion}}</span>
+      <h2 id="wn-title">The console has a new layout</h2>
+      <p class="wn-lead">Your clients, credentials and rules are exactly as they were. Pages were regrouped and a few were combined.</p>
+      <div class="wn-moves">
+        <div class="wn-moves-head" id="wn-moves-h">Where things went</div>
+        <ul class="wn-moves-list" aria-labelledby="wn-moves-h">
+          {{range .WhatsNewMoves}}<li class="wn-move"><span class="wn-old">{{.Old}}</span><span class="wn-arrow" aria-hidden="true">&rarr;</span><a class="wn-new" href="{{.Path}}">{{.New}}</a></li>
+          {{end}}
+        </ul>
+      </div>
+      <div class="wn-foot">
+        <label class="wn-check"><input type="checkbox" id="wn-dismiss"> Don't show again</label>
+        <a class="wn-notes" href="/admin/docs#whats-new" data-action="whatsNewNotes">Release notes</a>
+        <button type="button" class="btn btn-primary" data-action="whatsNewClose">Got it</button>
+      </div>
+    </div>
+  </div>
   <script nonce="{{$.CSPNonce}}" src="/static/shell.js"></script>
+  <script nonce="{{$.CSPNonce}}" src="/static/palette.js"></script>
 </body>
 </html>
 {{end}}

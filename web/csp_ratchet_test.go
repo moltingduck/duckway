@@ -2,7 +2,6 @@ package web
 
 import (
 	"io/fs"
-	"path"
 	"regexp"
 	"strings"
 	"testing"
@@ -19,7 +18,10 @@ var (
 	ratchetRawCallRE = regexp.MustCompile(`DW\.raw\(`)
 	ratchetRawOKRE   = regexp.MustCompile(`^DW\.raw\(\s*(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*")(?:\s*\+\s*(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"))*\s*\)`)
 	ratchetEvalRE    = regexp.MustCompile(`\beval\s*\(|\bnew\s+Function\b|\bFunction\s*\(|setTimeout\s*\(\s*["'` + "`" + `]|setInterval\s*\(\s*["'` + "`" + `]`)
-	ratchetScriptRE  = regexp.MustCompile(`(?i)<script\b[^>]*>`)
+	// Trusted Types sinks other than innerHTML/outerHTML/insertAdjacentHTML: none may appear
+	// in templates or static JS (DW.setHTML in dw.js is the sole sanctioned HTML sink).
+	ratchetTTSinkRE = regexp.MustCompile(`(?i)\.srcdoc\b|document\.write(?:ln)?\s*\(|createContextualFragment|parseFromString|setAttribute\(\s*["'` + "`" + `]on|setAttribute\(\s*["'` + "`" + `](?:srcdoc)["'` + "`" + `]|createElement\(\s*["'` + "`" + `]script|\.(?:text|textContent)\s*=\s*[^;]*\bscript|importScripts\s*\(|new\s+Worker\s*\(|\.src\s*=`)
+	ratchetScriptRE = regexp.MustCompile(`(?i)<script\b[^>]*>`)
 )
 
 // ratchetTargets returns every template and static JS file subject to the CSP ratchet.
@@ -32,9 +34,6 @@ func ratchetTargets(t *testing.T) map[string]string {
 			t.Fatal(err)
 		}
 		for _, n := range names {
-			if path.Base(n) == "htmx.min.js" {
-				continue
-			}
 			b, err := fs.ReadFile(Content, n)
 			if err != nil {
 				t.Fatal(err)
@@ -47,6 +46,9 @@ func ratchetTargets(t *testing.T) map[string]string {
 	}
 	return out
 }
+
+// dwSanctionedWrite is the single innerHTML write, routed through the `dw` Trusted Types policy.
+const dwSanctionedWrite = "el.innerHTML = policy ? policy.createHTML(safe.__html) : safe.__html;"
 
 func TestCSPRatchetNoInlineHandlersOrUnsafeSinks(t *testing.T) {
 	for name, src := range ratchetTargets(t) {
@@ -67,9 +69,12 @@ func TestCSPRatchetNoInlineHandlersOrUnsafeSinks(t *testing.T) {
 			if ratchetEvalRE.MatchString(line) {
 				where("eval / new Function / string timer")
 			}
+			if ratchetTTSinkRE.MatchString(line) {
+				where("Trusted Types sink (srcdoc/document.write/script creation/parseFromString/on* setAttribute)")
+			}
 			if ratchetInnerRE.MatchString(line) {
 				// the single sanctioned write is DW.setHTML in dw.js
-				if name == "static/dw.js" && strings.Contains(line, "el.innerHTML = safe.__html;") {
+				if name == "static/dw.js" && strings.Contains(line, dwSanctionedWrite) {
 					continue
 				}
 				where("raw HTML sink outside DW.setHTML")
@@ -82,7 +87,7 @@ func TestCSPRatchetSingleInnerHTMLWrite(t *testing.T) {
 	n := 0
 	for name, src := range ratchetTargets(t) {
 		if name == "static/dw.js" {
-			n += strings.Count(src, "el.innerHTML = safe.__html;")
+			n += strings.Count(src, dwSanctionedWrite)
 		}
 	}
 	if n != 1 {
@@ -103,19 +108,39 @@ func TestCSPRatchetEveryScriptTagHasNonce(t *testing.T) {
 	}
 }
 
-func TestCSPRatchetHTMXConfigDisablesEvalAndScripts(t *testing.T) {
-	b, err := fs.ReadFile(Content, "templates/layout.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(b)
-	for _, want := range []string{`name="htmx-config"`, `"allowEval":false`, `"allowScriptTags":false`} {
-		if !strings.Contains(s, want) {
-			t.Errorf("layout.html missing %s", want)
+func TestCSPRatchetNoHTMXAndSingleTrustedTypesPolicy(t *testing.T) {
+	for name, src := range ratchetTargets(t) {
+		low := strings.ToLower(src)
+		if strings.Contains(low, "htmx") || regexp.MustCompile(`\bhx-[a-z]`).MatchString(low) {
+			t.Errorf("%s: htmx was removed (it writes innerHTML and cannot comply with Trusted Types)", name)
+		}
+		if strings.Contains(src, "createPolicy(") && name != "static/dw.js" {
+			t.Errorf("%s: only dw.js may create a Trusted Types policy", name)
 		}
 	}
-	if strings.Index(s, `name="htmx-config"`) > strings.Index(s, "htmx.min.js") {
-		t.Error("htmx-config meta must precede htmx.min.js")
+	b, _ := fs.ReadFile(Content, "static/dw.js")
+	if n := strings.Count(string(b), "createPolicy("); n != 1 {
+		t.Fatalf("dw.js must create exactly one policy, got %d", n)
+	}
+	if !strings.Contains(string(b), "createPolicy('dw'") || strings.Contains(string(b), "'default'") {
+		t.Error("dw.js must create the named policy dw and no default policy")
+	}
+	if _, err := fs.ReadFile(Content, "static/htmx.min.js"); err == nil {
+		t.Error("static/htmx.min.js must not be shipped")
+	}
+}
+
+func TestCSPRatchetNoInlineStylesInStaticJS(t *testing.T) {
+	re := regexp.MustCompile(`(?i)\bstyle\s*=\s*["'\\$]`)
+	for name, src := range ratchetTargets(t) {
+		if !strings.HasSuffix(name, ".js") {
+			continue
+		}
+		for i, line := range strings.Split(src, "\n") {
+			if re.MatchString(line) {
+				t.Errorf("%s:%d: inline style= in injected markup: %s", name, i+1, strings.TrimSpace(line))
+			}
+		}
 	}
 }
 

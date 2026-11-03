@@ -9,7 +9,8 @@
  *                DW.raw('<i>trusted</i>') marks a trusted literal (never use with data).
  *                String(m) / m.toString() gives the markup string.
  *   Insertion:   DW.setHTML(el, m)                  -> only accepts SafeHTML (throws otherwise).
- *                This is the ONLY place innerHTML is written. Prefer textContent when possible.
+ *                This is the ONLY place innerHTML is written, through the single Trusted Types
+ *                policy `dw`. Prefer textContent when possible.
  *   Events:      NO inline on*= attributes. Use delegated attributes, handler names registered:
  *                  DW.actions.deleteKey = (el, event) => {...};   // el = element carrying attr
  *                  <button data-action="deleteKey" data-id="{{.ID}}">     (click)
@@ -54,9 +55,18 @@
 
   function raw(s) { return new SafeHTML(s); }
 
+  // Trusted Types: the page CSP says `require-trusted-types-for 'script'; trusted-types dw`.
+  // This is the one and only policy (no default policy). Its createHTML is an identity
+  // function because the only caller, setHTML, accepts nothing but SafeHTML, whose
+  // interpolations were already escaped by DW.html.
+  let policy = null;
+  if (window.trustedTypes && typeof window.trustedTypes.createPolicy === 'function') {
+    try { policy = window.trustedTypes.createPolicy('dw', { createHTML: (s) => s }); } catch (e) { policy = null; }
+  }
+
   function setHTML(el, safe) {
     if (!(safe instanceof SafeHTML)) throw new TypeError('DW.setHTML requires SafeHTML (use DW.html)');
-    el.innerHTML = safe.__html;
+    el.innerHTML = policy ? policy.createHTML(safe.__html) : safe.__html;
     if (typeof labelControls === 'function' && el.querySelector) labelControls(el);
     return el;
   }

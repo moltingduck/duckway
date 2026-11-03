@@ -47,3 +47,21 @@ func TestCSPReportOnlyToggle(t *testing.T) {
 		t.Fatalf("headers = %v", rec.Header())
 	}
 }
+
+func TestCSPEnforcesTrustedTypesWithSingleDWPolicy(t *testing.T) {
+	v := CSPHeaderValue("abc")
+	for _, want := range []string{"require-trusted-types-for 'script'", "trusted-types dw"} {
+		found := false
+		for _, d := range strings.Split(v, "; ") {
+			if d == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("CSP missing directive %q: %s", want, v)
+		}
+	}
+	if strings.Contains(v, "'allow-duplicates'") || strings.Contains(v, "default") && strings.Contains(v, "trusted-types default") {
+		t.Errorf("CSP must not allow a default Trusted Types policy: %s", v)
+	}
+}
