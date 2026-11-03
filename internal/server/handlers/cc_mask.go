@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 
 	"github.com/hackerduck/duckway/internal/models"
 )
@@ -15,12 +16,49 @@ const ccSecretMask = "********"
 var ccSecretKeyHints = []string{
 	"token", "secret", "password", "passwd", "apikey", "api_key",
 	"credential", "authorization", "bearer", "private", "signing",
+	"webhook", "cookie", "passphrase", "accesskey",
+}
+
+// ccSecretKeyWords are short hints matched only as whole word segments, so
+// "auth" masks auth/auth_header/authHeader but not "author".
+var ccSecretKeyWords = map[string]bool{"auth": true, "dsn": true, "pwd": true}
+
+// ccKeySegments splits a key into lowercase words on non-alphanumerics and
+// camelCase boundaries.
+func ccKeySegments(key string) []string {
+	var segs []string
+	var cur []rune
+	flush := func() {
+		if len(cur) > 0 {
+			segs = append(segs, strings.ToLower(string(cur)))
+			cur = cur[:0]
+		}
+	}
+	rs := []rune(key)
+	for i, r := range rs {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			if unicode.IsUpper(r) && i > 0 && unicode.IsLower(rs[i-1]) {
+				flush()
+			}
+			cur = append(cur, r)
+		default:
+			flush()
+		}
+	}
+	flush()
+	return segs
 }
 
 func ccIsSecretKey(key string) bool {
 	k := strings.ToLower(key)
 	for _, hint := range ccSecretKeyHints {
 		if strings.Contains(k, hint) {
+			return true
+		}
+	}
+	for _, seg := range ccKeySegments(key) {
+		if ccSecretKeyWords[seg] {
 			return true
 		}
 	}

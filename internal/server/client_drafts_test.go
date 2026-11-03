@@ -321,3 +321,33 @@ func TestClientPutIsPatchStyle(t *testing.T) {
 		t.Fatalf("enable reverted name: %q", name)
 	}
 }
+
+func TestClientUpdateDeleteRotateSameOriginAndNoStore(t *testing.T) {
+	e := newDraftEnv(t)
+	if _, err := e.s.db.Exec(`INSERT INTO clients (id, short_id, name, token_hash) VALUES ('so','s1','sameorigin','h')`); err != nil {
+		t.Fatal(err)
+	}
+	evil := map[string]string{"Origin": "https://evil.example"}
+	if rec := e.do(http.MethodPut, "/api/clients/so", `{"is_active":false}`, true, evil); rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin PUT: %d", rec.Code)
+	}
+	if rec := e.do(http.MethodDelete, "/api/clients/so", "", true, evil); rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin DELETE: %d", rec.Code)
+	}
+	var n int
+	_ = e.s.db.QueryRow(`SELECT COUNT(*) FROM clients WHERE id='so' AND is_active=1`).Scan(&n)
+	if n != 1 {
+		t.Fatal("cross-origin request changed the client")
+	}
+	same := map[string]string{"Origin": "http://example.com"}
+	if rec := e.do(http.MethodPut, "/api/clients/so", `{"name":"sameorigin2"}`, true, same); rec.Code != http.StatusOK {
+		t.Fatalf("same-origin PUT: %d", rec.Code)
+	}
+	rec := e.do(http.MethodPost, "/api/clients/so/rotate-token", "", true, nil)
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("rotate: %d cache-control %q", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+	if rec := e.do(http.MethodDelete, "/api/clients/so", "", true, same); rec.Code != http.StatusOK {
+		t.Fatalf("same-origin DELETE: %d", rec.Code)
+	}
+}

@@ -136,6 +136,10 @@ func (h *ClientHandler) Get(w http.ResponseWriter, r *http.Request) {
 // Admin: update client. Only the supplied fields are written, so a concurrent
 // Disable and Edit cannot revert each other.
 func (h *ClientHandler) Update(w http.ResponseWriter, r *http.Request) {
+	if !sameOriginRequest(r) {
+		jsonError(w, "cross-origin request denied", http.StatusForbidden)
+		return
+	}
 	id := r.PathValue("id")
 	if _, err := h.clients.GetByID(id); err != nil || h.clients.IsDraft(id) {
 		jsonError(w, "client not found", http.StatusNotFound)
@@ -198,6 +202,7 @@ func (h *ClientHandler) RotateToken(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to rotate client token", http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	jsonResponse(w, map[string]string{
 		"id":         client.ID,
 		"short_id":   client.ShortID,
@@ -209,6 +214,10 @@ func (h *ClientHandler) RotateToken(w http.ResponseWriter, r *http.Request) {
 
 // Admin: delete a client
 func (h *ClientHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	if !sameOriginRequest(r) {
+		jsonError(w, "cross-origin request denied", http.StatusForbidden)
+		return
+	}
 	id := r.PathValue("id")
 
 	// Delete canary tokens from canarytokens.org + DB
