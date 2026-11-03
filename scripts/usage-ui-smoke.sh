@@ -46,12 +46,11 @@ PRICE="$(curl -fsS -b "$COOKIE" -H 'Content-Type: application/json' -d '{"model"
 jq -e '.model == "gpt-smoke" and .version == "smoke-v1"' <<<"$PRICE" >/dev/null
 curl -fsS -b "$COOKIE" "$BASE/api/services/$OPENAI_ID/pricing" | jq -e 'any(.[]; .model == "gpt-smoke" and .input_usd_micros_per_mtok == 1000000)' >/dev/null
 
-API_KEYS_PAGE="$(curl -fsS -b "$COOKIE" "$BASE/admin/keys")"
-OAUTH_PAGE="$(curl -fsS -b "$COOKIE" "$BASE/admin/oauth")"
+CREDENTIALS_PAGE="$(curl -fsS -b "$COOKIE" "$BASE/admin/credentials")"
 SERVICES_PAGE="$(curl -fsS -b "$COOKIE" "$BASE/admin/services")"
 USAGE_PAGE="$(curl -fsS -b "$COOKIE" "$BASE/admin/usage?key_id=$KEY_ID")"
-grep -q 'LLM Tokens (90d)' <<<"$API_KEYS_PAGE"
-grep -q 'View usage details' <<<"$OAUTH_PAGE"
+grep -q 'LLM Tokens (90d)' <<<"$CREDENTIALS_PAGE"
+grep -q 'View usage details' <<<"$CREDENTIALS_PAGE"
 grep -q 'Model Pricing' <<<"$SERVICES_PAGE"
 grep -q 'key_group_id' <<<"$USAGE_PAGE"
 grep -q 'usage-heatmap' <<<"$USAGE_PAGE"

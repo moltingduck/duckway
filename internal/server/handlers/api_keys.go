@@ -38,6 +38,13 @@ func (h *APIKeyHandler) WithHTTPClient(client *http.Client) *APIKeyHandler {
 	return h
 }
 
+// apiKeyListItem is one row of GET /api/keys: the redacted key plus how many
+// resources reference it.
+type apiKeyListItem struct {
+	models.APIKey
+	UsedBy queries.KeyUsedBy `json:"used_by"`
+}
+
 func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
 	serviceID := r.URL.Query().Get("service_id")
 	list, err := h.apiKeys.List(serviceID)
@@ -45,9 +52,12 @@ func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to list keys", http.StatusInternalServerError)
 		return
 	}
-	if list == nil {
-		list = []models.APIKey{}
+	usedBy, err := h.apiKeys.UsedByCounts()
+	if err != nil {
+		jsonError(w, "failed to list key usage", http.StatusInternalServerError)
+		return
 	}
+	out := make([]apiKeyListItem, 0, len(list))
 	// Redact encrypted keys in response
 	for i := range list {
 		if h.crypto != nil && list[i].KeyEncrypted != "" {
@@ -62,9 +72,10 @@ func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
 		} else {
 			list[i].UpstreamProxyURL = ""
 		}
-		list[i].KeyEncrypted = ""
+		sanitizeAPIKeyForAdmin(&list[i])
+		out = append(out, apiKeyListItem{APIKey: list[i], UsedBy: usedBy[list[i].ID]})
 	}
-	jsonResponse(w, list)
+	jsonResponse(w, out)
 }
 
 func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +136,7 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key.KeyEncrypted = "" // Don't return encrypted value
+	sanitizeAPIKeyForAdmin(key) // Don't return encrypted value
 	key.UpstreamProxyURL = svc.RedactProxyURL(req.UpstreamProxyURL)
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, key)
@@ -420,7 +431,7 @@ func (h *APIKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key.KeyEncrypted = ""
+	sanitizeAPIKeyForAdmin(key)
 	key.UpstreamProxyURL = redactedAPIKeyUpstreamProxyURL(h.crypto, key.UpstreamProxyURL)
 	jsonResponse(w, key)
 }
@@ -636,15 +647,20 @@ func (h *APIKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "key not found", http.StatusNotFound)
 		return
 	}
-	if key.IsRefreshable {
-		var req struct {
-			Confirm bool `json:"confirm"`
-		}
-		if r.Body != nil {
-			_ = json.NewDecoder(r.Body).Decode(&req)
-		}
-		if !req.Confirm {
-			impact, err := h.apiKeys.RefreshableDeleteImpact(id)
+	// A JSON body with a "confirm" field opts into the two-step impact flow
+	// (preview with confirm:false, delete with confirm:true). Refreshable keys
+	// always use it. A static key without that body keeps the legacy
+	// immediate delete used by scripts.
+	var req struct {
+		Confirm *bool `json:"confirm"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	twoStep := key.IsRefreshable || req.Confirm != nil
+	if twoStep {
+		if req.Confirm == nil || !*req.Confirm {
+			impact, err := h.apiKeys.KeyDeleteImpact(id)
 			if err != nil {
 				jsonError(w, "delete preview failed: "+err.Error(), http.StatusInternalServerError)
 				return
@@ -655,7 +671,7 @@ func (h *APIKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		impact, err := h.apiKeys.DeleteRefreshableWithCleanup(id)
+		impact, err := h.apiKeys.DeleteKeyWithCleanup(id)
 		if err != nil {
 			jsonError(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
 			return

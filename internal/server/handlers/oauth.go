@@ -313,6 +313,17 @@ func (h *OAuthHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"id": id, "status": "created"})
 }
 
+func (h *OAuthHandler) accessTokenPreview(key *models.APIKey) string {
+	if h.crypto == nil || key.KeyEncrypted == "" {
+		return ""
+	}
+	plain, err := h.crypto.Decrypt(key.KeyEncrypted)
+	if err != nil || plain == "" {
+		return ""
+	}
+	return maskKey(plain)
+}
+
 // Admin: get refreshable key details (without decrypted tokens)
 func (h *OAuthHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -332,8 +343,9 @@ func (h *OAuthHandler) Get(w http.ResponseWriter, r *http.Request) {
 		"service_id":         key.ServiceID,
 		"service_name":       key.ServiceName,
 		"token_endpoint":     key.TokenEndpoint,
-		"subscription_info":  key.SubscriptionInfo,
+		"subscription_info":  redactSubscriptionInfo(key.SubscriptionInfo),
 		"usage_snapshot":     key.UsageSnapshot,
+		"key_preview":        h.accessTokenPreview(key),
 		"expires_at":         key.ExpiresAt,
 		"is_active":          key.IsActive,
 		"usage_count":        key.UsageCount,
@@ -441,6 +453,10 @@ func (h *OAuthHandler) prepareOAuthUpdateValidation(key *models.APIKey, req *oau
 	}
 	if req.SubscriptionInfo == "" {
 		req.SubscriptionInfo = key.SubscriptionInfo
+	} else {
+		// The admin API never exposes stored secrets (such as a Codex id_token);
+		// keep them when the edited JSON omits them.
+		req.SubscriptionInfo = mergeStoredSubscriptionSecrets(key.SubscriptionInfo, req.SubscriptionInfo)
 	}
 
 	validateReq := oauthTokenRequest{

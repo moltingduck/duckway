@@ -197,9 +197,9 @@ func (h *OverviewHandler) build() (OverviewResponse, error) {
 			Title: fmt.Sprintf(title, n.Count, plural(n.Count, "credential", "credentials")),
 			Meta:  meta + joinNames(n.Names, n.Count), Names: n.Names, Href: href, CTA: cta})
 	}
-	addCred(creds.Deactivated, "warn", "%d refreshable %s disabled", "Not refreshing: ", "/admin/oauth", "Open tokens")
-	addCred(creds.RefreshOverdue, "warn", "%d refreshable %s not renewing", "Access token expired: ", "/admin/oauth", "Open tokens")
-	addCred(creds.Expiring, "warn", "%d %s expiring within 7 days or expired", "", "/admin/keys", "Open keys")
+	addCred(creds.Deactivated, "warn", "%d refreshable %s disabled", "Not refreshing: ", "/admin/credentials?type=refreshable", "Open credentials")
+	addCred(creds.RefreshOverdue, "warn", "%d refreshable %s not renewing", "Access token expired: ", "/admin/credentials?type=refreshable", "Open credentials")
+	addCred(creds.Expiring, "warn", "%d %s expiring within 7 days or expired", "", "/admin/credentials", "Open credentials")
 
 	stale, err := h.q.StaleClients(now.Add(-overviewStaleAfter), overviewMaxNames)
 	if err != nil {
