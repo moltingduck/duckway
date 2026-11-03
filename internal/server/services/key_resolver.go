@@ -40,7 +40,10 @@ type ResolveResult struct {
 	IsRefreshable    bool   // true if the underlying api_key has a refresh token (OAuth)
 	Permitted        bool
 	NeedApproval     bool
-	Error            string
+	// ApprovedWide is true when the token requires approval and a valid
+	// token-wide approval let this request through (logged as approved_forward).
+	ApprovedWide bool
+	Error        string
 }
 
 // Resolve takes a placeholder key and client ID, returns the real API key.
@@ -139,6 +142,7 @@ func (r *KeyResolver) Resolve(placeholder string, clientID string) (*ResolveResu
 		UpstreamProxyURL: upstreamProxyURL,
 		IsRefreshable:    apiKey.RefreshToken != "",
 		Permitted:        true,
+		ApprovedWide:     ph.RequiresApproval,
 	}, nil
 }
 

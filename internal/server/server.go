@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -346,8 +348,23 @@ func (s *Server) startUsageRetentionSweeper() {
 			log.Printf("usage retention: pruned %d conversation_usage rows older than %dd", n, conversationUsageRetentionDays)
 		}
 	}
+	reqLogQ := queries.NewRequestLogQueries(s.db)
+	settingsQ := queries.NewSettingsQueries(s.db)
+	pruneRequestLog := func() {
+		days := queries.DefaultRequestLogRetentionDays
+		if n, err := strconv.Atoi(strings.TrimSpace(settingsQ.Get(queries.SettingRequestLogRetentionDays))); err == nil && n >= 1 && n <= 3650 {
+			days = n
+		}
+		// Batches of 1000, at most 100 per sweep, so a huge backlog never holds a long lock.
+		if n, err := reqLogQ.PruneOlderThan(days, 1000, 100); err != nil {
+			log.Printf("request log retention sweeper: %v", err)
+		} else if n > 0 {
+			log.Printf("request log retention: pruned %d rows older than %dd", n, days)
+		}
+	}
 	go func() {
 		prune() // once at startup
+		pruneRequestLog()
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
 		for {
@@ -356,6 +373,7 @@ func (s *Server) startUsageRetentionSweeper() {
 				return
 			case <-t.C:
 				prune()
+				pruneRequestLog()
 			}
 		}
 	}()

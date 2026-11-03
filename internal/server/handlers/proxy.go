@@ -583,6 +583,10 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// and forwarded only once an admin has approved that exact request.
 	var approveLayer, approveRule string
 	forwardDecision := queries.DecisionAllowed
+	if result.ApprovedWide {
+		// A valid token-wide approval let this request through.
+		forwardDecision = queries.DecisionApprovedForward
+	}
 	for _, layer := range aclLayers {
 		if layer.config == "" {
 			continue
@@ -595,7 +599,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !permResult.Allowed {
-			h.logGatewayDecision(client, result.PlaceholderID, serviceName, r.Method, upstreamPath, queries.DecisionACLDenied, "")
+			h.logGatewayDecision(client, result.PlaceholderID, serviceName, r.Method, upstreamPath, queries.DecisionACLDenied, "", false)
 			jsonError(w, "permission denied ("+layer.name+"): "+permResult.Reason, http.StatusForbidden)
 			return
 		}
@@ -771,6 +775,13 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("upstream error for %s via %s: %s", serviceName, services.RedactProxyURL(result.UpstreamProxyURL), services.RedactProxyError(result.UpstreamProxyURL, err))
+		// The gateway could not reach the upstream: record it as a 502 so the
+		// error rate and audit panel show it. Method and path only, like any row.
+		if h.requestLog != nil {
+			if lerr := h.requestLog.LogDecision(client.ID, result.PlaceholderID, serviceName, r.Method, upstreamPath, http.StatusBadGateway, forwardDecision, ""); lerr != nil {
+				log.Printf("request log (upstream error): %v", lerr)
+			}
+		}
 		jsonError(w, "upstream request failed", http.StatusBadGateway)
 		return
 	}
@@ -1845,11 +1856,24 @@ func resolveScopedApproval(ops scopedApprovalOps) (id string, created, forward b
 // logGatewayDecision records a request the gateway answered itself (403 ACL
 // denial or approval hold). Only method, path (no query or body), client and
 // service are stored, like forwarded rows.
-func (h *ProxyHandler) logGatewayDecision(client *models.Client, placeholderID, serviceName, method, path, decision, approvalID string) {
+//
+// Volume control: ACL denials are coalesced per client, token, method and path
+// within a minute, and a held retry is recorded only if the approval has no held
+// row in the last 60 seconds (created=true, a brand-new approval, always logs).
+func (h *ProxyHandler) logGatewayDecision(client *models.Client, placeholderID, serviceName, method, path, decision, approvalID string, created bool) {
 	if h.requestLog == nil || client == nil {
 		return
 	}
-	if err := h.requestLog.LogDecision(client.ID, placeholderID, serviceName, method, path, http.StatusForbidden, decision, approvalID); err != nil {
+	var err error
+	switch decision {
+	case queries.DecisionACLDenied:
+		err = h.requestLog.LogACLDenied(client.ID, placeholderID, serviceName, method, path)
+	case queries.DecisionHeld:
+		err = h.requestLog.LogHeldOnce(client.ID, placeholderID, serviceName, method, path, approvalID, created)
+	default:
+		err = h.requestLog.LogDecision(client.ID, placeholderID, serviceName, method, path, http.StatusForbidden, decision, approvalID)
+	}
+	if err != nil {
 		log.Printf("request log (%s): %v", decision, err)
 	}
 }
@@ -1918,7 +1942,7 @@ func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, c
 	if scope != "" {
 		msg = "This request matches an approval rule and needs admin approval. Retry after approval."
 	}
-	h.logGatewayDecision(client, placeholderID, serviceName, method, path, queries.DecisionHeld, approvalID)
+	h.logGatewayDecision(client, placeholderID, serviceName, method, path, queries.DecisionHeld, approvalID, created)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
 	json.NewEncoder(w).Encode(map[string]string{

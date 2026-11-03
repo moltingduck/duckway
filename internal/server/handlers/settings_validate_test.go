@@ -62,3 +62,19 @@ func TestSetManyIsAtomic(t *testing.T) {
 		t.Fatalf("a=%q, want rollback to 1", q.Get("a"))
 	}
 }
+
+func TestRequestLogRetentionSettingValidation(t *testing.T) {
+	for _, ok := range []string{"1", "90", "3650", " 30 "} {
+		if msg := ValidateSetting(queries.SettingRequestLogRetentionDays, ok); msg != "" {
+			t.Errorf("%q rejected: %s", ok, msg)
+		}
+	}
+	for _, bad := range []string{"", "0", "-5", "3651", "abc", "1.5", "9999999999999999999"} {
+		if ValidateSetting(queries.SettingRequestLogRetentionDays, bad) == "" {
+			t.Errorf("%q must be rejected", bad)
+		}
+	}
+	if queries.DefaultRequestLogRetentionDays != 90 {
+		t.Fatal("default retention is 90 days")
+	}
+}

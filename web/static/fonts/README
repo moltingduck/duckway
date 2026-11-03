@@ -1,0 +1,29 @@
+Self-hosted IBM Plex fonts (SIL Open Font License 1.1, see OFL.txt)
+====================================================================
+
+Source: the Fontsource packages, version 5.1.0, latin subset, normal style:
+
+  @fontsource/ibm-plex-sans@5.1.0
+  @fontsource/ibm-plex-mono@5.1.0
+
+Each file is the package's files/ibm-plex-<family>-latin-<weight>-normal.woff2,
+for example:
+
+  https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.1.0/files/ibm-plex-sans-latin-400-normal.woff2
+  https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.1.0/files/ibm-plex-sans-latin-500-normal.woff2
+  https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.1.0/files/ibm-plex-sans-latin-600-normal.woff2
+  https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.1.0/files/ibm-plex-sans-latin-700-normal.woff2
+  https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-mono@5.1.0/files/ibm-plex-mono-latin-400-normal.woff2
+  https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-mono@5.1.0/files/ibm-plex-mono-latin-500-normal.woff2
+
+SHA-256 of each file as shipped (verified by TestFontChecksums in web/):
+
+  3c5a451f9ec27a354b0c2bcca636c6ec17a651281aabf29f8427e210a1d31e85  IBMPlexMono-400.woff2
+  756026ff72eb76fd971ac4b7504cec55eef62109d2684c2cad8da32170b80b37  IBMPlexMono-500.woff2
+  db71f8a28ad8501544fb4e7668e3c6d0b731760b6f20de3525ebaeba597f1922  IBMPlexSans-400.woff2
+  5ef914e59b0047a261844d96acabb60c34d3acab6b85ea24198726ce4781fd37  IBMPlexSans-500.woff2
+  31535a91ce3f6b8ed3ddedadab1e49957e2220263a640df1a3f14f6fdfe15eb6  IBMPlexSans-600.woff2
+  fff71a83690454ee6ea9014780a6797408918cb90cde1f0f3be65ea28a03c678  IBMPlexSans-700.woff2
+
+To update a font, download the new file, replace it, and update the digest
+here and in the test together.

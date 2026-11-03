@@ -2,6 +2,8 @@ package queries
 
 import (
 	"database/sql"
+	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -195,8 +197,10 @@ type OverviewStats struct {
 	ClientsOnline int
 	PhantomTokens int
 	Requests24h   int
-	// Errors24h counts logged requests with an HTTP status >= 500 in the last
-	// 24h (gateway or upstream failures; 403 holds and ACL denials are not errors).
+	// Errors24h counts handled requests with an HTTP status >= 500 in the last
+	// 24h (gateway or upstream failures, including 502 for an unreachable
+	// upstream). Held and ACL-denied rows and client cancels (status 0) are
+	// excluded from both Requests24h and Errors24h.
 	Errors24h int
 	// ApprovalTokens counts phantom tokens that need approval: token-wide
 	// requires_approval, or a placeholder permission rule with an approve endpoint.
@@ -211,25 +215,71 @@ func (q *OverviewQueries) Stats(now time.Time, online time.Duration) (OverviewSt
 		FROM clients WHERE is_active = 1 AND id NOT IN (SELECT client_id FROM client_drafts)`, ovCutoff(now.Add(-online))).Scan(&s.ClientsTotal, &s.ClientsOnline); err != nil {
 		return s, err
 	}
-	if err := q.db.QueryRow(`SELECT COUNT(*),
-		COALESCE(SUM(CASE WHEN requires_approval <> 0
-			OR COALESCE(permission_config, '') LIKE '%"approve":true%'
-			OR COALESCE(permission_config, '') LIKE '%"approve": true%' THEN 1 ELSE 0 END), 0)
-		FROM placeholder_keys`).Scan(&s.PhantomTokens, &s.ApprovalTokens); err != nil {
+	// Approval tokens are counted in Go over the (small) table: parsing the JSON
+	// is robust to spacing, unlike a LIKE on the raw text.
+	prow, err := q.db.Query(`SELECT requires_approval, COALESCE(permission_config, '') FROM placeholder_keys`)
+	if err != nil {
 		return s, err
 	}
+	for prow.Next() {
+		var req int
+		var cfg string
+		if err := prow.Scan(&req, &cfg); err != nil {
+			prow.Close()
+			return s, err
+		}
+		s.PhantomTokens++
+		if req != 0 || configHasApproveRule(cfg) {
+			s.ApprovalTokens++
+		}
+	}
+	prow.Close()
+	if err := prow.Err(); err != nil {
+		return s, err
+	}
+	// Totals count requests the gateway handled: held and ACL-denied rows (the
+	// gateway's own 403s) and client cancels (status 0) are excluded from both
+	// the total and the error count. 5xx, including a 502 for an unreachable
+	// upstream, is an error.
 	if err := q.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END), 0)
-		FROM request_log WHERE created_at >= ?`, ovCutoff(now.Add(-24*time.Hour))).Scan(&s.Requests24h, &s.Errors24h); err != nil {
+		FROM request_log WHERE created_at >= ? AND decision NOT IN ('held', 'acl_denied') AND (status_code IS NULL OR status_code <> 0)`,
+		ovCutoff(now.Add(-24*time.Hour))).Scan(&s.Requests24h, &s.Errors24h); err != nil {
 		return s, err
 	}
 	if err := q.db.QueryRow(`SELECT COUNT(*) FROM canary_tokens`).Scan(&s.CanaryTokens); err != nil {
 		return s, err
 	}
-	err := q.db.QueryRow(`SELECT email FROM canary_settings WHERE id = 'default'`).Scan(&s.CanaryAlertTo)
+	err = q.db.QueryRow(`SELECT email FROM canary_settings WHERE id = 'default'`).Scan(&s.CanaryAlertTo)
 	if err == sql.ErrNoRows {
 		err = nil
 	}
 	return s, err
+}
+
+// configHasApproveRule reports whether a permission_config JSON has any
+// endpoint with "approve": true, whatever the spacing or key order.
+func configHasApproveRule(cfg string) bool {
+	if strings.TrimSpace(cfg) == "" {
+		return false
+	}
+	var c struct {
+		Rules []struct {
+			Endpoints []struct {
+				Approve bool `json:"approve"`
+			} `json:"endpoints"`
+		} `json:"rules"`
+	}
+	if json.Unmarshal([]byte(cfg), &c) != nil {
+		return false
+	}
+	for _, r := range c.Rules {
+		for _, e := range r.Endpoints {
+			if e.Approve {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // OverviewTrendHours is the number of hourly buckets in the request trend.
@@ -242,7 +292,8 @@ func (q *OverviewQueries) RequestsPerHour(now time.Time) ([]int, error) {
 	end := now.UTC().Truncate(time.Hour)
 	start := end.Add(-(OverviewTrendHours - 1) * time.Hour)
 	rows, err := q.db.Query(`SELECT SUBSTR(created_at, 1, 13), COUNT(*) FROM request_log
-		WHERE created_at >= ? GROUP BY SUBSTR(created_at, 1, 13)`, ovCutoff(start))
+		WHERE created_at >= ? AND decision NOT IN ('held', 'acl_denied') AND (status_code IS NULL OR status_code <> 0)
+		GROUP BY SUBSTR(created_at, 1, 13)`, ovCutoff(start))
 	if err != nil {
 		return nil, err
 	}

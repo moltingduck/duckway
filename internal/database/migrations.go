@@ -586,6 +586,8 @@ func runMigrations(db *sql.DB) error {
 		// Live-update watcher fingerprints (internal/server/events). Append-only;
 		// shared by SQLite and PostgreSQL because both run runMigrations.
 		`CREATE INDEX IF NOT EXISTS idx_approvals_watch ON approvals(status, approved_at, created_at)`,
+		// Per-token request history (credentials 7-day columns, overview).
+		`CREATE INDEX IF NOT EXISTS idx_request_log_ph_time ON request_log(placeholder_id, created_at)`,
 		// Before the unique index below exists, collapse any duplicate pending
 		// scoped rows (keep the oldest) so the index cannot fail at startup.
 		// Idempotent: a no-op once no duplicate pending row remains.

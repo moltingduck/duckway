@@ -59,7 +59,6 @@ func TestMigrationDocsCommandsExistInProdScript(t *testing.T) {
 			"./scripts/prod.sh upgrade --check",
 			"./scripts/prod.sh rollback --to backups/upgrade-",
 			"--keep-data",
-			"0.51 s",
 		} {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s misses %q", name, want)

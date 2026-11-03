@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type RequestLogQueries struct {
@@ -29,6 +30,7 @@ func (q *RequestLogQueries) Log(clientID, placeholderID, serviceName, method, pa
 // LogDecision inserts a row with an explicit gateway decision. approvalID is
 // only meaningful for held rows ("" otherwise).
 func (q *RequestLogQueries) LogDecision(clientID, placeholderID, serviceName, method, path string, statusCode int, decision, approvalID string) error {
+	path = TruncateLogPath(path)
 	var phID interface{}
 	if placeholderID != "" {
 		phID = placeholderID
@@ -40,6 +42,102 @@ func (q *RequestLogQueries) LogDecision(clientID, placeholderID, serviceName, me
 	return err
 }
 
+// DefaultRequestLogRetentionDays is how long request_log rows are kept when the
+// request_log_retention_days setting is unset.
+const DefaultRequestLogRetentionDays = 90
+
+// MaxLoggedPathBytes bounds the stored path of every request_log row so a
+// client cannot bloat the table with huge URLs.
+const MaxLoggedPathBytes = 2048
+
+// TruncateLogPath cuts a path to MaxLoggedPathBytes on a UTF-8 boundary.
+func TruncateLogPath(p string) string {
+	if len(p) <= MaxLoggedPathBytes {
+		return p
+	}
+	p = p[:MaxLoggedPathBytes]
+	for len(p) > 0 && !utf8.ValidString(p) {
+		p = p[:len(p)-1] // drop a partial trailing rune
+	}
+	return p
+}
+
+func utcFormat(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05") }
+
+// LogACLDenied records an ACL denial, coalescing repeats: the first denial for
+// the same client, phantom token, method and path within a UTC minute is
+// stored, later identical denials in that minute are dropped (a retry loop
+// would otherwise write one row per attempt). Portable plain SQL: one lookup
+// bounded by the minute start, then an insert; a rare race may store two rows.
+func (q *RequestLogQueries) LogACLDenied(clientID, placeholderID, serviceName, method, path string) error {
+	path = TruncateLogPath(path)
+	minuteStart := utcFormat(time.Now().Truncate(time.Minute))
+	var existing int64
+	var err error
+	if placeholderID == "" {
+		err = q.db.QueryRow(`SELECT id FROM request_log WHERE decision = ? AND client_id = ? AND placeholder_id IS NULL AND method = ? AND path = ? AND created_at >= ? LIMIT 1`,
+			DecisionACLDenied, clientID, method, path, minuteStart).Scan(&existing)
+	} else {
+		err = q.db.QueryRow(`SELECT id FROM request_log WHERE decision = ? AND client_id = ? AND placeholder_id = ? AND method = ? AND path = ? AND created_at >= ? LIMIT 1`,
+			DecisionACLDenied, clientID, placeholderID, method, path, minuteStart).Scan(&existing)
+	}
+	if err == nil {
+		return nil // already recorded this minute
+	}
+	if err != sql.ErrNoRows {
+		return err
+	}
+	return q.LogDecision(clientID, placeholderID, serviceName, method, path, 403, DecisionACLDenied, "")
+}
+
+// LogHeldOnce records an approval hold. A newly created approval always gets
+// its row (created=true); a retry of an already-pending approval is recorded
+// only if no held row for that approval exists in the last 60 seconds.
+func (q *RequestLogQueries) LogHeldOnce(clientID, placeholderID, serviceName, method, path, approvalID string, created bool) error {
+	if !created && approvalID != "" {
+		var existing int64
+		err := q.db.QueryRow(`SELECT id FROM request_log WHERE decision = ? AND approval_id = ? AND created_at >= ? LIMIT 1`,
+			DecisionHeld, approvalID, utcFormat(time.Now().Add(-60*time.Second))).Scan(&existing)
+		if err == nil {
+			return nil
+		}
+		if err != sql.ErrNoRows {
+			return err
+		}
+	}
+	return q.LogDecision(clientID, placeholderID, serviceName, method, path, 403, DecisionHeld, approvalID)
+}
+
+// PruneOlderThan deletes request_log rows (and their captured details) older
+// than the given number of days, in batches so a large backlog never holds a
+// long write lock. It returns the total rows removed. Cutoff is computed in Go
+// (UTC string) and the SQL is portable.
+func (q *RequestLogQueries) PruneOlderThan(days, batch, maxBatches int) (int64, error) {
+	if days < 1 {
+		return 0, nil
+	}
+	if batch < 1 {
+		batch = 1000
+	}
+	cutoff := utcFormat(time.Now().AddDate(0, 0, -days))
+	var total int64
+	for i := 0; maxBatches <= 0 || i < maxBatches; i++ {
+		if _, err := q.db.Exec(`DELETE FROM request_log_detail WHERE log_id IN (SELECT id FROM request_log WHERE created_at < ? ORDER BY id LIMIT ?)`, cutoff, batch); err != nil {
+			return total, err
+		}
+		res, err := q.db.Exec(`DELETE FROM request_log WHERE id IN (SELECT id FROM request_log WHERE created_at < ? ORDER BY id LIMIT ?)`, cutoff, batch)
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += n
+		if n < int64(batch) {
+			break
+		}
+	}
+	return total, nil
+}
+
 // LogWithReturn inserts a row and returns its auto-incremented id, so callers
 // that capture details can attach them to the same log entry.
 func (q *RequestLogQueries) LogWithReturn(clientID, placeholderID, serviceName, method, path string, statusCode int) (int64, error) {
@@ -48,6 +146,7 @@ func (q *RequestLogQueries) LogWithReturn(clientID, placeholderID, serviceName, 
 
 // LogWithReturnDecision is LogWithReturn with an explicit decision.
 func (q *RequestLogQueries) LogWithReturnDecision(clientID, placeholderID, serviceName, method, path string, statusCode int, decision string) (int64, error) {
+	path = TruncateLogPath(path)
 	var phID interface{}
 	if placeholderID != "" {
 		phID = placeholderID
