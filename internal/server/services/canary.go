@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -477,11 +478,57 @@ func (s *CanaryService) generateForClientInner(clientID, clientName, shortID str
 	return nil
 }
 
-// RegenerateForClient deletes existing tokens and generates fresh ones.
+// ErrCanaryNoAlertEmail is returned by RegenerateForClient when no alert email
+// is configured: nothing could be generated, so nothing may be deleted.
+var ErrCanaryNoAlertEmail = errors.New("no canary alert email is set; existing tokens were kept")
+
+// ErrCanaryNothingGenerated means generation produced no new tokens (for
+// example canarytokens.org was unreachable or the client is excluded).
+var ErrCanaryNothingGenerated = errors.New("no new canary tokens could be generated; existing tokens were kept")
+
+// RegenerateForClient generates a fresh set of tokens and only then deletes the
+// previous ones, so a failed generation never leaves the client unprotected.
 func (s *CanaryService) RegenerateForClient(clientID, clientName, shortID string) error {
-	// Delete existing tokens from canarytokens.org first
-	s.DeleteClientTokens(clientID)
-	return s.generateForClientInner(clientID, clientName, shortID)
+	settings, err := s.canaryQ.GetSettings()
+	if err != nil {
+		return fmt.Errorf("get settings: %w", err)
+	}
+	if settings.Email == "" {
+		return ErrCanaryNoAlertEmail
+	}
+	old, err := s.canaryQ.ListByClient(clientID)
+	if err != nil {
+		return fmt.Errorf("list tokens: %w", err)
+	}
+	if err := s.generateForClientInner(clientID, clientName, shortID); err != nil {
+		return err
+	}
+	oldIDs := map[string]bool{}
+	for _, t := range old {
+		oldIDs[t.ID] = true
+	}
+	all, err := s.canaryQ.ListByClient(clientID)
+	if err != nil {
+		return fmt.Errorf("list tokens: %w", err)
+	}
+	fresh := 0
+	for _, t := range all {
+		if !oldIDs[t.ID] {
+			fresh++
+		}
+	}
+	if fresh == 0 {
+		return ErrCanaryNothingGenerated
+	}
+	for _, t := range old {
+		if err := s.DeleteRemoteToken(t.CanaryToken, t.AuthToken); err != nil {
+			log.Printf("Warning: failed to delete remote canary token %s: %v", t.CanaryToken, err)
+		}
+		if err := s.canaryQ.DeleteByID(t.ID); err != nil {
+			return fmt.Errorf("delete old token: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *CanaryService) generateAPIToken(tokenType *CanaryTokenType, clientID, clientName, email, memo string) {

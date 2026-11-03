@@ -1,128 +1,158 @@
 {{define "content"}}
-<div class="page-header">
-  <h1>Supply Chain</h1>
-</div>
-
-<div class="card">
-  <h3>Package Manager Hardening</h3>
-  <p class="text-sm text-muted mb-1">
-    On every <code>duckway sync</code>, the client writes a managed block into
-    each agent's package-manager rc file
-    (<code>~/.npmrc</code>, <code>~/.yarnrc.yml</code>,
-    <code>~/.config/uv/uv.toml</code>, <code>~/.config/go/env</code>, …) that
-    <strong>disables pre/post-install scripts</strong> and <strong>refuses
-    packages published within the cooldown window</strong>. This blocks the
-    two highest-leverage supply-chain vectors: malicious lifecycle scripts
-    (npm <code>preinstall</code>/<code>postinstall</code>, Yarn
-    <code>scripts</code>, etc.) and freshly-published compromised versions
-    that auto-install before the registry yanks them. User content outside
-    the managed block is preserved; rolling-date cutoffs refresh on every
-    sync. Mitigations default to <strong>all-on</strong>. Managers with no
-    rc-file gate are listed for transparency — see their Notes for alternatives.
-  </p>
-
-  <form id="minage-form" class="mb-2" data-on-submit="scSaveMinAge">
-    <div class="form-group">
-      <label>Minimum package age (days)</label>
-      <input type="number" id="sc-min-age" min="1" max="365" placeholder="3" style="max-width:160px">
-      <span class="text-muted text-sm">Applied to every enabled mitigation. Default: 3 days.</span>
-    </div>
-    <button type="submit" class="btn btn-primary">Save cooldown</button>
-  </form>
-
-  <div class="table-wrap">
-  <table>
-    <thead>
-      <tr>
-        <th>Enabled</th>
-        <th>Package manager</th>
-        <th>rc file</th>
-        <th>Writes</th>
-        <th>Notes</th>
-      </tr>
-    </thead>
-    <tbody id="sc-rows">
-      <tr><td colspan="5" class="text-muted text-sm">Loading…</td></tr>
-    </tbody>
-  </table>
+<div class="page-header sc-header">
+  <div>
+    <h1>Supply chain</h1>
+    <p class="sc-sub">Harden package managers on every client: block install scripts and brand-new package versions.</p>
   </div>
-  <p class="text-sm text-muted mt-1">
-    Managers marked <em>needs registry proxy</em> have no rc-file age/script
-    gate, so nothing is written for them — listed here for transparency.
-  </p>
 </div>
+
+<div id="sc-err" class="sc-err" role="alert" hidden>
+  <span id="sc-errmsg"></span>
+  <button type="button" class="btn btn-sm" data-action="scRetry">Retry</button>
+</div>
+
+<details class="card sc-card sc-explain">
+  <summary><h2>How this works</h2></summary>
+  <p class="text-sm">On every <code>duckway sync</code>, the client writes a managed block into each agent's package-manager config file (<code>~/.npmrc</code>, <code>~/.yarnrc.yml</code>, <code>~/.config/uv/uv.toml</code>, <code>~/.config/go/env</code> and similar). The block <strong>disables pre/post-install scripts</strong> and <strong>refuses packages published within the cooldown window</strong>.</p>
+  <p class="text-sm">This blocks the two highest-leverage supply-chain vectors: malicious lifecycle scripts (npm <code>preinstall</code>/<code>postinstall</code>, Yarn <code>scripts</code>) and freshly published compromised versions that auto-install before the registry yanks them.</p>
+  <p class="text-sm">Content outside the managed block is preserved. Rolling-date cutoffs refresh on every sync. Every mitigation is <strong>on</strong> by default.</p>
+</details>
+
+<section class="card sc-card" aria-labelledby="sc-age-h">
+  <h2 id="sc-age-h">Minimum package age</h2>
+  <form id="sc-age-form" data-on-submit="scSaveMinAge" novalidate>
+    <div class="form-group">
+      <label for="sc-min-age">Days a version must exist before it can be installed</label>
+      <div class="sc-agerow">
+        <input type="number" id="sc-min-age" inputmode="numeric" min="1" max="365" step="1" placeholder="3" data-on-input="scAgeInput" aria-describedby="sc-age-msg sc-age-hint">
+        <button type="submit" class="btn btn-primary" id="sc-age-save">Save cooldown</button>
+      </div>
+      <span class="sc-msg" id="sc-age-msg" role="status"></span>
+      <span class="text-sm text-muted" id="sc-age-hint">Whole days, 1 to 365. Applies to every enabled mitigation. Default: 3.</span>
+    </div>
+  </form>
+</section>
+
+<section class="card sc-card" aria-labelledby="sc-mit-h">
+  <div class="sc-cardhead">
+    <h2 id="sc-mit-h">Mitigations</h2>
+    <span class="text-sm text-muted" id="sc-status" role="status">Loading…</span>
+  </div>
+  <div class="table-wrap">
+    <table class="sc-table">
+      <thead>
+        <tr><th scope="col">Enabled</th><th scope="col">Package manager</th><th scope="col">Config file</th><th scope="col">Writes</th><th scope="col">Notes</th></tr>
+      </thead>
+      <tbody id="sc-rows"><tr><td colspan="5" class="text-muted text-sm">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card sc-card" id="sc-unsup-card" aria-labelledby="sc-unsup-h" hidden>
+  <h2 id="sc-unsup-h">Not covered</h2>
+  <p class="text-sm text-muted">These managers have no config-file age or script gate, so Duckway writes nothing for them. They need a registry proxy instead.</p>
+  <ul class="sc-unsup" id="sc-unsup"></ul>
+</section>
 
 <script nonce="{{$.CSPNonce}}">
-function scRenderRows(mits) {
-  var tbody = document.getElementById('sc-rows');
-  tbody.replaceChildren();
-  mits.forEach(function(m) {
-    var tr = document.createElement('tr');
-    var toggle = m.supported
-      ? DW.html`<input type="checkbox" data-on-change="scToggle" data-id="${m.id}"${m.enabled ? DW.raw(' checked') : ''}>`
-      : DW.raw('<span class="text-muted text-sm">n/a</span>');
-    var rcFile = m.supported
-      ? DW.html`<code>~/${m.rc_path}</code>`
-      : DW.raw('<span class="text-muted text-sm">needs registry proxy</span>');
-    var writes = DW.raw('—');
-    if (m.supported && m.example_lines && m.example_lines.length) {
-      var cfgLines = m.example_lines.filter(function(l) {
-        return l.trim() !== '' && l.trim().charAt(0) !== '#';
+(function() {
+  var $ = function(id) { return document.getElementById(id); };
+  var loaded = false;
+
+  function api(method, url, body) {
+    var opt = {method: method, credentials: 'same-origin'};
+    if (body !== undefined) { opt.headers = {'Content-Type': 'application/json'}; opt.body = JSON.stringify(body); }
+    return fetch(url, opt).then(function(r) {
+      if (r.status === 401 || r.redirected) { window.location = '/admin/login'; throw new Error('Signed out'); }
+      return r.json().catch(function() { return {}; }).then(function(d) {
+        if (!r.ok || (d && d.error)) throw new Error((d && d.error) || ('HTTP ' + r.status));
+        return d;
       });
-      if (cfgLines.length) {
-        writes = DW.html`${cfgLines.map(function(l, i) {
-          return DW.html`${i ? DW.raw('<br>') : ''}<code class="sc-cfg-line">${l}</code>`;
-        })}`;
-      }
-    }
-    DW.setHTML(tr, DW.html`<td>${toggle}</td><td><strong>${m.name}</strong></td><td>${rcFile}</td><td>${writes}</td><td class="text-sm text-muted">${m.description}</td>`);
-    tbody.appendChild(tr);
-  });
-}
-
-DW.actions.scToggle = function(cb) {
-  var id = cb.getAttribute('data-id');
-  fetch('/api/supply-chain/' + encodeURIComponent(id), {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({enabled: cb.checked}),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); cb.checked = !cb.checked; return; }
-    showToast(id + ' ' + (cb.checked ? 'enabled' : 'disabled') + ' — applies on next sync', 'success');
-    scLoad();
-  })
-  .catch(function() { cb.checked = !cb.checked; showToast('Toggle failed', 'error'); });
-};
-
-function scLoad() {
-  fetch('/api/supply-chain', {credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      document.getElementById('sc-min-age').value = data.min_age_days || 3;
-      scRenderRows(data.mitigations || []);
     });
-}
+  }
 
-DW.actions.scSaveMinAge = function() {
-  var days = parseInt(document.getElementById('sc-min-age').value, 10);
-  if (!(days > 0)) { showToast('Enter a positive number of days', 'error'); return; }
-  fetch('/api/supply-chain/min-age', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({days: days}),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('Cooldown saved — applies on next sync', 'success');
-    scLoad();
-  });
-};
+  function render(mits) {
+    var sup = mits.filter(function(m) { return m.supported; });
+    var uns = mits.filter(function(m) { return !m.supported; });
+    var on = sup.filter(function(m) { return m.enabled; }).length;
+    $('sc-status').textContent = on + ' of ' + sup.length + ' mitigations on';
+    if (!sup.length) {
+      DW.setHTML($('sc-rows'), DW.html`<tr><td colspan="5" class="text-muted text-sm">No supported package managers.</td></tr>`);
+    } else {
+      DW.setHTML($('sc-rows'), DW.html`${sup.map(function(m) {
+        var lines = (m.example_lines || []).filter(function(l) { return l.trim() !== '' && l.trim().charAt(0) !== '#'; });
+        var writes = lines.length ? DW.html`${lines.map(function(l, i) { return DW.html`${i ? DW.raw('<br>') : ''}<code class="sc-cfg-line">${l}</code>`; })}` : DW.raw('—');
+        return DW.html`<tr><td><button type="button" class="sc-switch" role="switch" aria-checked="${m.enabled ? 'true' : 'false'}" aria-label="${m.name}" data-action="scToggle" data-id="${m.id}"><span class="sc-track" aria-hidden="true"><span class="sc-knob"></span></span><span class="sc-state">${m.enabled ? 'On' : 'Off'}</span></button></td><th scope="row" class="sc-name">${m.name}</th><td><code>~/${m.rc_path}</code></td><td>${writes}</td><td class="text-sm text-muted">${m.description}</td></tr>`;
+      })}`);
+    }
+    $('sc-unsup-card').hidden = !uns.length;
+    DW.setHTML($('sc-unsup'), DW.html`${uns.map(function(m) { return DW.html`<li><strong>${m.name}</strong><span class="text-sm text-muted">${m.description}</span></li>`; })}`);
+  }
 
-document.addEventListener('DOMContentLoaded', scLoad);
+  function load() {
+    $('sc-err').hidden = true;
+    $('sc-status').textContent = 'Loading…';
+    return api('GET', '/api/supply-chain').then(function(d) {
+      loaded = true;
+      $('sc-min-age').value = d.min_age_days || 3;
+      DW.actions.scAgeInput();
+      render(d.mitigations || []);
+    }).catch(function(e) {
+      $('sc-errmsg').textContent = 'Could not load supply chain settings: ' + e.message;
+      $('sc-err').hidden = false;
+      $('sc-status').textContent = 'Load failed';
+      if (!loaded) DW.setHTML($('sc-rows'), DW.html`<tr><td colspan="5" class="text-muted text-sm">Not loaded.</td></tr>`);
+    });
+  }
+  DW.actions.scRetry = function() { load(); };
+
+  DW.actions.scToggle = function(btn) {
+    if (btn.disabled) return;
+    var id = btn.dataset.id, want = btn.getAttribute('aria-checked') !== 'true';
+    var name = btn.getAttribute('aria-label');
+    btn.disabled = true;
+    $('sc-status').textContent = 'Saving ' + name + '…';
+    api('POST', '/api/supply-chain/' + encodeURIComponent(id), {enabled: want}).then(function() {
+      DW.toast(name + (want ? ' on' : ' off') + '. Applies on next sync.', 'success');
+      return load().then(function() {
+        $('sc-status').textContent = name + ' is now ' + (want ? 'on' : 'off') + '. Applies on next sync.';
+        var again = document.querySelector('.sc-switch[data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+        if (again) again.focus();
+      });
+    }).catch(function(e) {
+      btn.disabled = false;
+      $('sc-status').textContent = 'Could not change ' + name + ': ' + e.message;
+      DW.toast('Toggle failed: ' + e.message, 'error');
+    });
+  };
+
+  function ageProblem() {
+    var raw = $('sc-min-age').value.trim();
+    if (raw === '') return 'Enter a number of days.';
+    if (!/^\d+$/.test(raw)) return 'Use a whole number of days.';
+    var n = parseInt(raw, 10);
+    if (n < 1 || n > 365) return 'Days must be between 1 and 365.';
+    return '';
+  }
+  DW.actions.scAgeInput = function() {
+    var p = ageProblem(), inp = $('sc-min-age');
+    $('sc-age-msg').textContent = p;
+    if (p) inp.setAttribute('aria-invalid', 'true'); else inp.removeAttribute('aria-invalid');
+  };
+  DW.actions.scSaveMinAge = function() {
+    var p = ageProblem();
+    if (p) { DW.actions.scAgeInput(); $('sc-min-age').focus(); return; }
+    var days = parseInt($('sc-min-age').value, 10), btn = $('sc-age-save');
+    btn.disabled = true;
+    $('sc-age-msg').textContent = 'Saving…';
+    api('POST', '/api/supply-chain/min-age', {days: days}).then(function() {
+      DW.toast('Cooldown saved. Applies on next sync.', 'success');
+      return load().then(function() { $('sc-age-msg').textContent = 'Saved: ' + days + (days === 1 ? ' day' : ' days') + '. Applies on next sync.'; });
+    }).catch(function(e) { $('sc-age-msg').textContent = 'Save failed: ' + e.message; })
+    .then(function() { btn.disabled = false; });
+  };
+
+  document.addEventListener('DOMContentLoaded', load);
+})();
 </script>
 {{end}}

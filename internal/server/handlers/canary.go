@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 
@@ -96,22 +97,70 @@ func (h *CanaryHandler) ListByClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type tokenWithURL struct {
-		queries.CanaryToken
-		ManageURL string `json:"manage_url"`
-	}
-
-	var result []tokenWithURL
-	for _, t := range tokens {
-		result = append(result, tokenWithURL{
-			CanaryToken: t,
-			ManageURL:   services.ManageURL(t.CanaryToken, t.AuthToken),
-		})
-	}
-	if result == nil {
-		result = []tokenWithURL{}
+	result := maskedCanaryTokens(tokens)
+	for i, t := range tokens {
+		result[i].ManageURL = services.ManageURL(t.CanaryToken, t.AuthToken)
 	}
 	jsonResponse(w, result)
+}
+
+// canaryTokenView is the admin-facing token row. It deliberately omits the
+// management auth token, the decoy credential values and the deploy content.
+type canaryTokenView struct {
+	ID         string `json:"id"`
+	ClientID   string `json:"client_id"`
+	TokenType  string `json:"token_type"`
+	Memo       string `json:"memo"`
+	DeployPath string `json:"deploy_path"`
+	CreatedAt  string `json:"created_at"`
+	// CanaryToken is the public canarytokens.org token id (shown shortened).
+	CanaryToken string `json:"canary_token"`
+	ManageURL   string `json:"manage_url"`
+}
+
+func maskedCanaryTokens(tokens []queries.CanaryToken) []canaryTokenView {
+	out := make([]canaryTokenView, 0, len(tokens))
+	for _, t := range tokens {
+		out = append(out, canaryTokenView{ID: t.ID, ClientID: t.ClientID, TokenType: t.TokenType, Memo: t.Memo,
+			DeployPath: t.DeployPath, CreatedAt: t.CreatedAt, CanaryToken: t.CanaryToken})
+	}
+	return out
+}
+
+// Overview — GET /api/canary/overview. Fleet view: per client token counts
+// plus whether an alert destination exists. Canary alerts are sent by
+// canarytokens.org to the canary alert email only; notification channels do
+// not receive canary triggers, so only the email counts.
+func (h *CanaryHandler) Overview(w http.ResponseWriter, r *http.Request) {
+	settings, err := h.canaryQ.GetSettings()
+	if err != nil {
+		jsonError(w, "failed to get settings", http.StatusInternalServerError)
+		return
+	}
+	clients, err := h.canaryQ.Overview()
+	if err != nil {
+		jsonError(w, "failed to load overview", http.StatusInternalServerError)
+		return
+	}
+	var excluded []string
+	_ = json.Unmarshal([]byte(settings.ExcludeClients), &excluded)
+	ex := map[string]bool{}
+	for _, n := range excluded {
+		ex[n] = true
+	}
+	type row struct {
+		queries.CanaryClientOverview
+		Excluded bool `json:"excluded"`
+	}
+	rows := make([]row, 0, len(clients))
+	for _, c := range clients {
+		rows = append(rows, row{CanaryClientOverview: c, Excluded: ex[c.Name]})
+	}
+	jsonResponse(w, map[string]interface{}{
+		"alert_configured":     settings.Email != "",
+		"last_triggered_known": false,
+		"clients":              rows,
+	})
 }
 
 // Admin: delete a single canary token (from DB + canarytokens.org)
@@ -157,12 +206,20 @@ func (h *CanaryHandler) GenerateForClient(w http.ResponseWriter, r *http.Request
 
 	shortID := r.URL.Query().Get("short_id")
 	if err := h.service.RegenerateForClient(clientID, clientName, shortID); err != nil {
+		if errors.Is(err, services.ErrCanaryNoAlertEmail) {
+			jsonError(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if errors.Is(err, services.ErrCanaryNothingGenerated) {
+			jsonError(w, err.Error(), http.StatusBadGateway)
+			return
+		}
 		jsonError(w, "failed to generate canary tokens: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	tokens, _ := h.canaryQ.ListByClient(clientID)
-	jsonResponse(w, tokens)
+	jsonResponse(w, maskedCanaryTokens(tokens))
 }
 
 // Client: get canary tokens to deploy.
