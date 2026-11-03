@@ -241,7 +241,7 @@ function renderView() {
       ${disc ? DW.html`<button type="button" class="btn" id="cc-act-verify" data-action="verifyChannel">Verify channel permissions</button><button type="button" class="btn" id="cc-act-fix" data-action="checkFixView">Check &amp; fix</button>` : ''}
     </div>
     <p class="text-muted text-sm">Send test message posts <code>hi</code> to the management channel and waits for the agent to reply. Verify channel permissions creates and deletes a temporary channel under the category. Check &amp; fix also grants the bot access when it is missing.</p>
-    <div id="cc-result" class="cc-result" role="status" aria-live="polite"></div>`;
+    <div id="cc-result" class="cc-results" role="status" aria-live="polite"><div id="cc-result-msg" class="cc-result"></div><div id="cc-result-verify" class="cc-result"></div><div id="cc-result-fix" class="cc-result"></div></div>`;
   DW.setHTML($('cc-body'), DW.html`${warn}
     <dl class="cc-dl">
       <dt>Agent</dt><dd>${agentLabel(c.agent_type)}${sandboxBadge(sb)}</dd>
@@ -317,30 +317,28 @@ function runCheckFix(keyID, guildID, catID, panel, my) {
 DW.actions.checkFixView = function() {
   if (!cur || run.fix) return;
   var cfg = parseCfg(cur);
-  var panel = $('cc-result');
+  var panel = $('cc-result-fix');
   if (!cfg.guild_id || !cfg.category_id) { DW.setHTML(panel, resultCard(false, 'Server and category are not set', 'Edit this control channel and choose a server and category.', [], '')); return; }
   var ids = ['cc-act-fix'];
   setBusy(ids, true); run.fix = true;
   var my = seq;
-  runCheckFix(cur.api_key_id, cfg.guild_id, cfg.category_id, panel, my).then(function() { run.fix = false; if (my === seq) setBusy(ids, false); });
+  runCheckFix(cur.api_key_id, cfg.guild_id, cfg.category_id, panel, my).then(function() { if (my === seq) { run.fix = false; setBusy(ids, false); } });
 };
 
 DW.actions.verifyChannel = function() {
   if (!cur || run.verify) return;
   var ids = ['cc-act-verify'];
-  var panel = $('cc-result'), my = seq;
+  var panel = $('cc-result-verify'), my = seq;
   setBusy(ids, true); run.verify = true;
   DW.setHTML(panel, pending('Verifying: creating and deleting a temporary channel'));
   fetchJSON('/api/cc/' + encodeURIComponent(cur.id) + '/test', {method: 'POST'}).then(function(d) {
-    run.verify = false;
     if (my !== seq) return;
-    setBusy(ids, false);
+    run.verify = false; setBusy(ids, false);
     if (d.error) { DW.setHTML(panel, resultCard(false, 'Verification failed', d.error, [], '')); return; }
     DW.setHTML(panel, resultCard(!!d.ok, d.ok ? 'Bot token, server, category and channel permissions all work' : 'A permission check failed', '', d.steps, d.ok ? '' : DW.raw('<p class="text-sm">Run Check &amp; fix to try granting the missing access.</p>')));
   }).catch(function(err) {
-    run.verify = false;
     if (my !== seq) return;
-    setBusy(ids, false);
+    run.verify = false; setBusy(ids, false);
     DW.setHTML(panel, resultCard(false, 'Request failed', err.message, [], ''));
   });
 };
@@ -348,10 +346,10 @@ DW.actions.verifyChannel = function() {
 DW.actions.sendTestMessage = function() {
   if (!cur || run.msg) return;
   var ids = ['cc-act-msg'];
-  var panel = $('cc-result'), my = seq, c = cur;
+  var panel = $('cc-result-msg'), my = seq, c = cur;
   setBusy(ids, true); run.msg = true;
   DW.setHTML(panel, pending('Sending test message to the ' + agentLabel(c.agent_type) + ' agent'));
-  function done() { run.msg = false; cancelPoll = null; if (my === seq) setBusy(ids, false); }
+  function done() { if (my === seq) { run.msg = false; cancelPoll = null; setBusy(ids, false); } }
   fetchJSON('/api/cc/' + encodeURIComponent(c.id) + '/test-agent', {method: 'POST'}).then(function(d) {
     if (my !== seq) return;
     if (d.error) { done(); DW.setHTML(panel, resultCard(false, 'Test message failed', d.error, [], '')); return; }
@@ -705,7 +703,11 @@ document.addEventListener('DOMContentLoaded', function() {
     allServices = (Array.isArray(r[0]) ? r[0] : []).filter(function(s) { return s && (s.name === 'discord' || s.name === 'telegram'); });
     allKeys = Array.isArray(r[1]) ? r[1] : [];
     allClients = Array.isArray(r[2]) ? r[2] : [];
-  }).catch(function() {}).then(loadCCs);
+  }).catch(function() {}).then(loadCCs).then(function() {
+    // Deep link from the client page: /admin/cc#cc-<id> opens that channel's drawer.
+    var m = /^#cc-([A-Za-z0-9_-]+)$/.exec(location.hash || '');
+    if (m && allCCs.some(function(c) { return c.id === m[1]; })) showCC(m[1], false);
+  });
 });
 })();
 </script>

@@ -354,7 +354,8 @@ var ccForClient = null;
 var assignedSuites = [];   // key bundles assigned to this client
 var allSuites = [];
 var canary = {tokens: [], email: null, loaded: false};
-var activity = {loaded: false, items: [], error: ''};
+var activity = {loaded: false, items: [], approvals: [], approvalsError: false, error: ''};
+var SETTINGS = {};
 var activeTab = 'overview';
 var tabOrder = ['overview', 'credentials', 'channel', 'canary', 'activity'];
 var assignGitHubRepoLoadSeq = 0;
@@ -410,7 +411,8 @@ function loadAll() {
     soft(fetchJSON('/api/key-suites/clients/' + enc(CID)), []),
     soft(fetchJSON('/api/key-suites'), []),
     soft(fetchJSON('/api/canary/clients/' + enc(CID)), []),
-    soft(fetchJSON('/api/canary/settings'), {})
+    soft(fetchJSON('/api/canary/settings'), {}),
+    soft(fetchJSON('/api/settings'), {})
   ]).then(function(r) {
     if (seq !== loadSeq) throw STALE;
     var snap = JSON.stringify(r);
@@ -425,6 +427,7 @@ function loadAll() {
     allSuites = Array.isArray(r[5]) ? r[5] : [];
     canary.tokens = Array.isArray(r[6]) ? r[6] : [];
     canary.email = r[7] && r[7].email ? r[7].email : '';
+    SETTINGS = r[8] || {};
     canary.loaded = true;
     return changed;
   });
@@ -553,12 +556,12 @@ function renderCreds() {
 }
 function renderChannel() {
   if (!ccForClient) {
-    DW.setHTML(el('cd-channel'), DW.raw('<div class="card cd-card"><h2>Control channel</h2><p class="text-muted text-sm">No control channel is assigned to this client.</p><p class="mt-2"><a class="btn btn-primary" href="/admin/cc">Open Control channels</a></p></div>'));
+    DW.setHTML(el('cd-channel'), DW.raw('<div class="card cd-card"><h2>Control channel</h2><p class="text-muted text-sm">No control channel is assigned to this client. Control channels are created and edited on the Control channels page, not here.</p><p class="mt-2"><a class="btn btn-primary" href="/admin/cc">Go to Control channels</a></p></div>'));
     return;
   }
   var cc = ccForClient;
   var st = cc.is_active ? DW.raw('<span class="cl-pill cl-pill-ok">Active</span>') : DW.raw('<span class="cl-pill cl-pill-mute">Inactive</span>');
-  DW.setHTML(el('cd-channel'), DW.html`<div class="card cd-card"><h2>Control channel</h2><dl class="cd-dl"><dt>Name</dt><dd>${cc.name}</dd><dt>Agent</dt><dd>${agentLabel(cc.agent_type)}</dd><dt>Status</dt><dd>${st}</dd></dl><p class="mt-2"><a class="btn" href="/admin/cc">Manage in Control channels</a></p></div>`);
+  DW.setHTML(el('cd-channel'), DW.html`<div class="card cd-card"><h2>Control channel</h2><dl class="cd-dl"><dt>Name</dt><dd>${cc.name}</dd><dt>Agent</dt><dd>${agentLabel(cc.agent_type)}</dd><dt>Status</dt><dd>${st}</dd></dl><p class="text-muted text-sm mt-2">Creating and editing a control channel happens on the Control channels page.</p><p class="mt-2"><a class="btn" href="${'/admin/cc#cc-' + enc(cc.id)}">Edit in Control channels</a></p></div>`);
 }
 function canaryRow(t) {
   var cell;
@@ -579,11 +582,19 @@ function renderCanary() {
   var table = DW.html`<div class="card cd-tablecard"><div class="table-wrap"><table class="cd-table"><thead><tr><th scope="col">Type</th><th scope="col">Token / hostname</th><th scope="col">Deploy path</th><th scope="col">Created</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${canary.tokens.length ? canary.tokens.map(canaryRow) : DW.raw('<tr><td colspan="5" class="text-muted text-sm">No canary tokens.</td></tr>')}</tbody></table></div></div>`;
   DW.setHTML(el('cd-canary'), DW.html`${head}${table}`);
 }
+function captureLine() {
+  if (!SETTINGS || !Object.keys(SETTINGS).length) return '';
+  var on = SETTINGS.request_log_capture_enabled === '1';
+  var ids = [];
+  try { ids = JSON.parse(SETTINGS.request_log_capture_clients || '[]'); if (!Array.isArray(ids)) ids = []; } catch (e) { ids = []; }
+  var txt = !on ? 'Off' : (ids.length && ids.indexOf(CID) < 0 ? 'Off for this client' : 'On');
+  return DW.html`<dt>Body capture</dt><dd>${txt}</dd>`;
+}
 function renderAbout() {
   var agent = ccForClient ? DW.html`${agentLabel(ccForClient.agent_type)} via <a href="/admin/cc">${ccForClient.name}</a>` : DW.raw('—');
   DW.setHTML(el('cd-about'), DW.html`<dt>Agent</dt><dd>${agent}</dd>
     <dt>Canary</dt><dd>${C.canary_enabled ? plural(canary.tokens.length, 'token') + ' deployed' : 'Off'}</dd>
-    <dt>Updates</dt><dd>${C.update_policy === 'manual' ? 'Manual' : 'Managed'}</dd>
+    ${captureLine()}<dt>Updates</dt><dd>${C.update_policy === 'manual' ? 'Manual' : 'Managed'}</dd>
     <dt>Platform</dt><dd>${RT && RT.os ? RT.os + '/' + RT.arch : '—'}</dd>
     <dt>Created</dt><dd>${fmtDate(C.created_at)}</dd>
     <dt>Short ID</dt><dd class="mono">${C.short_id}</dd>`);
@@ -599,9 +610,14 @@ var activitySeq = 0;
 function loadActivity() {
   var seq = ++activitySeq;
   if (!activity.loaded) DW.setHTML(el('cd-activity'), DW.raw('<div class="card cd-card text-muted">Loading…</div>'));
-  fetchJSON('/api/logs?client=' + enc(CID) + '&limit=20').then(function(d) {
+  Promise.all([
+    fetchJSON('/api/logs?client=' + enc(CID) + '&limit=20'),
+    fetchJSON('/api/approvals/list?client_id=' + enc(CID) + '&status=pending,approved,rejected,ignored').then(function(a) { return {ok: true, list: Array.isArray(a) ? a : []}; }, function() { return {ok: false, list: []}; })
+  ]).then(function(res) {
+    var d = res[0];
     if (seq !== activitySeq) return;
     activity.loaded = true; activity.error = '';
+    activity.approvals = res[1].list.slice(0, 5); activity.approvalsError = !res[1].ok;
     activity.items = d && Array.isArray(d.items) ? d.items : [];
     renderActivity();
   }).catch(function(err) {
@@ -626,7 +642,12 @@ function renderActivity() {
         return DW.html`<tr><td data-label="Time" class="cl-muted text-sm">${l.created_at}</td><td data-label="Service">${l.service_name}</td><td data-label="Request"><span class="mono">${l.method}</span> <span class="mono">${l.path}</span></td><td data-label="Credential" class="cl-muted">${l.env_name || l.credential || '—'}</td><td data-label="Status">${statusPill(l.status_code)}</td></tr>`;
       })
     : DW.raw('<tr><td colspan="5" class="text-muted text-sm">No requests from this client yet.</td></tr>');
-  DW.setHTML(box, DW.html`<div class="card cd-card"><div class="flex-between"><h2>Recent requests</h2><a class="btn btn-sm" href="${'/admin/logs?client=' + enc(CID)}">Open in Request log</a></div>
+  var appr = activity.approvalsError
+    ? DW.raw('<p class="text-muted text-sm">Approvals could not be loaded.</p>')
+    : (activity.approvals.length
+      ? DW.html`<ul class="cd-list">${activity.approvals.map(function(a) { return DW.html`<li><span class="cl-pill cl-pill-mute">${a.status}</span> <span class="mono">${a.env_name || a.credential_name}</span> <span class="text-muted text-sm">${a.created_at}</span></li>`; })}</ul>`
+      : DW.raw('<p class="text-muted text-sm">No approval requests for this client.</p>'));
+  DW.setHTML(box, DW.html`<div class="card cd-card"><h2>Recent approvals</h2>${appr}<p class="text-muted text-sm"><a href="/admin/approvals">Open Approvals</a></p></div><p class="text-muted text-sm">This tab shows requests and approvals only. Admin changes (edits, token rotations) are not recorded per client.</p><div class="card cd-card"><div class="flex-between"><h2>Recent requests</h2><a class="btn btn-sm" href="${'/admin/logs?client=' + enc(CID)}">Open in Request log</a></div>
     <div class="table-wrap"><table class="cd-table"><thead><tr><th scope="col">Time</th><th scope="col">Service</th><th scope="col">Request</th><th scope="col">Credential</th><th scope="col">Status</th></tr></thead><tbody>${rows}</tbody></table></div></div>`);
 }
 DW.actions.reloadActivity = function() { loadActivity(); };

@@ -131,8 +131,8 @@ function bundlePreview() {
   var entries = d.entries || [];
   if (!entries.length) return DW.raw('<p class="text-muted text-sm">This bundle has no entries yet, so no phantom tokens would be created.</p>');
   return DW.html`<div class="wz-preview"><div class="wz-preview-head">This creates ${plural(entries.length, 'phantom token', 'phantom tokens')}</div><ul class="wz-preview-list">${entries.map(function (e) {
-    return DW.html`<li><span class="mono wz-env">${e.env_name}</span><span class="wz-src">${e.service_name || e.service_id} · ${entrySource(e)}</span></li>`;
-  })}</ul></div>`;
+    return DW.html`<li><span class="mono wz-env">${e.env_name}</span><span class="wz-src">${e.service_name || e.service_id} · ${entrySource(e)} · No approval</span></li>`;
+  })}</ul><p class="text-muted text-sm">Bundles do not carry approval rules, so these tokens start with no approval required. Set approval per credential on the client page after setup.</p></div>`;
 }
 function step2() {
   return DW.html`${head('Give it credentials', 'Pick a key bundle to create its phantom tokens in one step. You can add single credentials later.')}

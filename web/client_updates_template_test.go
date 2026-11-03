@@ -16,7 +16,7 @@ func TestClientUpdatesTemplateContainsRolloutControls(t *testing.T) {
 		"retry-failed", "skipped_manual", "manual_required", "managed_update_v1", "runtimeFresh",
 		`class="cl-subtabs"`, `href="/admin/clients"`, `href="/admin/clients/rollouts"`, "Rollouts",
 		`role="progressbar"`, "askCancel", "ro-drawer", "DW.live.on('rollouts'",
-		`href="/admin/clients?status=offline"`,
+		`href="/admin/clients?updates=legacy"`, `href="/admin/clients?updates=eligible"`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("client updates template missing %q", want)

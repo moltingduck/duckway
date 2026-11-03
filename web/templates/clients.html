@@ -37,6 +37,8 @@
       <option value="">Any</option>
       <option value="managed">Managed</option>
       <option value="manual">Manual</option>
+      <option value="eligible">Eligible for rollout</option>
+      <option value="legacy">Offline or legacy agent</option>
     </select>
   </label>
   <label class="cl-filter-label">Canary
@@ -110,6 +112,23 @@ function lastSeenMs(c) {
   return isFinite(m) ? m : NaN;
 }
 function normVer(v) { return String(v || '').replace(/^v/i, ''); }
+// Mirrors the Rollouts tiles: managed clients are "legacy" when they do not
+// report managed_update_v1 or have no heartbeat in the last 10 minutes, and
+// "eligible" when fresh, writable and enabled.
+function rtManaged(r) { try { return !!r && JSON.parse(r.capabilities || '[]').indexOf('managed_update_v1') >= 0; } catch (e) { return false; } }
+function rtFresh(r) {
+  if (!r || !r.last_heartbeat_at) return false;
+  var age = Date.now() - Date.parse(String(r.last_heartbeat_at).replace(' ', 'T') + 'Z');
+  return isFinite(age) && age >= 0 && age < ONLINE_MS;
+}
+function updatesMatch(d, mode) {
+  if (mode === 'managed' || mode === 'manual') return d.c.update_policy === mode;
+  var r = D.runtimes[d.c.id] || null;
+  if (d.c.update_policy === 'manual') return false;
+  var legacy = !rtManaged(r) || !rtFresh(r);
+  if (mode === 'legacy') return legacy;
+  return !legacy && !!r.install_writable && !!d.c.is_active;
+}
 function derive(c) {
   var r = D.runtimes[c.id] || null;
   var seen = lastSeenMs(c);
@@ -175,7 +194,7 @@ function passes(d, ignoreTab) {
     if (S.tab === 'update' && !d.needsUpdate) return false;
   }
   if (S.status && d.status !== S.status) return false;
-  if (S.updates && d.c.update_policy !== S.updates) return false;
+  if (S.updates && !updatesMatch(d, S.updates)) return false;
   if (S.canary && (d.c.canary_enabled ? 'on' : 'off') !== S.canary) return false;
   return matchesQuery(d, parseQuery(S.q));
 }
@@ -287,7 +306,7 @@ function readURL() {
   if (['all', 'online', 'offline', 'update'].indexOf(t) >= 0) S.tab = t;
   S.q = (p.get('q') || '').slice(0, 200);
   if (['online', 'offline', 'disabled'].indexOf(p.get('status')) >= 0) S.status = p.get('status');
-  if (['managed', 'manual'].indexOf(p.get('updates')) >= 0) S.updates = p.get('updates');
+  if (['managed', 'manual', 'eligible', 'legacy'].indexOf(p.get('updates')) >= 0) S.updates = p.get('updates');
   if (['on', 'off'].indexOf(p.get('canary')) >= 0) S.canary = p.get('canary');
   el('search-clients').value = S.q;
   el('f-status').value = S.status;
