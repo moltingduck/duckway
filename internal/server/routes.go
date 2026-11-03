@@ -141,10 +141,8 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/clients/rollouts", adminPageH.ClientUpdatesPage)
 	adminPageMux.HandleFunc("GET /admin/clients/new", adminPageH.OnboardingPage)
 	adminPageH.RegisterMovedPages(adminPageMux) // old URLs answer a page-moved 404
-	adminPageMux.HandleFunc("GET /admin/groups", adminPageH.GroupsPage)
-	adminPageMux.HandleFunc("GET /admin/key-groups", adminPageH.KeyGroupsPage)
-	adminPageMux.HandleFunc("GET /admin/key-groups/{id}", adminPageH.KeyGroupDetailPage)
-	adminPageMux.HandleFunc("GET /admin/key-suites", adminPageH.KeySuitesPage)
+	adminPageMux.HandleFunc("GET /admin/key-pools", adminPageH.KeyPoolsPage)
+	adminPageMux.HandleFunc("GET /admin/key-bundles", adminPageH.KeyBundlesPage)
 	adminPageMux.HandleFunc("GET /admin/approvals", adminPageH.ApprovalsPage)
 	adminPageMux.HandleFunc("GET /admin/logs", adminPageH.LogsPage)
 	adminPageMux.HandleFunc("GET /admin/notifications", adminPageH.NotificationsPage)

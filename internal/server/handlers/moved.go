@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"net/url"
 	"sort"
 )
 
@@ -24,7 +25,15 @@ type MovedNotice struct {
 var movedPages = map[string]MovedPage{
 	"/admin/client-updates": {NewPath: "/admin/clients/rollouts", NewName: "Clients › Rollouts"},
 	"/admin/onboarding":     {NewPath: "/admin/clients/new", NewName: "Clients › Add client"},
+	"/admin/groups":         {NewPath: "/admin/key-pools", NewName: "Key pools"},
+	"/admin/key-groups":     {NewPath: "/admin/key-pools", NewName: "Key pools"},
+	"/admin/key-suites":     {NewPath: "/admin/key-bundles", NewName: "Key bundles"},
 }
+
+// movedKeyGroupPattern is the one removed path that carries an identifier:
+// the old quota-aware lease group detail page. It answers the same 404 notice
+// and links straight to the pool's deep link on the new page.
+const movedKeyGroupPattern = "GET /admin/key-groups/{id}"
 
 // MovedPaths returns the registered old paths in sorted order.
 func MovedPaths() []string {
@@ -51,6 +60,16 @@ func (h *AdminHandler) RegisterMovedPages(mux *http.ServeMux) {
 			h.MovedPage(w, r, oldPath)
 		})
 	}
+	mux.HandleFunc(movedKeyGroupPattern, h.MovedKeyGroupDetail)
+}
+
+// MovedKeyGroupDetail renders the page-moved notice for /admin/key-groups/{id}.
+func (h *AdminHandler) MovedKeyGroupDetail(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	h.renderMoved(w, r, r.URL.Path, MovedPage{
+		NewPath: "/admin/key-pools?pool=" + url.QueryEscape("lease:"+id),
+		NewName: "Key pools",
+	})
 }
 
 // MovedPage renders the page-moved notice with status 404.
@@ -60,6 +79,10 @@ func (h *AdminHandler) MovedPage(w http.ResponseWriter, r *http.Request, oldPath
 		http.NotFound(w, r)
 		return
 	}
+	h.renderMoved(w, r, oldPath, m)
+}
+
+func (h *AdminHandler) renderMoved(w http.ResponseWriter, r *http.Request, oldPath string, m MovedPage) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusNotFound)
 	h.render(w, r, "moved", pageData{

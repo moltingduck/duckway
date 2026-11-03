@@ -1,0 +1,662 @@
+{{define "content"}}
+<div class="page-header kp-header">
+  <div>
+    <h1>Key pools</h1>
+    <p class="kp-sub">Groups of API keys for one service. A pool either rotates keys on every request or leases keys to clients by remaining quota.</p>
+  </div>
+  <div class="kp-header-actions">
+    <button type="button" class="btn" id="kp-refresh" data-action="refresh">Refresh</button>
+    <button type="button" class="btn btn-primary" data-action="openCreate">Create pool</button>
+  </div>
+</div>
+
+<div class="kp-filters">
+  <div class="search-bar">
+    <input type="text" id="kp-q" aria-label="Search pools" placeholder="Search pools by name, service or strategy" autocomplete="off" data-on-input="applyFilters">
+    <span class="count" id="kp-count" role="status" aria-live="polite"></span>
+  </div>
+  <label class="kp-filter-label">Mode
+    <select id="kp-f-mode" data-on-change="applyFilters">
+      <option value="">All modes</option>
+      <option value="rotation">Per-request rotation</option>
+      <option value="lease">Quota-aware lease</option>
+    </select>
+  </label>
+  <label class="kp-filter-label">Service
+    <select id="kp-f-service" data-on-change="applyFilters">
+      <option value="">All services</option>
+    </select>
+  </label>
+</div>
+
+<div class="card kp-tablecard">
+  <div class="table-wrap">
+    <table class="kp-table">
+      <thead><tr><th scope="col">Pool</th><th scope="col">Mode</th><th scope="col">Service</th><th scope="col">Strategy</th><th scope="col">Members</th><th scope="col">Quota</th></tr></thead>
+      <tbody id="kp-body"><tr><td colspan="6" class="text-muted">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<p class="kp-hint text-sm text-muted">Per-request rotation pools are what phantom tokens and key bundles point at. Quota-aware lease pools hand a key to a client until that client reports it exhausted.</p>
+
+<!-- Create pool: mode first, then the matching form -->
+<div id="kp-create" class="modal-backdrop" hidden>
+  <div class="modal kp-create-modal">
+    <h2>Create key pool</h2>
+    <div id="kp-step-mode">
+      <p class="text-sm text-muted">Choose how this pool hands out keys. The mode cannot be changed later.</p>
+      <div class="kp-modes">
+        <button type="button" class="kp-mode" data-action="pickMode" data-mode="rotation">
+          <strong>Per-request rotation</strong>
+          <span>Every request is routed to one member by round-robin, least-used or failover. Used by phantom tokens and key bundles.</span>
+        </button>
+        <button type="button" class="kp-mode" data-action="pickMode" data-mode="lease">
+          <strong>Quota-aware lease</strong>
+          <span>Clients lease a key by remaining quota and report when it is exhausted, then move to the next.</span>
+        </button>
+      </div>
+      <div class="modal-actions"><button type="button" class="btn" data-action="modal-close">Cancel</button></div>
+    </div>
+    <form id="kp-create-form" data-on-submit="createPool" hidden>
+      <p class="text-sm"><span class="badge badge-blue" id="kp-create-mode">Mode</span></p>
+      <div class="form-group"><label for="kp-c-name">Name</label><input type="text" id="kp-c-name" maxlength="120" placeholder="OpenAI production pool" required></div>
+      <div class="form-group" id="kp-c-desc-row"><label for="kp-c-desc">Description <span class="text-muted text-sm">(optional)</span></label><input type="text" id="kp-c-desc" maxlength="300"></div>
+      <div class="form-group"><label for="kp-c-service">Service</label>
+        <select id="kp-c-service" required><option value="">Select a service</option></select>
+        <span class="text-sm text-muted" id="kp-c-service-note"></span>
+      </div>
+      <div class="form-group"><label for="kp-c-strategy">Strategy</label><select id="kp-c-strategy"></select>
+        <span class="text-sm text-muted" id="kp-c-strategy-note"></span>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" data-action="createBack">Back</button>
+        <button type="submit" class="btn btn-primary" id="kp-c-submit">Create pool</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Pool detail drawer -->
+<div id="kp-drawer" class="modal-backdrop kp-drawer-bd" hidden>
+  <div class="modal kp-drawer" aria-labelledby="kp-d-title">
+    <div class="kp-drawer-head">
+      <div class="kp-d-titlebox">
+        <h2 id="kp-d-title">Pool</h2>
+        <div id="kp-d-badges" class="kp-badges"></div>
+      </div>
+      <button type="button" class="btn btn-sm kp-close" data-action="modal-close" aria-label="Close pool details">Close</button>
+    </div>
+    <section aria-labelledby="kp-h-settings">
+      <div class="kp-sec-head"><h3 id="kp-h-settings">Settings</h3><button type="button" class="btn btn-sm" id="kp-edit-btn" data-action="toggleEdit">Edit</button></div>
+      <div id="kp-d-summary"></div>
+      <form id="kp-edit-form" data-on-submit="saveEdit" hidden>
+        <div class="form-group"><label for="kp-e-name">Name</label><input type="text" id="kp-e-name" maxlength="120" required></div>
+        <div class="form-group" id="kp-e-desc-row"><label for="kp-e-desc">Description</label><input type="text" id="kp-e-desc" maxlength="300"></div>
+        <div class="form-group"><label for="kp-e-strategy">Strategy</label><select id="kp-e-strategy"></select><span class="text-sm text-muted" id="kp-e-strategy-note"></span></div>
+        <p class="text-sm text-muted">The service and mode of a pool are fixed after creation.</p>
+        <div class="modal-actions"><button type="button" class="btn" data-action="toggleEdit">Cancel</button><button type="submit" class="btn btn-primary">Save changes</button></div>
+      </form>
+    </section>
+    <section aria-labelledby="kp-h-members">
+      <div class="kp-sec-head"><h3 id="kp-h-members">Members</h3><span class="text-sm text-muted" id="kp-m-count"></span></div>
+      <p class="text-sm text-muted" id="kp-m-help"></p>
+      <ol class="kp-members" id="kp-d-members"></ol>
+      <form class="kp-add" id="kp-add-form" data-on-submit="addMember">
+        <label class="sr-only" for="kp-add-key">API key to add</label>
+        <select id="kp-add-key"></select>
+        <button type="submit" class="btn btn-primary" id="kp-add-btn">Add to pool</button>
+      </form>
+    </section>
+    <section aria-labelledby="kp-h-danger" class="kp-danger">
+      <h3 id="kp-h-danger">Delete pool</h3>
+      <p class="text-sm text-muted">Deleting a pool does not delete its API keys.</p>
+      <button type="button" class="btn btn-danger" data-action="askDelete">Delete pool…</button>
+    </section>
+  </div>
+</div>
+
+<!-- In-page confirmation dialog -->
+<div id="kp-confirm" class="modal-backdrop kp-confirm-bd" hidden>
+  <div class="modal">
+    <h2 id="kp-confirm-title">Confirm</h2>
+    <div id="kp-confirm-body" class="text-sm"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="modal-close">Cancel</button>
+      <button type="button" class="btn btn-danger" id="kp-confirm-go" data-action="confirmGo">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script nonce="{{$.CSPNonce}}">
+(function () {
+  'use strict';
+
+  var MODE = {
+    rotation: {label: 'Per-request rotation', badge: 'badge-blue'},
+    lease: {label: 'Quota-aware lease', badge: 'badge-purple'}
+  };
+  var STRATEGIES = {
+    rotation: [
+      ['round-robin', 'Round robin', 'Each request goes to the next member in order.'],
+      ['least-used', 'Least used', 'Each request goes to the member with the fewest total calls.'],
+      ['failover', 'Failover', 'Always uses the first member in the list; order sets priority.']
+    ],
+    lease: [
+      ['score', 'Score', 'Prefers the key with the most remaining tokens per bound client. Untouched keys go first.'],
+      ['round_robin', 'Round robin', 'Even distribution, least recently used first.'],
+      ['failover', 'Failover', 'Always uses the first member in the list; falls back when it is rate limited (429).'],
+      ['random', 'Random', 'Picks a random available key on every lease.']
+    ]
+  };
+  var MEMBER_HELP = {
+    rotation: 'Members are tried in this order. Order is the priority for failover and the sequence for round robin.',
+    lease: 'Position is the priority used by failover. Quota figures come from rate-limit headers reported by clients.'
+  };
+
+  var S = {loaded: false, error: '', rot: [], lease: [], services: [], keys: [], pools: [], sel: null, editing: false,
+    createMode: '', confirmFn: null, busy: false, seq: 0, poll: null};
+
+  function $(id) { return document.getElementById(id); }
+  function api(method, url, body) {
+    var opts = {method: method, credentials: 'same-origin', headers: {}};
+    if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    return fetch(url, opts).then(function (r) {
+      if (r.status === 401) { window.location = '/admin/login'; return {ok: false, status: 401, data: {}}; }
+      return r.text().then(function (t) {
+        var d = {};
+        try { d = t ? JSON.parse(t) : {}; } catch (e) { d = {}; }
+        return {ok: r.ok, status: r.status, data: d};
+      });
+    }, function () { return {ok: false, status: 0, data: {error: 'Network error'}}; });
+  }
+  function errText(res, fallback) { return (res && res.data && res.data.error) || fallback; }
+  function fmtNum(n) { return (typeof n === 'number' && isFinite(n)) ? n.toLocaleString() : '—'; }
+
+  /* ---------- load + normalize ---------- */
+  function svcLabel(name) {
+    for (var i = 0; i < S.services.length; i++) {
+      if (S.services[i].name === name) return S.services[i].display_name || S.services[i].name;
+    }
+    return name || '—';
+  }
+  function normRot(g) {
+    return {kind: 'rotation', id: g.id, name: g.name, desc: '', serviceId: g.service_id, serviceName: g.service_name || '',
+      strategy: g.strategy, created: g.created_at, members: (g.members || []).map(function (m) {
+        return {keyId: m.id, name: m.name, usage: m.usage_count, snap: m.usage_snapshot, refreshable: !!m.is_refreshable};
+      })};
+  }
+  function normLease(g) {
+    return {kind: 'lease', id: g.id, name: g.name, desc: g.description || '', serviceId: '', serviceName: g.service_name || '',
+      strategy: g.rotation_strategy, created: g.created_at, members: (g.members || []).map(function (m) {
+        return {keyId: m.api_key_id, name: m.key_name, pos: m.position, exhausted: m.exhausted_until, lastUsed: m.last_used_at,
+          tokRem: m.tokens_remaining, tokLim: m.tokens_limit, reqRem: m.requests_remaining, reqLim: m.requests_limit,
+          reset: m.reset_at, bound: m.bound_clients, score: m.score};
+      })};
+  }
+  function loadAll() {
+    var seq = ++S.seq;
+    return Promise.all([
+      api('GET', '/api/groups'), api('GET', '/api/key-groups'), api('GET', '/api/services'), api('GET', '/api/keys')
+    ]).then(function (r) {
+      var leaseList = r[1].ok && Array.isArray(r[1].data) ? r[1].data : [];
+      return Promise.all(leaseList.map(function (g) {
+        return api('GET', '/api/key-groups/' + encodeURIComponent(g.id)).then(function (d) { return d.ok ? d.data : g; });
+      })).then(function (leaseFull) {
+        if (seq !== S.seq) return;
+        var failed = [];
+        if (!r[0].ok) failed.push('rotation pools');
+        if (!r[1].ok) failed.push('lease pools');
+        S.error = failed.length ? 'Could not load ' + failed.join(' and ') + '.' : '';
+        S.rot = (r[0].ok && Array.isArray(r[0].data) ? r[0].data : []).map(normRot);
+        S.lease = leaseFull.map(normLease);
+        S.services = r[2].ok && Array.isArray(r[2].data) ? r[2].data : [];
+        S.keys = r[3].ok && Array.isArray(r[3].data) ? r[3].data : [];
+        S.loaded = true;
+        S.pools = S.rot.concat(S.lease);
+        fillServiceFilter();
+        renderList();
+        if (S.sel) renderDrawerAll(false);
+      });
+    });
+  }
+  function findPool(kind, id) {
+    for (var i = 0; i < S.pools.length; i++) { if (S.pools[i].kind === kind && S.pools[i].id === id) return S.pools[i]; }
+    return null;
+  }
+  function curPool() { return S.sel ? findPool(S.sel.kind, S.sel.id) : null; }
+
+  /* ---------- URL state ---------- */
+  function syncURL() {
+    var p = new URLSearchParams();
+    if ($('kp-q').value) p.set('q', $('kp-q').value);
+    if ($('kp-f-mode').value) p.set('mode', $('kp-f-mode').value);
+    if ($('kp-f-service').value) p.set('service', $('kp-f-service').value);
+    if (S.sel) p.set('pool', S.sel.kind + ':' + S.sel.id);
+    var qs = p.toString();
+    try { history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '')); } catch (e) { /* ignore */ }
+  }
+
+  /* ---------- quota helpers ---------- */
+  function pct(rem, lim) { return (typeof rem === 'number' && typeof lim === 'number' && lim > 0) ? Math.max(0, Math.min(100, Math.round(rem / lim * 100))) : null; }
+  function bar(p, label) {
+    if (p === null) return DW.html`<span class="text-muted text-sm">Not reported</span>`;
+    var lvl = p > 50 ? 'kp-ok' : (p > 20 ? 'kp-warn' : 'kp-bad');
+    var step = Math.round(p / 5) * 5;
+    return DW.html`<span class="kp-bar" role="img" aria-label="${label}: ${p}% remaining"><span class="kp-fill ${lvl} kp-p${step}"></span></span>`;
+  }
+  function parseTime(s) {
+    var str = String(s);
+    return Date.parse(str.replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(str) ? '' : 'Z'));
+  }
+  function exhaustedSecs(m) {
+    if (!m.exhausted) return 0;
+    var t = parseTime(m.exhausted);
+    if (!isFinite(t)) return 0;
+    var s = Math.round((t - Date.now()) / 1000);
+    return s > 0 ? s : 0;
+  }
+  function poolQuota(p) {
+    if (p.kind !== 'lease') return {text: 'Not tracked', p: null, exhausted: 0};
+    var rem = 0, lim = 0, any = false, ex = 0;
+    p.members.forEach(function (m) {
+      if (typeof m.tokRem === 'number' && typeof m.tokLim === 'number' && m.tokLim > 0) { rem += m.tokRem; lim += m.tokLim; any = true; }
+      if (exhaustedSecs(m) > 0) ex++;
+    });
+    return {text: any ? fmtNum(rem) + ' / ' + fmtNum(lim) : 'No data yet', p: any ? pct(rem, lim) : null, exhausted: ex};
+  }
+
+  /* ---------- list ---------- */
+  function strategyLabel(p) {
+    var list = STRATEGIES[p.kind];
+    for (var i = 0; i < list.length; i++) { if (list[i][0] === p.strategy) return list[i][1]; }
+    return p.strategy || '—';
+  }
+  function fillServiceFilter() {
+    var sel = $('kp-f-service');
+    var want = sel.value || new URLSearchParams(location.search).get('service') || '';
+    var names = {};
+    S.pools.forEach(function (p) { names[p.serviceName] = true; });
+    var opts = [DW.html`<option value="">All services</option>`];
+    Object.keys(names).sort().forEach(function (n) { opts.push(DW.html`<option value="${n}">${svcLabel(n)}</option>`); });
+    DW.setHTML(sel, DW.html`${opts}`);
+    sel.value = names[want] ? want : '';
+  }
+  function filtered() {
+    var q = $('kp-q').value.trim().toLowerCase(), mode = $('kp-f-mode').value, svc = $('kp-f-service').value;
+    return S.pools.filter(function (p) {
+      if (mode && p.kind !== mode) return false;
+      if (svc && p.serviceName !== svc) return false;
+      if (!q) return true;
+      return [p.name, p.desc, p.serviceName, svcLabel(p.serviceName), p.strategy, MODE[p.kind].label].join(' ').toLowerCase().indexOf(q) >= 0;
+    }).sort(function (a, b) { return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : (a.name.toLowerCase() > b.name.toLowerCase() ? 1 : 0); });
+  }
+  function renderList() {
+    var body = $('kp-body');
+    if (!S.loaded) return;
+    var rows = filtered();
+    $('kp-count').textContent = rows.length + ' of ' + S.pools.length + ' pools';
+    if (S.error) {
+      DW.setHTML(body, DW.html`<tr><td colspan="6" class="kp-err" role="alert">${S.error} Use Refresh to retry.</td></tr>`);
+      return;
+    }
+    if (!S.pools.length) {
+      DW.setHTML(body, DW.html`<tr><td colspan="6" class="text-muted">No key pools yet. Create one to spread traffic across several API keys of a service.</td></tr>`);
+      return;
+    }
+    if (!rows.length) {
+      DW.setHTML(body, DW.html`<tr><td colspan="6" class="text-muted">No pools match these filters.</td></tr>`);
+      return;
+    }
+    DW.setHTML(body, DW.html`${rows.map(function (p) {
+      var q = poolQuota(p);
+      var sel = S.sel && S.sel.kind === p.kind && S.sel.id === p.id;
+      var quota = p.kind === 'lease'
+        ? DW.html`${q.p === null ? '' : DW.html`${bar(q.p, 'Pool quota')} `}<span class="text-sm">${q.text}</span>${q.exhausted ? DW.html` <span class="badge badge-red">${q.exhausted} exhausted</span>` : ''}`
+        : DW.html`<span class="text-muted text-sm">Not tracked</span>`;
+      return DW.html`<tr${sel ? DW.raw(' class="kp-selected"') : ''}>
+        <td class="kp-c-name" data-label="Pool"><button type="button" class="kp-link" data-action="openPool" data-kind="${p.kind}" data-id="${p.id}"><strong>${p.name}</strong></button>${p.desc ? DW.html`<span class="kp-desc text-sm text-muted">${p.desc}</span>` : ''}</td>
+        <td class="kp-c-mode" data-label="Mode"><span class="badge ${MODE[p.kind].badge}">${MODE[p.kind].label}</span></td>
+        <td class="kp-c-svc" data-label="Service"><span class="badge badge-gray">${svcLabel(p.serviceName)}</span></td>
+        <td class="kp-c-strat" data-label="Strategy">${strategyLabel(p)}</td>
+        <td class="kp-c-mem" data-label="Members">${p.members.length}</td>
+        <td class="kp-c-quota" data-label="Quota">${quota}</td>
+      </tr>`;
+    })}`);
+  }
+
+  /* ---------- drawer ---------- */
+  function fmtTime(s) {
+    if (!s) return 'never';
+    var t = parseTime(s);
+    return isFinite(t) ? new Date(t).toLocaleString() : String(s);
+  }
+  function renderSummary(p) {
+    var cur = null, list = STRATEGIES[p.kind];
+    for (var i = 0; i < list.length; i++) { if (list[i][0] === p.strategy) cur = list[i]; }
+    DW.setHTML($('kp-d-summary'), DW.html`<dl class="kp-dl">
+      <dt>Mode</dt><dd><span class="badge ${MODE[p.kind].badge}">${MODE[p.kind].label}</span></dd>
+      <dt>Service</dt><dd>${svcLabel(p.serviceName)} <span class="mono text-sm text-muted">${p.serviceName}</span></dd>
+      <dt>Strategy</dt><dd><strong>${cur ? cur[1] : p.strategy}</strong>${cur ? DW.html`<br><span class="text-sm text-muted">${cur[2]}</span>` : ''}</dd>
+      ${p.kind === 'lease' ? DW.html`<dt>Description</dt><dd>${p.desc || '—'}</dd>` : ''}
+      <dt>ID</dt><dd class="mono text-sm">${p.id}</dd>
+      <dt>Created</dt><dd>${fmtTime(p.created)}</dd>
+    </dl>`);
+  }
+  function snapView(raw) {
+    if (!raw) return null;
+    var snap;
+    try { snap = JSON.parse(raw); } catch (e) { return null; }
+    if (!snap || (!snap.metrics && !snap.subscription)) return null;
+    var rows = [];
+    Object.keys(snap.metrics || {}).forEach(function (name) {
+      var m = snap.metrics[name] || {};
+      var used = (m.limit > 0 && m.remaining >= 0) ? (m.limit - m.remaining) : 0;
+      rows.push(DW.html`<tr><td>${String(name).replace(/_/g, ' ')}</td><td>${bar(pct(m.remaining, m.limit), name)}</td><td>${fmtNum(used)}</td><td>${fmtNum(m.remaining)}</td><td>${fmtNum(m.limit)}</td></tr>`);
+    });
+    var subs = Object.keys(snap.subscription || {}).map(function (k) { return DW.html`<span class="badge badge-gray">${k}: ${snap.subscription[k]}</span> `; });
+    return DW.html`<details class="kp-snap"><summary>Rate-limit usage${snap.provider ? DW.html` <span class="text-muted">${snap.provider}</span>` : ''}</summary>
+      ${rows.length ? DW.html`<div class="table-wrap"><table><thead><tr><th scope="col">Metric</th><th scope="col">Remaining</th><th scope="col">Used</th><th scope="col">Left</th><th scope="col">Limit</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+      ${subs.length ? DW.html`<div class="text-sm kp-subs">${subs}</div>` : ''}</details>`;
+  }
+  function memberRow(p, m, i, n) {
+    var up = i === 0, down = i === n - 1;
+    var ctl = DW.html`<div class="kp-m-ctl">
+      <button type="button" class="btn btn-sm kp-ico" data-action="moveMember" data-dir="-1" data-key="${m.keyId}" aria-label="Move ${m.name} up"${up ? DW.raw(' disabled') : ''}>↑</button>
+      <button type="button" class="btn btn-sm kp-ico" data-action="moveMember" data-dir="1" data-key="${m.keyId}" aria-label="Move ${m.name} down"${down ? DW.raw(' disabled') : ''}>↓</button>
+      <button type="button" class="btn btn-sm btn-danger" data-action="askRemove" data-key="${m.keyId}" data-name="${m.name}">Remove</button></div>`;
+    if (p.kind === 'rotation') {
+      return DW.html`<li class="kp-m"><span class="kp-m-ord" aria-label="Position">${i + 1}</span>
+        <div class="kp-m-main"><div class="kp-m-title"><strong>${m.name}</strong>${m.refreshable ? DW.html` <span class="badge badge-gray">refreshable</span>` : ''}</div>
+        <div class="text-sm text-muted">${fmtNum(m.usage)} total calls</div>${snapView(m.snap) || ''}</div>${ctl}</li>`;
+    }
+    var secs = exhaustedSecs(m);
+    var rp = pct(m.tokRem, m.tokLim);
+    var tok = (typeof m.tokRem === 'number') ? fmtNum(m.tokRem) + (typeof m.tokLim === 'number' ? ' / ' + fmtNum(m.tokLim) : '') + ' tokens' : 'No quota reported';
+    var req = (typeof m.reqRem === 'number') ? fmtNum(m.reqRem) + (typeof m.reqLim === 'number' ? ' / ' + fmtNum(m.reqLim) : '') + ' requests' : '';
+    var score = (typeof m.score === 'number' && m.score < 1e9) ? Math.round(m.score) : '—';
+    return DW.html`<li class="kp-m"><span class="kp-m-ord" aria-label="Position">${i + 1}</span>
+      <div class="kp-m-main"><div class="kp-m-title"><strong>${m.name}</strong> ${secs ? DW.html`<span class="badge badge-red">exhausted (${secs}s)</span>` : DW.html`<span class="badge badge-green">active</span>`}</div>
+        <div class="kp-quota">${rp === null ? '' : bar(rp, m.name + ' quota')}<span class="text-sm">${tok}</span></div>
+        <div class="text-sm text-muted">${req ? req + ' · ' : ''}${fmtNum(m.bound)} bound client${m.bound === 1 ? '' : 's'} · score ${score} · last used ${fmtTime(m.lastUsed)}${m.reset ? ' · resets ' + fmtTime(m.reset) : ''}</div>
+        <div class="mono text-sm text-muted">${m.keyId}</div></div>${ctl}</li>`;
+  }
+  function renderMembers(p) {
+    $('kp-m-count').textContent = p.members.length + (p.members.length === 1 ? ' key' : ' keys');
+    $('kp-m-help').textContent = MEMBER_HELP[p.kind];
+    var ol = $('kp-d-members');
+    if (!p.members.length) {
+      DW.setHTML(ol, DW.html`<li class="kp-empty text-muted">No keys in this pool yet. Add one below.</li>`);
+      return;
+    }
+    DW.setHTML(ol, DW.html`${p.members.map(function (m, i) { return memberRow(p, m, i, p.members.length); })}`);
+  }
+  function renderAdd(p) {
+    var have = {}, sel = $('kp-add-key'), opts = [];
+    p.members.forEach(function (m) { have[m.keyId] = true; });
+    S.keys.forEach(function (k) {
+      if (!k.is_active || have[k.id]) return;
+      var same = p.kind === 'rotation' ? k.service_id === p.serviceId : k.service_name === p.serviceName;
+      if (same) opts.push(DW.html`<option value="${k.id}">${k.name}</option>`);
+    });
+    if (!opts.length) {
+      DW.setHTML(sel, DW.html`<option value="">No unassigned active keys for this service</option>`);
+      sel.disabled = true; $('kp-add-btn').disabled = true;
+    } else {
+      DW.setHTML(sel, DW.html`<option value="">Select a key to add</option>${opts}`);
+      sel.disabled = false; $('kp-add-btn').disabled = false;
+    }
+  }
+  function fillStrategySelect(sel, noteEl, kind, value) {
+    DW.setHTML(sel, DW.html`${STRATEGIES[kind].map(function (s) { return DW.html`<option value="${s[0]}">${s[1]}</option>`; })}`);
+    if (value) sel.value = value;
+    var cur = STRATEGIES[kind].filter(function (s) { return s[0] === sel.value; })[0];
+    noteEl.textContent = cur ? cur[2] : '';
+  }
+  function renderDrawerAll(resetEdit) {
+    var p = curPool();
+    if (!p) { DW.modal.close('#kp-drawer'); return; }
+    $('kp-d-title').textContent = p.name;
+    DW.setHTML($('kp-d-badges'), DW.html`<span class="badge ${MODE[p.kind].badge}">${MODE[p.kind].label}</span> <span class="badge badge-gray">${svcLabel(p.serviceName)}</span>`);
+    renderSummary(p);
+    if (resetEdit) setEditing(false);
+    renderMembers(p);
+    renderAdd(p);
+  }
+  function setEditing(on) {
+    S.editing = on;
+    var p = curPool();
+    $('kp-edit-form').hidden = !on;
+    $('kp-d-summary').hidden = on;
+    $('kp-edit-btn').hidden = on;
+    if (on && p) {
+      $('kp-e-name').value = p.name;
+      $('kp-e-desc').value = p.desc;
+      $('kp-e-desc-row').hidden = p.kind !== 'lease';
+      fillStrategySelect($('kp-e-strategy'), $('kp-e-strategy-note'), p.kind, p.strategy);
+      $('kp-e-name').focus();
+    }
+  }
+  function openPool(kind, id) {
+    var p = findPool(kind, id);
+    if (!p) { DW.toast('Pool not found', 'error'); return false; }
+    S.sel = {kind: kind, id: id};
+    renderDrawerAll(true);
+    DW.modal.open('#kp-drawer');
+    renderList();
+    syncURL();
+    startPoll();
+    return true;
+  }
+  function onDrawerClosed() {
+    if (!S.sel) return;
+    S.sel = null; S.editing = false;
+    stopPoll(); renderList(); syncURL();
+  }
+  new MutationObserver(function () { if ($('kp-drawer').hidden || $('kp-drawer').style.display === 'none') onDrawerClosed(); })
+    .observe($('kp-drawer'), {attributes: true, attributeFilter: ['hidden', 'style']});
+
+  /* live data for lease pools: refresh only the open pool, never the whole page */
+  function startPoll() {
+    stopPoll();
+    S.poll = setInterval(function () {
+      var p = curPool();
+      if (!p || p.kind !== 'lease' || document.hidden || S.editing || S.busy) return;
+      api('GET', '/api/key-groups/' + encodeURIComponent(p.id)).then(function (r) {
+        if (!r.ok || !S.sel || S.sel.id !== p.id) return;
+        var np = normLease(r.data);
+        S.lease = S.lease.map(function (x) { return x.id === np.id ? np : x; });
+        S.pools = S.rot.concat(S.lease);
+        renderMembers(np); renderList();
+      });
+    }, 15000);
+  }
+  function stopPoll() { if (S.poll) { clearInterval(S.poll); S.poll = null; } }
+
+  /* ---------- confirm dialog ---------- */
+  function askConfirm(title, bodyHTML, goLabel, fn) {
+    $('kp-confirm-title').textContent = title;
+    DW.setHTML($('kp-confirm-body'), bodyHTML);
+    $('kp-confirm-go').textContent = goLabel;
+    S.confirmFn = fn;
+    DW.modal.open('#kp-confirm');
+  }
+
+  /* ---------- mutations ---------- */
+  function mutate(p) {
+    S.busy = true;
+    return p.then(function (res) { S.busy = false; return res; }, function (e) { S.busy = false; throw e; });
+  }
+  function reorder(p, order) {
+    // order: member key ids in the new order; rewrites positions 0..n-1 (the model has no swap call).
+    var calls = order.map(function (keyId, i) {
+      return p.kind === 'rotation'
+        ? api('POST', '/api/groups/' + encodeURIComponent(p.id) + '/members', {api_key_id: keyId, priority: i})
+        : api('PATCH', '/api/key-groups/' + encodeURIComponent(p.id) + '/members/' + encodeURIComponent(keyId), {position: i});
+    });
+    return Promise.all(calls).then(function (rs) { return rs.every(function (r) { return r.ok; }); });
+  }
+
+  DW.actions.refresh = function () {
+    var b = $('kp-refresh'); b.disabled = true;
+    return loadAll().then(function () { DW.toast('Refreshed', 'success'); }).finally(function () { b.disabled = false; });
+  };
+  DW.actions.applyFilters = function () { renderList(); syncURL(); };
+  DW.actions.openPool = function (el) { openPool(el.dataset.kind, el.dataset.id); };
+  DW.actions.toggleEdit = function () { setEditing(!S.editing); };
+  DW.actions.saveEdit = function () {
+    var p = curPool(); if (!p) return;
+    var name = $('kp-e-name').value.trim();
+    if (!name) { DW.toast('Name is required', 'error'); return; }
+    var req = p.kind === 'rotation'
+      ? api('PUT', '/api/groups/' + encodeURIComponent(p.id), {name: name, strategy: $('kp-e-strategy').value})
+      : api('PATCH', '/api/key-groups/' + encodeURIComponent(p.id), {name: name, description: $('kp-e-desc').value.trim(), rotation_strategy: $('kp-e-strategy').value});
+    return mutate(req).then(function (res) {
+      if (!res.ok) { DW.toast(errText(res, 'Could not save the pool'), 'error'); return; }
+      DW.toast('Pool updated', 'success');
+      return loadAll().then(function () { renderDrawerAll(true); });
+    });
+  };
+  DW.actions.addMember = function () {
+    var p = curPool(); if (!p) return;
+    var keyId = $('kp-add-key').value;
+    if (!keyId) { DW.toast('Select a key to add', 'error'); return; }
+    var pos = p.members.length;
+    var req = p.kind === 'rotation'
+      ? api('POST', '/api/groups/' + encodeURIComponent(p.id) + '/members', {api_key_id: keyId, priority: pos})
+      : api('POST', '/api/key-groups/' + encodeURIComponent(p.id) + '/members', {api_key_id: keyId, position: pos});
+    return mutate(req).then(function (res) {
+      if (!res.ok) { DW.toast(errText(res, 'Could not add the key'), 'error'); return; }
+      DW.toast('Key added', 'success');
+      return loadAll();
+    });
+  };
+  DW.actions.moveMember = function (el) {
+    var p = curPool(); if (!p || S.busy) return;
+    var ids = p.members.map(function (m) { return m.keyId; });
+    var i = ids.indexOf(el.dataset.key), j = i + parseInt(el.dataset.dir, 10);
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    var t = ids[i]; ids[i] = ids[j]; ids[j] = t;
+    return mutate(reorder(p, ids)).then(function (ok) {
+      if (!ok) DW.toast('Could not save the new order', 'error');
+      return loadAll();
+    });
+  };
+  DW.actions.askRemove = function (el) {
+    var p = curPool(); if (!p) return;
+    var keyId = el.dataset.key, name = el.dataset.name;
+    askConfirm('Remove key from pool', DW.html`<p>Remove <strong>${name}</strong> from <strong>${p.name}</strong>? The API key itself is kept and can be added again.</p>${p.members.length === 1 ? DW.html`<p class="kp-warn-text">This is the last key. Requests routed through this pool will fail until you add another.</p>` : ''}`, 'Remove key', function () {
+      var url = p.kind === 'rotation'
+        ? '/api/groups/' + encodeURIComponent(p.id) + '/members/' + encodeURIComponent(keyId)
+        : '/api/key-groups/' + encodeURIComponent(p.id) + '/members/' + encodeURIComponent(keyId);
+      return mutate(api('DELETE', url)).then(function (res) {
+        if (!res.ok) { DW.toast(errText(res, 'Could not remove the key'), 'error'); return; }
+        DW.toast('Key removed', 'success');
+        return loadAll();
+      });
+    });
+  };
+  DW.actions.askDelete = function () {
+    var p = curPool(); if (!p) return;
+    // impact preview: phantom tokens (and bundle entries for rotation pools) that point at this pool
+    return Promise.all([api('GET', '/api/placeholders'), p.kind === 'rotation' ? api('GET', '/api/key-suites') : Promise.resolve({ok: true, data: []})]).then(function (r) {
+      var field = p.kind === 'rotation' ? 'group_id' : 'key_group_id';
+      var phs = (r[0].ok && Array.isArray(r[0].data) ? r[0].data : []).filter(function (x) { return x[field] === p.id; });
+      var suites = r[1].ok && Array.isArray(r[1].data) ? r[1].data : [];
+      return Promise.all(suites.map(function (s) { return api('GET', '/api/key-suites/' + encodeURIComponent(s.id)); })).then(function (ds) {
+        var bundles = [], complete = r[0].ok && r[1].ok;
+        ds.forEach(function (d) {
+          if (!d.ok) { complete = false; return; }
+          var hit = (d.data.entries || []).some(function (e) { return e.group_id === p.id; });
+          if (hit) bundles.push(d.data.name);
+        });
+        var impact = DW.html`<ul class="kp-impact"><li>${phs.length} phantom token${phs.length === 1 ? '' : 's'} use this pool and will lose their key binding.</li>${p.kind === 'rotation' ? DW.html`<li>${bundles.length} key bundle${bundles.length === 1 ? '' : 's'} reference it${bundles.length ? ': ' + bundles.join(', ') : ''}.</li>` : ''}<li>${p.members.length} member key${p.members.length === 1 ? ' is' : 's are'} released; the API keys are not deleted.</li></ul>${complete ? '' : DW.html`<p class="kp-warn-text">Some usage could not be loaded, so the counts above may be incomplete.</p>`}`;
+        askConfirm('Delete pool ' + p.name, DW.html`<p>This cannot be undone.</p>${impact}`, 'Delete pool', function () {
+          var url = p.kind === 'rotation' ? '/api/groups/' + encodeURIComponent(p.id) : '/api/key-groups/' + encodeURIComponent(p.id);
+          return mutate(api('DELETE', url)).then(function (res) {
+            if (!res.ok) { DW.toast(errText(res, 'Could not delete the pool'), 'error'); return; }
+            DW.toast('Pool deleted', 'success');
+            DW.modal.close('#kp-drawer');
+            return loadAll();
+          });
+        });
+      });
+    });
+  };
+  DW.actions.confirmGo = function () {
+    var fn = S.confirmFn; S.confirmFn = null;
+    DW.modal.close('#kp-confirm');
+    if (fn) fn();
+  };
+
+  /* ---------- create ---------- */
+  function serviceOptions(kind) {
+    return S.services.map(function (s) {
+      var v = kind === 'rotation' ? s.id : s.name;
+      return DW.html`<option value="${v}">${s.display_name || s.name} (${s.name})</option>`;
+    });
+  }
+  DW.actions.openCreate = function () {
+    S.createMode = '';
+    $('kp-step-mode').hidden = false;
+    $('kp-create-form').hidden = true;
+    $('kp-create-form').reset();
+    DW.modal.open('#kp-create');
+  };
+  DW.actions.pickMode = function (el) {
+    var kind = el.dataset.mode;
+    S.createMode = kind;
+    $('kp-step-mode').hidden = true;
+    $('kp-create-form').hidden = false;
+    $('kp-create-mode').textContent = MODE[kind].label;
+    $('kp-c-desc-row').hidden = kind !== 'lease';
+    var opts = serviceOptions(kind);
+    DW.setHTML($('kp-c-service'), DW.html`<option value="">${opts.length ? 'Select a service' : 'No services configured'}</option>${opts}`);
+    $('kp-c-service-note').textContent = opts.length ? '' : 'Create a service first under Services.';
+    $('kp-c-submit').disabled = !opts.length;
+    fillStrategySelect($('kp-c-strategy'), $('kp-c-strategy-note'), kind, '');
+    $('kp-c-name').focus();
+  };
+  DW.actions.createBack = function () {
+    $('kp-step-mode').hidden = false;
+    $('kp-create-form').hidden = true;
+  };
+  DW.actions.createPool = function () {
+    var kind = S.createMode, name = $('kp-c-name').value.trim(), svc = $('kp-c-service').value;
+    if (!kind || !name || !svc) { DW.toast('Name and service are required', 'error'); return; }
+    var req = kind === 'rotation'
+      ? api('POST', '/api/groups', {name: name, service_id: svc, strategy: $('kp-c-strategy').value})
+      : api('POST', '/api/key-groups', {name: name, description: $('kp-c-desc').value.trim(), service_name: svc, rotation_strategy: $('kp-c-strategy').value});
+    $('kp-c-submit').disabled = true;
+    return mutate(req).then(function (res) {
+      $('kp-c-submit').disabled = false;
+      if (!res.ok) { DW.toast(errText(res, 'Could not create the pool'), 'error'); return; }
+      var id = res.data && res.data.id;
+      DW.toast('Pool created', 'success');
+      DW.modal.close('#kp-create');
+      return loadAll().then(function () { if (id) openPool(kind, id); });
+    });
+  };
+  // the strategy note follows the selected option
+  document.addEventListener('change', function (e) {
+    var t = e.target;
+    if (!t || (t.id !== 'kp-c-strategy' && t.id !== 'kp-e-strategy')) return;
+    var kind = t.id === 'kp-c-strategy' ? S.createMode : (curPool() || {}).kind;
+    var cur = (STRATEGIES[kind] || []).filter(function (s) { return s[0] === t.value; })[0];
+    $(t.id === 'kp-c-strategy' ? 'kp-c-strategy-note' : 'kp-e-strategy-note').textContent = cur ? cur[2] : '';
+  });
+
+  /* ---------- boot ---------- */
+  var params = new URLSearchParams(location.search);
+  $('kp-q').value = params.get('q') || '';
+  if (params.get('mode') === 'rotation' || params.get('mode') === 'lease') $('kp-f-mode').value = params.get('mode');
+  loadAll().then(function () {
+    var want = params.get('pool') || '';
+    var i = want.indexOf(':');
+    if (i > 0) {
+      var kind = want.slice(0, i), id = want.slice(i + 1);
+      if ((kind === 'rotation' || kind === 'lease') && !openPool(kind, id)) { syncURL(); }
+    }
+  });
+})();
+</script>
+{{end}}

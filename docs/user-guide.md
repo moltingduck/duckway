@@ -154,7 +154,8 @@ The admin panel uses the **same pattern across all pages**: click a row's name t
 | **Refreshable Tokens** | OAuth-style keys with refresh | Name, token endpoint, subscription info, agent display name |
 | **Clients** | Registered agent machines | Name, status, canary, last seen — plus expandable phantom + canary tables |
 | **Phantom Tokens** | Bindings between client + API key | Client, API key, service, env name, key path, approval, ACL |
-| **Key Groups** | Pools of keys (round-robin / least-used / failover) | Name, strategy, members |
+| **Key pools** | Pools of keys: per-request rotation (round-robin / least-used / failover) or quota-aware lease | Mode, service, strategy, ordered members, quota bars |
+| **Key bundles** | One key or pool per service, assigned to clients together | Entries (editable inline), assigned clients, generated phantom tokens |
 | **Approvals** | Pending requests | Approve / reject |
 | **Notifications** | Telegram / Discord channels | Type, name, config + Test button |
 | **Canary Tokens** | Honeypot settings | Email, types enabled |
@@ -518,9 +519,9 @@ Duckway refreshes the access token automatically before expiry (background job r
 
 ### Delete a refreshable token
 
-Use **Refreshable Tokens** → **Delete**. Duckway shows every affected Key Suite, client phantom token, and Control Channel before it deletes anything.
+Use **Refreshable Tokens** → **Delete**. Duckway shows every affected Key bundle, client phantom token, and Control Channel before it deletes anything.
 
-When you confirm, Duckway removes Key Suite entries that pointed at the token and unassigns the affected client phantom tokens. Control Channels are not deleted; they are disabled and marked in red until you edit the Control Channel and assign a replacement bot token.
+When you confirm, Duckway removes Key bundle entries that pointed at the token and unassigns the affected client phantom tokens. Control Channels are not deleted; they are disabled and marked in red until you edit the Control Channel and assign a replacement bot token.
 
 Before uploading, click **Test** in the upload modal to validate the pasted token format without storing it or calling the provider refresh endpoint. After upload, use the **Refresh** button in the token list or **Refresh Now** in token details to force an immediate refresh.
 
