@@ -1,636 +1,630 @@
 {{define "content"}}
 <div class="page-header">
-  <h1>Request Log</h1>
+  <div>
+    <h1>Request log</h1>
+    <p class="text-muted text-sm">Every proxied request. Filters run on the server, so results are not limited to the latest 500.</p>
+  </div>
+  <button type="button" class="btn" id="live-tail" aria-pressed="true" data-action="toggleLive"><span class="lg-dot" aria-hidden="true"></span><span id="live-label">Live tail on</span></button>
 </div>
 
-<!-- Detail capture controls -->
-<div class="card mb-1">
-  <div class="flex-between" style="align-items:flex-start">
+<div class="card lg-filters">
+  <div class="lg-row">
+    <div class="lg-seg" role="group" aria-label="Time range">
+      <button type="button" data-action="pickRange" data-range="15m" aria-pressed="false">15m</button>
+      <button type="button" data-action="pickRange" data-range="1h" aria-pressed="true">1h</button>
+      <button type="button" data-action="pickRange" data-range="24h" aria-pressed="false">24h</button>
+      <button type="button" data-action="pickRange" data-range="7d" aria-pressed="false">7d</button>
+      <button type="button" data-action="pickRange" data-range="all" aria-pressed="false">All</button>
+      <button type="button" data-action="pickRange" data-range="custom" aria-pressed="false">Custom…</button>
+    </div>
+    <label class="lg-search"><span class="sr-only">Search path, client or service</span><input type="text" id="f-q" class="mono" maxlength="200" autocomplete="off" placeholder="Search path, client or service" data-on-input="onSearchInput"></label>
+    <select id="f-service" aria-label="Service" data-on-change="onFilterChange"><option value="">All services</option></select>
+    <select id="f-credential" aria-label="Credential" data-on-change="onFilterChange"><option value="">All credentials</option></select>
+    <select id="f-client" aria-label="Client" data-on-change="onFilterChange"><option value="">All clients</option></select>
+  </div>
+  <div class="lg-row" id="lg-custom" hidden>
+    <label class="text-sm text-muted" for="f-since">From</label>
+    <input type="datetime-local" id="f-since" class="lg-dt" data-on-change="onCustomChange">
+    <label class="text-sm text-muted" for="f-until">To</label>
+    <input type="datetime-local" id="f-until" class="lg-dt" data-on-change="onCustomChange">
+  </div>
+  <div class="lg-row">
+    <span class="text-sm text-muted">Status</span>
+    <button type="button" class="lg-chip" data-action="toggleStatus" data-status="2xx" aria-pressed="true">2xx</button>
+    <button type="button" class="lg-chip" data-action="toggleStatus" data-status="3xx" aria-pressed="true">3xx</button>
+    <button type="button" class="lg-chip" data-action="toggleStatus" data-status="4xx" aria-pressed="true">4xx</button>
+    <button type="button" class="lg-chip" data-action="toggleStatus" data-status="5xx" aria-pressed="true">5xx</button>
+    <button type="button" class="lg-chip" id="chip-held" data-action="toggleFlag" data-flag="held" aria-pressed="false" title="Only requests made with an approval-gated phantom token">Approval-gated only</button>
+    <button type="button" class="lg-chip" id="chip-acl" data-action="toggleFlag" data-flag="acl" aria-pressed="false" title="Only HTTP 403 responses (the gateway does not log requests it rejects before forwarding)">403 only</button>
+    <span class="lg-capline text-sm text-muted">Body capture: <strong id="capture-state">…</strong> · <a href="#capture-panel" data-action="openCapture">Capture settings…</a></span>
+  </div>
+</div>
+
+<section class="card" id="capture-panel" hidden aria-labelledby="capture-h">
+  <div class="flex-between lg-capture-head">
     <div>
-      <strong>Record request &amp; response details</strong>
-      <div class="text-sm text-muted mt-1" style="max-width:60ch">
-        When ON, full headers and bodies (capped at 64KB each, text-only)
-        are stored alongside each request — click a row below to inspect.
+      <strong id="capture-h">Record request &amp; response details</strong>
+      <div class="text-sm text-muted mt-1 lg-measure">
+        When ON, full headers and bodies (capped at 64KB each, text-only) are stored
+        alongside each request, so you can inspect them in the detail panel.
         When OFF, previously stored details are dropped immediately.
         Loan-proxy traffic (e.g. github) is not captured because the gateway
         isn't in the data path.
       </div>
     </div>
-    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;white-space:nowrap">
+    <label class="lg-switch">
       <input type="checkbox" id="capture-toggle" data-on-change="onCaptureToggle">
       <span id="capture-label" class="badge badge-gray">OFF</span>
     </label>
   </div>
-  <div id="capture-clients-row" class="form-group mt-1" style="display:none">
-    <label class="text-sm">Only record for selected clients <span class="text-muted">(empty = all clients)</span></label>
-    <div id="capture-clients-list" style="display:flex;flex-wrap:wrap;gap:0.375rem"></div>
+  <div id="capture-clients-row" class="form-group mt-1" hidden>
+    <span class="text-sm text-muted">Only record for selected clients (empty = all clients)</span>
+    <div id="capture-clients-list" class="lg-chips"></div>
+  </div>
+</section>
+
+<div class="lg-split">
+  <section class="card lg-list" aria-label="Requests">
+    <div class="lg-listhead">
+      <span id="log-count" class="text-muted text-sm" role="status" aria-live="polite"></span>
+      <span class="sr-only" id="live-new-announce" role="status" aria-live="polite"></span>
+      <span id="live-new" class="live-new text-sm" hidden><span id="live-new-text"></span> <button type="button" class="btn btn-sm" data-action="applyLiveNew">Show</button></span>
+    </div>
+    <div class="table-wrap">
+      <table class="lg-table">
+        <thead>
+          <tr><th>Time</th><th>Client</th><th>Service · credential</th><th>Request</th><th>Status</th><th class="text-right">Latency</th></tr>
+        </thead>
+        <tbody id="log-body"></tbody>
+      </table>
+    </div>
+    <div class="lg-pager">
+      <span id="log-showing" class="text-muted text-sm"></span>
+      <span class="lg-pager-btns">
+        <button type="button" class="btn btn-sm" id="pg-newer" data-action="pageNewer" disabled>Newer</button>
+        <button type="button" class="btn btn-sm" id="pg-older" data-action="pageOlder" disabled>Older</button>
+      </span>
+    </div>
+  </section>
+
+  <div class="lg-scrim" id="lg-scrim" data-action="closeDetail" hidden></div>
+  <aside class="card lg-detail" id="log-detail" aria-labelledby="det-h" tabindex="-1">
+    <div class="lg-dethead">
+      <h2 id="det-h" tabindex="-1">Request detail</h2>
+      <span id="det-status"></span>
+      <button type="button" class="btn btn-sm" id="det-close" data-action="closeDetail" aria-label="Close detail">Close</button>
+    </div>
+    <div id="det-body"><p class="text-muted text-sm">Select a request to inspect it.</p></div>
+  </aside>
+</div>
+
+<div id="capture-off-modal" class="modal-backdrop lg-modal" hidden>
+  <div class="modal">
+    <h2>Disable detail capture?</h2>
+    <p class="text-sm">This drops all previously stored request and response headers and bodies.</p>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="captureOffCancel">Cancel</button>
+      <button type="button" class="btn btn-danger" data-action="captureOffConfirm">Disable and drop</button>
+    </div>
   </div>
 </div>
 
-<div class="card">
-  <div class="flex gap-md mb-1" style="flex-wrap:wrap">
-    <div class="form-group" style="flex:1;min-width:150px">
-      <label>Service</label>
-      <select id="f-service" data-on-change="onFilterChange">
-        <option value="">All services</option>
-      </select>
-    </div>
-    <div class="form-group" style="flex:1;min-width:150px">
-      <label>Client</label>
-      <select id="f-client" data-on-change="onFilterChange">
-        <option value="">All clients</option>
-      </select>
-    </div>
-    <div class="form-group" style="flex:1;min-width:120px">
-      <label>Key</label>
-      <select id="f-key" data-on-change="onFilterChange">
-        <option value="">All keys</option>
-      </select>
-    </div>
-    <div class="form-group" style="flex:1;min-width:100px">
-      <label>Method</label>
-      <select id="f-method" data-on-change="onFilterChange">
-        <option value="">All</option>
-        <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
-      </select>
-    </div>
-    <div class="form-group" style="flex:1;min-width:100px">
-      <label>Status</label>
-      <select id="f-status" data-on-change="onFilterChange">
-        <option value="">All</option>
-        <option value="ok">2xx OK</option>
-        <option value="err">4xx/5xx Error</option>
-      </select>
-    </div>
-    <div class="form-group" style="flex:1;min-width:120px">
-      <label>Search path</label>
-      <input type="text" id="f-path" placeholder="/v1/chat/..." data-on-input="onFilterChange">
-    </div>
-  </div>
-  <div class="flex-between mb-1">
-    <span id="log-count" class="text-muted text-sm"></span>
-    <div class="flex gap-sm" style="align-items:center">
-      <label class="text-sm text-muted" for="f-perpage">Per page</label>
-      <select id="f-perpage" data-on-change="onPerPageChange" style="width:auto">
-        <option value="15">15</option>
-        <option value="30">30</option>
-        <option value="50">50</option>
-        <option value="100">100</option>
-      </select>
-      <label class="text-sm" for="live-tail" style="display:inline-flex;align-items:center;gap:0.35rem;cursor:pointer">
-        <input type="checkbox" id="live-tail" checked data-on-change="onLiveTailToggle"> Live tail
-      </label>
-      <span class="sr-only" id="live-new-announce" role="status" aria-live="polite"></span><span id="live-new" class="live-new text-sm" hidden aria-live="off"><span id="live-new-text"></span> <button class="btn btn-sm" data-action="applyLiveNew">Show</button></span>
-      <button class="btn btn-sm" data-action="loadLogs">Refresh</button>
-    </div>
-  </div>
-
-  <div class="table-wrap">
-  <table>
-    <thead>
-      <tr>
-        <th>Time</th>
-        <th>Client</th>
-        <th>Service</th>
-        <th>Key</th>
-        <th>Method</th>
-        <th>Path</th>
-        <th>Status</th>
-      </tr>
-    </thead>
-    <tbody id="log-body"></tbody>
-  </table>
-  </div>
-  <div id="log-pager" class="pagination" style="display:none"></div>
+<div id="phantom-detail-modal" class="modal-backdrop lg-modal" hidden>
+  <div class="modal"><div id="phantom-detail-body"></div></div>
 </div>
 
 <script nonce="{{$.CSPNonce}}">
-DW.actions.onCaptureToggle = function() { onCaptureToggle(); };
-DW.actions.onFilterChange = function() { onFilterChange(); };
-DW.actions.onPerPageChange = function() { onPerPageChange(); };
-DW.actions.loadLogs = function() { loadLogs(); };
-DW.actions.onLiveTailToggle = function(el) {
-  if (el.checked && (newCount > 0 || newUnknown) && canAutoApply()) applyLiveNew();
-};
-DW.actions.applyLiveNew = function() { applyLiveNew(); };
+(function() {
+'use strict';
+var DEFAULT_RANGE = '1h';
+var STATUSES = ['2xx', '3xx', '4xx', '5xx'];
+var RANGE_LABEL = {'15m': 'the last 15m', '1h': 'the last 1h', '24h': 'the last 24h', '7d': 'the last 7d', 'all': 'all time', 'custom': 'the selected range'};
 
-var allLogs = [];
-var currentPage = 1;
-var perPage = 15;
-
-var lastMaxId = 0;   // highest log id currently loaded
-var newCount = 0;    // queued entries not yet shown
+var S = newState();
+var data = null;          // last page response
+var selectedId = 0;
+var opener = null;
+var loadSeq = 0, detailSeq = 0;
+var loading = false;
 var newUnknown = false;
+var liveOn = true;
+var searchTimer = null;
+var facets = {clients: [], services: [], credentials: []};
 
-function liveTailOn() { return document.getElementById('live-tail').checked; }
-function canAutoApply() { return liveTailOn() && !DW.live.modalOpen() && !document.hidden && currentPage === 1; }
+function newState() {
+  return {range: DEFAULT_RANGE, since: '', until: '', q: '', client: '', service: '', credential: '',
+          status: [], held: false, acl: false, before: 0, after: 0};
+}
+function $(id) { return document.getElementById(id); }
+
+/* ---------- URL <-> state ---------- */
+function readURL() {
+  var p = new URLSearchParams(window.location.search);
+  var s = newState();
+  var r = p.get('range');
+  if (p.get('since') || p.get('until')) { s.range = 'custom'; s.since = p.get('since') || ''; s.until = p.get('until') || ''; }
+  else if (r === 'all' || ['15m', '1h', '24h', '7d'].indexOf(r) >= 0) s.range = r;
+  s.q = (p.get('q') || '').slice(0, 200);
+  s.client = p.get('client') || '';
+  s.service = p.get('service') || '';
+  s.credential = p.get('credential') || '';
+  var st = (p.get('status') || '').split(',').filter(function(c) { return STATUSES.indexOf(c) >= 0; });
+  s.status = st.length && st.length < 4 ? st : [];
+  s.held = p.get('held') === '1';
+  s.acl = p.get('acl_denied') === '1';
+  var b = parseInt(p.get('before_id'), 10), a = parseInt(p.get('after_id'), 10);
+  if (b > 0) s.before = b; else if (a > 0) s.after = a;
+  return s;
+}
+function toParams(s, forAPI) {
+  var p = new URLSearchParams();
+  if (s.range === 'custom') {
+    if (s.since) p.set('since', s.since);
+    if (s.until) p.set('until', s.until);
+  } else if (s.range !== 'all' && (forAPI || s.range !== DEFAULT_RANGE)) p.set('range', s.range);
+  else if (!forAPI && s.range === 'all') p.set('range', 'all');
+  if (s.q) p.set('q', s.q);
+  if (s.client) p.set('client', s.client);
+  if (s.service) p.set('service', s.service);
+  if (s.credential) p.set('credential', s.credential);
+  if (s.status.length) p.set('status', s.status.join(','));
+  if (s.held) p.set('held', '1');
+  if (s.acl) p.set('acl_denied', '1');
+  if (s.before) p.set('before_id', String(s.before));
+  else if (s.after) p.set('after_id', String(s.after));
+  if (forAPI) p.set('limit', '50');
+  return p;
+}
+function writeURL(replace) {
+  var qs = toParams(S, false).toString();
+  var url = window.location.pathname + (qs ? '?' + qs : '');
+  if (url === window.location.pathname + window.location.search) return;
+  if (replace) history.replaceState(null, '', url); else history.pushState(null, '', url);
+}
+
+/* ---------- controls <-> state ---------- */
+function syncControls() {
+  document.querySelectorAll('[data-action="pickRange"]').forEach(function(b) {
+    b.setAttribute('aria-pressed', String(b.dataset.range === S.range));
+  });
+  $('lg-custom').hidden = S.range !== 'custom';
+  $('f-since').value = S.since ? toLocalInput(S.since) : '';
+  $('f-until').value = S.until ? toLocalInput(S.until) : '';
+  $('f-q').value = S.q;
+  setSelect('f-service', S.service, 'All services');
+  setSelect('f-credential', S.credential, 'All credentials');
+  setClientSelect();
+  document.querySelectorAll('[data-action="toggleStatus"]').forEach(function(b) {
+    b.setAttribute('aria-pressed', String(!S.status.length || S.status.indexOf(b.dataset.status) >= 0));
+  });
+  $('chip-held').setAttribute('aria-pressed', String(S.held));
+  $('chip-acl').setAttribute('aria-pressed', String(S.acl));
+}
+function toLocalInput(iso) {
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  var z = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return z.toISOString().slice(0, 16);
+}
+function fromLocalInput(v) {
+  if (!v) return '';
+  var d = new Date(v);
+  return isNaN(d.getTime()) ? '' : d.toISOString().replace(/\.\d+Z$/, 'Z');
+}
+function setSelect(id, value, allLabel) {
+  var sel = $(id);
+  var list = id === 'f-service' ? facets.services : facets.credentials;
+  var names = list.slice();
+  if (value && names.indexOf(value) < 0) names.push(value);
+  var opts = [DW.html`<option value="">${allLabel}</option>`].concat(names.map(function(n) { return DW.html`<option value="${n}">${n}</option>`; }));
+  DW.setHTML(sel, DW.html`${opts}`);
+  sel.value = value;
+}
+function setClientSelect() {
+  var sel = $('f-client');
+  var list = facets.clients.slice();
+  if (S.client && !list.some(function(c) { return c.id === S.client; })) list.push({id: S.client, name: S.client});
+  var opts = [DW.html`<option value="">All clients</option>`].concat(list.map(function(c) { return DW.html`<option value="${c.id}">${c.name}</option>`; }));
+  DW.setHTML(sel, DW.html`${opts}`);
+  sel.value = S.client;
+}
+function readControls() {
+  S.q = $('f-q').value.trim();
+  S.service = $('f-service').value;
+  S.credential = $('f-credential').value;
+  S.client = $('f-client').value;
+}
+function resetCursor() { S.before = 0; S.after = 0; }
+
+/* ---------- actions ---------- */
+DW.actions.toggleLive = function() {
+  liveOn = !liveOn;
+  var b = $('live-tail');
+  b.setAttribute('aria-pressed', String(liveOn));
+  $('live-label').textContent = liveOn ? 'Live tail on' : 'Live tail off';
+  b.classList.toggle('is-off', !liveOn);
+  if (liveOn && newUnknown && canAutoApply()) load(true);
+};
+DW.actions.pickRange = function(el) {
+  var r = el.dataset.range;
+  if (r === 'custom') {
+    S.range = 'custom';
+    if (!S.since) { S.since = new Date(Date.now() - 3600e3).toISOString().replace(/\.\d+Z$/, 'Z'); }
+    $('lg-custom').hidden = false;
+    S.until = S.until || '';
+  } else { S.range = r; S.since = ''; S.until = ''; }
+  resetCursor();
+  syncControls(); writeURL(false); load(false);
+};
+DW.actions.onCustomChange = function() {
+  S.since = fromLocalInput($('f-since').value);
+  S.until = fromLocalInput($('f-until').value);
+  if (!S.since && !S.until) { S.range = DEFAULT_RANGE; syncControls(); }
+  if (S.since && S.until && S.since >= S.until) { DW.toast('"From" must be before "To"', 'error'); return; }
+  resetCursor(); writeURL(false); load(false);
+};
+DW.actions.onFilterChange = function() { readControls(); resetCursor(); writeURL(false); load(false); };
+DW.actions.onSearchInput = function() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(function() { readControls(); resetCursor(); writeURL(true); load(false); }, 300);
+};
+DW.actions.toggleStatus = function(el) {
+  var c = el.dataset.status;
+  var cur = S.status.length ? S.status.slice() : STATUSES.slice();
+  var i = cur.indexOf(c);
+  if (i >= 0) cur.splice(i, 1); else cur.push(c);
+  cur = STATUSES.filter(function(x) { return cur.indexOf(x) >= 0; });
+  S.status = (cur.length === 0 || cur.length === 4) ? [] : cur;
+  resetCursor(); syncControls(); writeURL(false); load(false);
+};
+DW.actions.toggleFlag = function(el) {
+  if (el.dataset.flag === 'held') S.held = !S.held; else S.acl = !S.acl;
+  resetCursor(); syncControls(); writeURL(false); load(false);
+};
+DW.actions.pageOlder = function() {
+  if (!data || data.next_before_id == null) return;
+  S.before = data.next_before_id; S.after = 0;
+  writeURL(false); load(false); scrollTop();
+};
+DW.actions.pageNewer = function() {
+  if (!data || !data.items.length) return;
+  S.after = data.items[0].id; S.before = 0;
+  writeURL(false); load(false); scrollTop();
+};
+function scrollTop() { $('log-body').scrollIntoView({block: 'nearest'}); }
+DW.actions.applyLiveNew = function() { if (isNewest()) load(true); else { resetCursor(); writeURL(false); load(false); } };
+DW.actions.openCapture = function() {
+  var p = $('capture-panel');
+  p.hidden = !p.hidden;
+  if (!p.hidden) { p.scrollIntoView({block: 'nearest'}); var t = $('capture-toggle'); if (t) t.focus(); }
+};
+window.addEventListener('popstate', function() {
+  S = readURL(); syncControls(); load(false);
+});
+
+/* ---------- loading ---------- */
+function isNewest() { return !S.before && !S.after; }
+function canAutoApply() { return liveOn && isNewest() && !panelOpen() && !DW.live.modalOpen() && !document.hidden; }
 function updateNewIndicator() {
-  var box = document.getElementById('live-new');
-  var any = newCount > 0 || newUnknown;
-  // Announce only the first appearance, not every count change.
-  if (any && box.hidden) document.getElementById('live-new-announce').textContent = 'New log entries available';
-  if (!any) document.getElementById('live-new-announce').textContent = '';
+  var box = $('live-new');
+  var any = newUnknown;
+  if (any && box.hidden) $('live-new-announce').textContent = 'New log entries available';
+  if (!any) $('live-new-announce').textContent = '';
   box.hidden = !any;
-  document.getElementById('live-new-text').textContent = newCount > 0 ? newCount + ' new' : 'New entries';
+  $('live-new-text').textContent = 'New entries';
 }
-function applyLiveNew() { loadLogs(true); }
-
-// Live: with tail on (and the list on page 1, no modal open, tab visible)
-// refetch; otherwise queue and show an "N new" indicator.
-DW.live.on('logs', function(d) {
-  // Synthetic events (polling fallback, reconnect catch-up) carry no count.
-  // Refresh silently when the tail is live on page 1; otherwise record that
-  // something may be new so visibilitychange / the modal-close check applies
-  // it (never drop it).
-  if (d && d.synthetic) {
-    if (canAutoApply()) loadLogs(true);
-    else { newUnknown = true; updateNewIndicator(); }
-    return;
-  }
-  if (canAutoApply()) { loadLogs(true); return; }
-  var maxId = d && typeof d.max_id === 'number' ? d.max_id : 0;
-  if (maxId > lastMaxId) newCount = maxId - lastMaxId; else newUnknown = true;
-  updateNewIndicator();
-});
-document.addEventListener('visibilitychange', function() {
-  if (!document.hidden && (newCount > 0 || newUnknown) && canAutoApply()) loadLogs(true);
-});
-// DW.modal has no close event, so apply entries queued while the detail modal
-// was open shortly after it closes (tail on, page 1). Cheap: counters only.
-var queuedTimer = null;
-var lastLogsFailure = 0;
-function startQueuedTimer() {
-  if (queuedTimer) return;
-  queuedTimer = setInterval(function() {
-    // Back off after a failed fetch so a failing /api/logs is not hammered.
-    if (Date.now() - lastLogsFailure < 10000) return;
-    if ((newCount > 0 || newUnknown) && !logsLoading && canAutoApply()) loadLogs(true);
-  }, 1000);
-}
-window.addEventListener('pagehide', function() { clearInterval(queuedTimer); queuedTimer = null; });
-// Back/forward cache restore: pagehide cleared the timer.
-window.addEventListener('pageshow', function(e) { if (e.persisted) startQueuedTimer(); });
-startQueuedTimer();
-
-var logsSeq = 0;
-var logsLoading = false;
-function hasQueued() { return (newCount > 0 || newUnknown) && !logsLoading; }
-function loadLogs(live) {
-  var seq = ++logsSeq;
-  logsLoading = true;
-  fetch('/api/logs', {credentials:'same-origin'})
+function load(live) {
+  var seq = ++loadSeq;
+  loading = true;
+  var url = '/api/logs?' + toParams(S, true).toString();
+  return fetch(url, {credentials: 'same-origin'})
     .then(function(r) {
-      if (r.status === 401) { window.location = '/admin/login'; return; }
-      if (!r.ok) throw new Error('logs ' + r.status);
-      return r.json();
-    })
-    .then(function(data) {
-      if (seq === logsSeq) logsLoading = false;
-      if (Array.isArray(data)) lastLogsFailure = 0;
-      if (!data || seq !== logsSeq) return; // out-of-order response
-      allLogs = data;
-      if (!live) currentPage = 1;
-      lastMaxId = data.reduce(function(m, l) { return l.id > m ? l.id : m; }, 0);
-      newCount = 0; newUnknown = false;
-      updateNewIndicator();
-      buildFilterOptions();
-      applyFilters();
-    })
-    .catch(function() { lastLogsFailure = Date.now(); if (seq === logsSeq) logsLoading = false; });
-}
-
-function onPerPageChange() {
-  perPage = parseInt(document.getElementById('f-perpage').value, 10) || 15;
-  currentPage = 1;
-  applyFilters();
-}
-
-// Any filter change resets pagination back to page 1.
-function onFilterChange() {
-  currentPage = 1;
-  applyFilters();
-  if (hasQueued()) loadLogs(true);
-}
-
-function goToPage(p) {
-  currentPage = p;
-  applyFilters();
-  if (p === 1 && hasQueued()) loadLogs(true);
-  // Scroll the table back to the top so the user sees the new page from row 1
-  document.getElementById('log-body').scrollIntoView({behavior:'smooth', block:'start'});
-}
-
-function buildFilterOptions() {
-  var services = {}, clients = {}, keys = {};
-  allLogs.forEach(function(l) {
-    services[l.service_name] = true;
-    if (l.client_name) clients[l.client_name] = true;
-    if (l.env_name) keys[l.env_name] = true;
-  });
-
-  fillSelect('f-service', services, 'All services');
-  fillSelect('f-client', clients, 'All clients');
-  fillSelect('f-key', keys, 'All keys');
-}
-
-function fillSelect(id, obj, allLabel) {
-  var sel = document.getElementById(id);
-  var current = sel.value;
-  // Always keep the selected value available, even if no loaded row has it.
-  if (current && !Object.prototype.hasOwnProperty.call(obj, current)) obj[current] = true;
-  var wanted = Object.keys(obj).sort();
-  var have = [];
-  for (var i = 1; i < sel.options.length; i++) have.push(sel.options[i].value);
-  if (have.length === wanted.length && have.every(function(v, i) { return v === wanted[i]; })) return; // unchanged
-  var first = document.createElement('option');
-  first.value = '';
-  first.textContent = allLabel;
-  sel.replaceChildren(first);
-  Object.keys(obj).sort().forEach(function(k) {
-    var opt = document.createElement('option');
-    opt.value = k;
-    opt.textContent = k;
-    if (k === current) opt.selected = true;
-    sel.appendChild(opt);
-  });
-}
-
-function applyFilters() {
-  var fService = document.getElementById('f-service').value;
-  var fClient = document.getElementById('f-client').value;
-  var fKey = document.getElementById('f-key').value;
-  var fMethod = document.getElementById('f-method').value;
-  var fStatus = document.getElementById('f-status').value;
-  var fPath = document.getElementById('f-path').value.toLowerCase();
-
-  var filtered = allLogs.filter(function(l) {
-    if (fService && l.service_name !== fService) return false;
-    if (fClient && l.client_name !== fClient) return false;
-    if (fKey && l.env_name !== fKey) return false;
-    if (fMethod && l.method !== fMethod) return false;
-    if (fStatus === 'ok' && l.status_code >= 400) return false;
-    if (fStatus === 'err' && l.status_code < 400) return false;
-    if (fPath && l.path.toLowerCase().indexOf(fPath) < 0) return false;
-    return true;
-  });
-
-  // Clamp current page to a valid range for the new filtered set
-  var totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
-  if (currentPage > totalPages) currentPage = totalPages;
-  if (currentPage < 1) currentPage = 1;
-
-  var start = (currentPage - 1) * perPage;
-  var end = Math.min(start + perPage, filtered.length);
-  var page = filtered.slice(start, end);
-
-  document.getElementById('log-count').textContent =
-    filtered.length === 0
-      ? '0 of ' + allLogs.length + ' requests'
-      : 'Showing ' + (start + 1) + '–' + end + ' of ' + filtered.length + ' (filtered from ' + allLogs.length + ')';
-
-  var tbody = document.getElementById('log-body');
-  tbody.replaceChildren();
-
-  if (filtered.length === 0) {
-    DW.setHTML(tbody, DW.raw('<tr><td colspan="7" class="text-muted">No matching requests.</td></tr>'));
-    logRenderPager(filtered.length, totalPages);
-    return;
-  }
-
-  page.forEach(function(l) {
-    var tr = document.createElement('tr');
-    tr.style.cursor = 'pointer';
-    tr.title = 'Click to view details (only present if capture was ON when this request ran)';
-    tr.addEventListener('click', function() { openLogDetail(l); });
-    var statusBadge = '';
-    if (l.status_code) {
-      var cls = l.status_code < 400 ? 'badge-green' : 'badge-red';
-      statusBadge = DW.html`<span class="badge ${cls}">${l.status_code}</span>`;
-    }
-    var dash = DW.raw('<span class="text-muted">—</span>');
-    DW.setHTML(tr, DW.html`<td class="text-muted text-sm" style="white-space:nowrap">${formatTime(l.created_at)}</td><td>${l.client_name || dash}</td><td><span class="badge badge-blue">${l.service_name}</span></td><td class="text-sm">${l.env_name || dash}</td><td><span class="badge badge-blue">${l.method}</span></td><td class="mono text-sm">${l.path}</td><td>${statusBadge}</td>`);
-    tbody.appendChild(tr);
-  });
-
-  logRenderPager(filtered.length, totalPages);
-}
-
-// Render Prev / [pages] / Next pagination controls.
-function logRenderPager(filteredCount, totalPages) {
-  var pager = document.getElementById('log-pager');
-  if (totalPages <= 1) {
-    pager.style.display = 'none';
-    pager.replaceChildren();
-    return;
-  }
-  pager.style.display = '';
-  pager.replaceChildren();
-
-  function makeBtn(label, page, opts) {
-    opts = opts || {};
-    var b = document.createElement('button');
-    b.className = 'btn btn-sm' + (opts.active ? ' btn-primary' : '');
-    b.textContent = label;
-    if (opts.disabled) {
-      b.disabled = true;
-    } else {
-      b.addEventListener('click', function() { goToPage(page); });
-    }
-    return b;
-  }
-
-  pager.appendChild(makeBtn('‹ Prev', currentPage - 1, {disabled: currentPage <= 1}));
-
-  // Page-number window: always show 1, last, current ±2; ellipsis for gaps.
-  var pages = [];
-  var add = function(p) { if (p >= 1 && p <= totalPages && pages.indexOf(p) === -1) pages.push(p); };
-  add(1);
-  for (var i = currentPage - 2; i <= currentPage + 2; i++) add(i);
-  add(totalPages);
-  pages.sort(function(a, b) { return a - b; });
-
-  var prev = 0;
-  pages.forEach(function(p) {
-    if (p - prev > 1) {
-      var span = document.createElement('span');
-      span.className = 'text-muted';
-      span.style.padding = '0 0.25rem';
-      span.textContent = '…';
-      pager.appendChild(span);
-    }
-    pager.appendChild(makeBtn(String(p), p, {active: p === currentPage}));
-    prev = p;
-  });
-
-  pager.appendChild(makeBtn('Next ›', currentPage + 1, {disabled: currentPage >= totalPages}));
-}
-
-function formatTime(ts) {
-  if (!ts) return '';
-  // SQLite format: 2026-04-14 03:32:06
-  var parts = ts.split(' ');
-  if (parts.length === 2) {
-    return DW.html`<span class="text-muted">${parts[0]}</span> ${parts[1]}`;
-  }
-  return ts;
-}
-
-// === Detail capture toggle + per-client filter ===
-
-var allClients = [];
-var captureClientIds = []; // selected client IDs (empty = all)
-
-function loadCaptureSettings() {
-  fetch('/api/clients', {credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(cs) {
-      allClients = cs || [];
-      return fetch('/api/settings', {credentials:'same-origin'});
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(s) {
-      var enabled = s.request_log_capture_enabled === '1';
-      try {
-        captureClientIds = JSON.parse(s.request_log_capture_clients || '[]');
-        if (!Array.isArray(captureClientIds)) captureClientIds = [];
-      } catch(e) { captureClientIds = []; }
-      document.getElementById('capture-toggle').checked = enabled;
-      updateCaptureLabel(enabled);
-      document.getElementById('capture-clients-row').style.display = enabled ? '' : 'none';
-      renderCaptureClientChips();
-    });
-}
-
-function updateCaptureLabel(enabled) {
-  var span = document.getElementById('capture-label');
-  span.textContent = enabled ? 'ON' : 'OFF';
-  span.className = enabled ? 'badge badge-green' : 'badge badge-gray';
-}
-
-function renderCaptureClientChips() {
-  var box = document.getElementById('capture-clients-list');
-  box.replaceChildren();
-  allClients.forEach(function(c) {
-    var on = captureClientIds.indexOf(c.id) >= 0;
-    var chip = document.createElement('span');
-    chip.className = 'badge ' + (on ? 'badge-blue' : 'badge-gray');
-    chip.style.cssText = 'cursor:pointer;padding:0.25rem 0.5rem';
-    chip.textContent = c.name;
-    chip.addEventListener('click', function() {
-      var i = captureClientIds.indexOf(c.id);
-      if (i >= 0) captureClientIds.splice(i, 1);
-      else captureClientIds.push(c.id);
-      saveCaptureSettings();
-    });
-    box.appendChild(chip);
-  });
-}
-
-// saveCaptureSettings POSTs to the atomic /api/logs/capture endpoint that
-// updates the toggle + client filter + (when disabling) drops detail rows
-// in a single transaction. Avoids the race window we'd have if we updated
-// settings and dropped details in two separate calls.
-function saveCaptureSettings() {
-  var enabled = document.getElementById('capture-toggle').checked;
-  return fetch('/api/logs/capture', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({enabled: enabled, clients: captureClientIds}),
-    credentials: 'same-origin'
-  })
-  .then(function() { renderCaptureClientChips(); });
-}
-
-function onCaptureToggle() {
-  var enabled = document.getElementById('capture-toggle').checked;
-
-  if (!enabled) {
-    if (!confirm('Disable detail capture? This drops all previously stored request/response bodies.')) {
-      // user cancelled — flip back
-      document.getElementById('capture-toggle').checked = true;
-      updateCaptureLabel(true);
-      document.getElementById('capture-clients-row').style.display = '';
-      return;
-    }
-  }
-
-  updateCaptureLabel(enabled);
-  document.getElementById('capture-clients-row').style.display = enabled ? '' : 'none';
-
-  saveCaptureSettings().then(function() {
-    showToast(enabled ? 'Detail recording enabled' : 'Detail recording disabled, stored bodies dropped', 'success');
-  });
-}
-
-// === Detail modal ===
-
-// openLogDetail always opens the detail modal — the metadata block
-// (client, service, env, phantom token, time, status) is always available.
-// If capture was on for this request, the modal also shows headers + bodies;
-// otherwise that section says "no details recorded".
-function openLogDetail(l) {
-  // The list says whether details were captured; skip the request (which
-  // would 404 and log a console error) when they were not.
-  if (l.has_detail === false) { renderLogDetail(l, null); return; }
-  fetch('/api/logs/' + l.id + '/detail', {credentials:'same-origin'})
-    .then(function(r) {
-      if (r.status === 404) return null; // expected when capture was off
+      if (r.status === 401) { window.location = '/admin/login'; return null; }
+      if (r.status === 400) return r.json().then(function(e) { throw new Error((e && e.error) || 'invalid filter'); });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     })
     .then(function(d) {
-      if (d && d.error) d = null; // treat errors the same as "no details"
-      renderLogDetail(l, d);
+      if (!d || seq !== loadSeq) return;
+      loading = false;
+      data = d;
+      newUnknown = false; updateNewIndicator();
+      render();
+    })
+    .catch(function(err) {
+      if (seq !== loadSeq) return;
+      loading = false;
+      DW.setHTML($('log-body'), DW.html`<tr><td colspan="6" class="text-muted">Could not load requests (${err.message}). <button type="button" class="btn btn-sm" data-action="retryLoad">Retry</button></td></tr>`);
+      $('log-count').textContent = '';
     });
 }
+DW.actions.retryLoad = function() { load(false); };
 
-function ensureModal(id, maxWidth, extraStyle, bodyId) {
-  var modal = document.getElementById(id);
-  if (!modal) {
-    modal = document.createElement('div');
-    modal.id = id;
-    modal.className = 'modal-backdrop';
-    modal.style.display = 'none';
-    var dlg = document.createElement('div');
-    dlg.className = 'modal';
-    dlg.style.cssText = 'max-width:' + maxWidth + (extraStyle ? ';' + extraStyle : '');
-    var inner = document.createElement('div');
-    inner.id = bodyId;
-    dlg.appendChild(inner);
-    modal.appendChild(dlg);
-    document.body.appendChild(modal);
-  }
-  return modal;
+DW.live.on('logs', function() {
+  if (canAutoApply()) { load(true); return; }
+  newUnknown = true; updateNewIndicator();
+});
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden && newUnknown && canAutoApply()) load(true);
+});
+
+/* ---------- rendering ---------- */
+function fmtNum(n) { return Number(n).toLocaleString('en-US'); }
+function pillClass(code) {
+  if (code >= 500) return 'lg-pill-bad';
+  if (code >= 400) return 'lg-pill-warn';
+  if (code >= 300) return 'lg-pill-mute';
+  if (code >= 200) return 'lg-pill-ok';
+  return 'lg-pill-mute';
 }
-
-function renderLogDetail(l, d) {
-  var modal = ensureModal('log-detail-modal', '900px', 'max-height:90vh;overflow-y:auto', 'log-detail-body');
-
-  var body = modal.querySelector('#log-detail-body');
-  var hasDetail = !!d;
-  var statusBadge = l.status_code
-    ? DW.html`<span class="badge ${l.status_code < 400 ? 'badge-green' : 'badge-red'}">${l.status_code}</span>`
-    : '';
-  var truncatedBadge = (hasDetail && d.truncated)
-    ? DW.raw(' <span class="badge badge-yellow">truncated to 64KB</span>')
-    : '';
-
-  function fmtHeaders(jsonStr) {
-    try {
-      var obj = JSON.parse(jsonStr || '{}');
-      var lines = [];
-      Object.keys(obj).sort().forEach(function(k) {
-        var v = Array.isArray(obj[k]) ? obj[k].join(', ') : obj[k];
-        // Mask secrets just in case
-        if (/^authorization$|x-api-key|x-duckway/i.test(k)) v = '<redacted>';
-        lines.push(DW.html`<tr><td class="text-muted mono text-sm">${k}</td><td class="mono text-sm" style="word-break:break-all">${v}</td></tr>`);
-      });
-      if (lines.length === 0) return DW.raw('<span class="text-muted text-sm">(none)</span>');
-      return DW.html`<table class="detail-table" style="width:100%">${lines}</table>`;
-    } catch(e) { return DW.html`<pre class="text-sm">${jsonStr}</pre>`; }
-  }
-
-  function fmtBody(b) {
-    if (!b) return DW.raw('<span class="text-muted text-sm">(empty)</span>');
-    var text;
-    // Try pretty-print JSON
-    try {
-      text = JSON.stringify(JSON.parse(b), null, 2);
-    } catch(e) {
-      text = b;
-    }
-    return DW.html`<pre class="mono text-sm" style="white-space:pre-wrap;background:var(--bg-input);padding:0.5rem;border-radius:4px;max-height:300px;overflow:auto">${text}</pre>`;
-  }
-
-  // Phantom token used for this request — clickable to open the same detail
-  // modal as the Phantom Tokens page so the admin can see the binding.
-  var phRow = '';
-  if (l.placeholder && l.placeholder_id) {
-    var short = l.placeholder.length > 28
-      ? l.placeholder.substring(0, 22) + '...' + l.placeholder.substring(l.placeholder.length - 4)
-      : l.placeholder;
-    phRow = DW.html`<tr><td class="text-muted">Phantom Token</td><td><a href="#" class="mono text-sm" data-action="openPhantomDetail" data-ph-id="${l.placeholder_id}" style="text-decoration:underline dotted" title="Click to view phantom-token details">${short}</a></td></tr>`;
-  }
-
-  // Always-available metadata block.
-  var metaRows = [
-    DW.html`<tr><td class="text-muted">Client</td><td>${l.client_name || '—'}</td></tr>`,
-    DW.html`<tr><td class="text-muted">Service</td><td><span class="badge badge-blue">${l.service_name || '?'}</span></td></tr>`,
-    DW.html`<tr><td class="text-muted">Env Name</td><td>${l.env_name || '—'}</td></tr>`,
-    phRow,
-    DW.html`<tr><td class="text-muted">Time</td><td>${l.created_at}</td></tr>`
-  ];
-  if (hasDetail) {
-    metaRows.push(
-      DW.html`<tr><td class="text-muted">Duration</td><td>${d.duration_ms} ms</td></tr>`,
-      DW.html`<tr><td class="text-muted">Sizes</td><td>req=${d.request_size}B · resp=${d.response_size}B</td></tr>`
-    );
-  }
-
-  // If the original headers had a Content-Encoding (gzip/br/deflate), the
-  // server decompressed the captured body before storing — show a small
-  // note so the admin knows the displayed text is post-decompression even
-  // though the headers above still claim Content-Encoding: gzip.
-  function decodeNote(headersJSON) {
-    try {
-      var h = JSON.parse(headersJSON || '{}');
-      var enc = '';
-      Object.keys(h).forEach(function(k) {
-        if (k.toLowerCase() === 'content-encoding') {
-          var v = h[k];
-          enc = Array.isArray(v) ? v.join(', ') : v;
-        }
-      });
-      if (!enc || /^identity$/i.test(enc)) return '';
-      return DW.html`<div class="text-muted text-sm" style="margin-bottom:0.25rem;font-style:italic">shown decompressed (original Content-Encoding: ${enc})</div>`;
-    } catch (e) { return ''; }
-  }
-
-  // Detail block only present when capture was on at request time.
-  var detailBlock;
-  if (hasDetail) {
-    detailBlock = DW.html`<h3 style="margin-top:1rem">Request Headers</h3>${fmtHeaders(d.request_headers)}<h3 style="margin-top:1rem">Request Body</h3>${decodeNote(d.request_headers)}${fmtBody(d.request_body)}<h3 style="margin-top:1rem">Response Headers</h3>${fmtHeaders(d.response_headers)}<h3 style="margin-top:1rem">Response Body</h3>${decodeNote(d.response_headers)}${fmtBody(d.response_body)}`;
+function pill(l) {
+  if (!l.status_code) return DW.html`<span class="lg-pill lg-pill-mute" title="No upstream response (client disconnected)">aborted</span>`;
+  return DW.html`<span class="lg-pill ${pillClass(l.status_code)}">${l.status_code}</span>`;
+}
+function fmtMs(ms) {
+  if (ms === null || ms === undefined) return '—';
+  return ms >= 1000 ? (ms / 1000).toFixed(2) + 's' : ms + 'ms';
+}
+function fmtTime(ts) {
+  if (!ts) return DW.raw('');
+  var parts = String(ts).split(' ');
+  if (parts.length === 2) return DW.html`<span class="text-muted">${parts[0]}</span> ${parts[1]}`;
+  return DW.html`${ts}`;
+}
+function rangeLabel() {
+  if (S.range === 'custom') return 'the selected range';
+  return RANGE_LABEL[S.range] || '';
+}
+function render() {
+  var items = data.items;
+  var tbody = $('log-body');
+  if (!items.length) {
+    DW.setHTML(tbody, DW.html`<tr><td colspan="6" class="lg-empty"><strong>No matching requests</strong><div class="text-muted text-sm">Nothing was logged for these filters in ${rangeLabel()}.</div><button type="button" class="btn btn-sm" data-action="clearFilters">Clear filters</button></td></tr>`);
   } else {
-    detailBlock = DW.raw('<div class="card mt-1" style="background:var(--bg-input)"><strong>No request/response details recorded.</strong><br><span class="text-muted text-sm">Detail capture was OFF at the time of this request, or the request used loan_proxy delivery (gateway is not in the data path). Enable capture above to record full headers and bodies for future requests.</span></div>');
+    DW.setHTML(tbody, DW.html`${items.map(function(l) {
+      var dash = DW.raw('<span class="text-muted">—</span>');
+      var cred = l.credential ? DW.html` <span class="text-muted">· ${l.credential}</span>` : '';
+      var sel = l.id === selectedId;
+      return DW.html`<tr class="lg-tr${sel ? ' is-selected' : ''}" data-action="openRow" data-id="${l.id}"><td class="lg-t"><button type="button" class="lg-rowbtn" data-action="openRow" data-id="${l.id}" aria-current="${sel ? 'true' : 'false'}" title="${l.created_at} UTC">${fmtTime(l.created_at)}</button></td><td>${l.client_name || dash}</td><td><span class="lg-svc">${l.service_name}</span>${cred}</td><td><span class="lg-tag">${l.method}</span> <span class="mono lg-path">${l.path}</span></td><td>${pill(l)}</td><td class="text-right lg-ms">${fmtMs(l.duration_ms)}</td></tr>`;
+    })}`);
   }
-
-  DW.setHTML(body, DW.html`<h2 style="margin-top:0">${l.method || '?'} ${l.path || ''} ${statusBadge}${truncatedBadge}</h2><table class="detail-table" style="width:100%;margin-bottom:0.5rem">${metaRows}</table>${detailBlock}<div class="modal-actions mt-1" style="justify-content:flex-end"><button class="btn" data-action="modal-close">Close</button></div>`);
-  DW.modal.open(modal);
+  var a = data.offset + 1, b = data.offset + items.length;
+  var total = fmtNum(data.total) + (data.total_capped ? '+' : '');
+  var showing = items.length ? 'Showing ' + fmtNum(a) + '–' + fmtNum(b) + ' of ' + total : 'Showing 0 of 0';
+  showing += ' in ' + rangeLabel();
+  if (data.total_capped) showing += ' (count capped)';
+  $('log-showing').textContent = showing;
+  $('log-count').textContent = '';
+  $('pg-newer').disabled = !data.has_newer;
+  $('pg-older').disabled = data.next_before_id == null;
 }
-
-DW.actions.openPhantomDetail = function(el) {
-  openPhantomDetail(el.dataset.phId);
+DW.actions.clearFilters = function() {
+  S = newState(); syncControls(); writeURL(false); load(false);
 };
 
-// openPhantomDetail mirrors the detail modal on the Phantom Tokens page —
-// shows the same fields (env, full token, key path, approval, ACL, usage,
-// created) by fetching from /api/placeholders/{id}. Read-only here; for
-// editing the user can open the dedicated Phantom Tokens page.
-function openPhantomDetail(phId, hint) {
-  fetch('/api/placeholders/' + phId, {credentials:'same-origin'})
+/* ---------- detail panel ---------- */
+function panelOpen() { return selectedId > 0; }
+function findItem(id) {
+  if (!data) return null;
+  for (var i = 0; i < data.items.length; i++) if (data.items[i].id === id) return data.items[i];
+  return null;
+}
+var lastItem = null;
+function isDrawer() { return window.matchMedia('(max-width: 900px)').matches; }
+DW.actions.openRow = function(el) {
+  var id = parseInt(el.dataset.id, 10);
+  var l = findItem(id);
+  if (!l) return;
+  if (!panelOpen()) opener = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+  selectedId = id;
+  lastItem = l;
+  markSelected();
+  var panel = $('log-detail');
+  panel.classList.add('open');
+  if (isDrawer()) $('lg-scrim').hidden = false;
+  renderDetail(l, undefined);
+  $('det-h').focus();
+  if (l.has_detail) {
+    var seq = ++detailSeq;
+    fetch('/api/logs/' + id + '/detail', {credentials: 'same-origin'})
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(d) { if (seq === detailSeq && selectedId === id) renderDetail(l, d && !d.error ? d : null); })
+      .catch(function() { if (seq === detailSeq && selectedId === id) renderDetail(l, null); });
+  } else {
+    detailSeq++;
+    renderDetail(l, null);
+  }
+};
+function markSelected() {
+  document.querySelectorAll('#log-body tr.lg-tr').forEach(function(tr) {
+    var on = parseInt(tr.dataset.id, 10) === selectedId;
+    tr.classList.toggle('is-selected', on);
+    var b = tr.querySelector('.lg-rowbtn');
+    if (b) b.setAttribute('aria-current', on ? 'true' : 'false');
+  });
+}
+DW.actions.closeDetail = function() { closePanel(true); };
+function closePanel(restore) {
+  if (!panelOpen()) return;
+  selectedId = 0; lastItem = null; detailSeq++;
+  $('log-detail').classList.remove('open');
+  $('lg-scrim').hidden = true;
+  DW.setHTML($('det-body'), DW.raw('<p class="text-muted text-sm">Select a request to inspect it.</p>'));
+  DW.setHTML($('det-status'), DW.raw(''));
+  markSelected();
+  if (restore && opener && opener.isConnected && opener.focus) opener.focus();
+  opener = null;
+  if (newUnknown && canAutoApply()) load(true);
+}
+document.addEventListener('keydown', function(e) {
+  if (!panelOpen() || DW.live.modalOpen()) return;
+  if (e.key === 'Escape') { e.preventDefault(); closePanel(true); return; }
+  if (e.key === 'Tab' && isDrawer()) {
+    var panel = $('log-detail');
+    var f = Array.prototype.filter.call(panel.querySelectorAll('a[href],button:not([disabled]),[tabindex]:not([tabindex="-1"])'), function(x) { return x.offsetParent !== null; });
+    f.unshift($('det-h'));
+    var first = f[0], last = f[f.length - 1];
+    if (!panel.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+});
+
+function fmtHeaders(jsonStr) {
+  try {
+    var obj = JSON.parse(jsonStr || '{}');
+    var rows = Object.keys(obj).sort().map(function(k) {
+      var v = Array.isArray(obj[k]) ? obj[k].join(', ') : obj[k];
+      if (/^authorization$|x-api-key|x-duckway/i.test(k)) v = '<redacted>';
+      return DW.html`<tr><td class="text-muted mono text-sm">${k}</td><td class="mono text-sm">${v}</td></tr>`;
+    });
+    if (!rows.length) return DW.raw('<span class="text-muted text-sm">(none)</span>');
+    return DW.html`<div class="table-wrap"><table class="detail-table">${rows}</table></div>`;
+  } catch (e) { return DW.html`<pre class="text-sm">${jsonStr}</pre>`; }
+}
+function fmtBody(b) {
+  if (!b) return DW.raw('<span class="text-muted text-sm">(empty)</span>');
+  var text;
+  try { text = JSON.stringify(JSON.parse(b), null, 2); } catch (e) { text = b; }
+  return DW.html`<pre class="mono text-sm lg-body">${text}</pre>`;
+}
+function decodeNote(headersJSON) {
+  try {
+    var h = JSON.parse(headersJSON || '{}');
+    var enc = '';
+    Object.keys(h).forEach(function(k) {
+      if (k.toLowerCase() === 'content-encoding') enc = Array.isArray(h[k]) ? h[k].join(', ') : h[k];
+    });
+    if (!enc || /^identity$/i.test(enc)) return '';
+    return DW.html`<div class="text-muted text-sm">shown decompressed (original Content-Encoding: ${enc})</div>`;
+  } catch (e) { return ''; }
+}
+// d: undefined = loading, null = not captured, object = captured
+function renderDetail(l, d) {
+  DW.setHTML($('det-status'), pill(l));
+  var dash = DW.raw('<span class="text-muted">—</span>');
+  var ph = '';
+  if (l.placeholder && l.placeholder_id) {
+    var short = l.placeholder.length > 28 ? l.placeholder.substring(0, 22) + '...' + l.placeholder.substring(l.placeholder.length - 4) : l.placeholder;
+    ph = DW.html`<a href="#" class="mono text-sm" data-action="openPhantomDetail" data-ph-id="${l.placeholder_id}" title="View phantom-token details">${short}</a>`;
+  }
+  var latency = d && d.duration_ms !== undefined ? fmtMs(d.duration_ms) : fmtMs(l.duration_ms);
+  var clientCell = l.client_id && l.client_name ? DW.html`<a href="/admin/clients">${l.client_name}</a>` : (l.client_name || dash);
+  var gate = l.placeholder_id ? (l.requires_approval ? 'Phantom token requires approval' : 'Phantom token auto-approved') : dash;
+  var bodyBlock;
+  if (d === undefined) {
+    bodyBlock = DW.raw('<p class="text-muted text-sm">Loading captured details…</p>');
+  } else if (d === null) {
+    bodyBlock = DW.html`<div class="lg-nocap"><strong>Headers and body were not captured for this request.</strong><div class="text-muted text-sm">Capture was off when it ran, or it used loan_proxy delivery (the gateway is not in the data path). Turn on capture in <a href="#capture-panel" data-action="openCapture">Capture settings</a>${l.client_name ? DW.html` (optionally just for <strong>${l.client_name}</strong>)` : ''} to record the next ones.</div></div>`;
+  } else {
+    var trunc = d.truncated ? DW.raw(' <span class="badge badge-yellow">truncated to 64KB</span>') : '';
+    bodyBlock = DW.html`<h3>Request headers</h3>${fmtHeaders(d.request_headers)}<h3>Request body${trunc}</h3>${decodeNote(d.request_headers)}${fmtBody(d.request_body)}<h3>Response headers</h3>${fmtHeaders(d.response_headers)}<h3>Response body</h3>${decodeNote(d.response_headers)}${fmtBody(d.response_body)}`;
+  }
+  var sizes = d && d !== null ? DW.html`<dt>Sizes</dt><dd>req ${d.request_size} B · resp ${d.response_size} B</dd>` : '';
+  DW.setHTML($('det-body'), DW.html`<div class="lg-dline"><span class="lg-tag">${l.method || '?'}</span><span class="mono lg-path">${l.path || ''}</span></div><dl class="lg-dl"><dt>Client</dt><dd>${clientCell}</dd><dt>Service</dt><dd>${l.service_name || dash}</dd><dt>Credential</dt><dd>${l.credential || dash}</dd><dt>Phantom token</dt><dd>${ph || dash}</dd><dt>Approval</dt><dd>${gate}</dd><dt>Time</dt><dd>${l.created_at} UTC</dd><dt>Latency</dt><dd>${latency}</dd>${sizes}</dl>${bodyBlock}`);
+}
+
+DW.actions.openPhantomDetail = function(el) { openPhantomDetail(el.dataset.phId); };
+function openPhantomDetail(phId) {
+  fetch('/api/placeholders/' + encodeURIComponent(phId), {credentials: 'same-origin'})
     .then(function(r) {
-      if (r.status === 404) {
-        showToast('Phantom token no longer exists (was it deleted?)', 'error');
-        return null;
-      }
+      if (r.status === 404) { DW.toast('Phantom token no longer exists (was it deleted?)', 'error'); return null; }
       return r.json();
     })
     .then(function(ph) {
       if (!ph || ph.error) return;
-
-      var modal = ensureModal('phantom-detail-modal', '720px', '', 'phantom-detail-body');
-
       var ttl = ph.approval_ttl_minutes || 0;
       var ttlText = ttl >= 1440 ? (ttl / 1440) + ' days' : (ttl + ' min');
-
-      var body = modal.querySelector('#phantom-detail-body');
-      DW.setHTML(body, DW.html`<h2 style="margin-top:0">${ph.client_name || ''} — ${ph.service_name || ''}</h2><table class="detail-table"><tr><td class="text-muted">ID</td><td class="mono text-sm">${ph.id}</td></tr><tr><td class="text-muted">Client</td><td>${ph.client_name || '—'}</td></tr><tr><td class="text-muted">API Key</td><td>${ph.api_key_name || '—'}</td></tr><tr><td class="text-muted">Service</td><td><span class="badge badge-blue">${ph.service_name || '?'}</span></td></tr><tr><td class="text-muted">Env Name</td><td class="mono">${ph.env_name || ''}</td></tr><tr><td class="text-muted">Phantom Token</td><td class="mono text-sm" style="word-break:break-all">${ph.placeholder || ''}</td></tr><tr><td class="text-muted">Key Path</td><td class="mono text-sm">${ph.key_path ? '~/' + ph.key_path : '—'}</td></tr><tr><td class="text-muted">Approval</td><td>${ph.requires_approval ? DW.raw('<span class="badge badge-yellow">Required</span>') : DW.raw('<span class="badge badge-green">Auto</span>')}</td></tr><tr><td class="text-muted">TTL</td><td>${ttlText}</td></tr><tr><td class="text-muted">Usage</td><td>${ph.usage_count || 0}</td></tr><tr><td class="text-muted">Created</td><td>${ph.created_at || ''}</td></tr></table><div class="modal-actions mt-1"><button class="btn" data-action="modal-close">Close</button><a href="/admin/placeholders" class="btn btn-primary">Open in Phantom Tokens →</a></div>`);
-      DW.modal.open(modal);
+      DW.setHTML($('phantom-detail-body'), DW.html`<h2>${ph.client_name || ''} — ${ph.service_name || ''}</h2><div class="table-wrap"><table class="detail-table"><tr><td class="text-muted">ID</td><td class="mono text-sm">${ph.id}</td></tr><tr><td class="text-muted">Client</td><td>${ph.client_name || '—'}</td></tr><tr><td class="text-muted">API Key</td><td>${ph.api_key_name || '—'}</td></tr><tr><td class="text-muted">Service</td><td>${ph.service_name || '?'}</td></tr><tr><td class="text-muted">Env Name</td><td class="mono">${ph.env_name || ''}</td></tr><tr><td class="text-muted">Phantom Token</td><td class="mono text-sm">${ph.placeholder || ''}</td></tr><tr><td class="text-muted">Key Path</td><td class="mono text-sm">${ph.key_path ? '~/' + ph.key_path : '—'}</td></tr><tr><td class="text-muted">Approval</td><td>${ph.requires_approval ? 'Required' : 'Auto'}</td></tr><tr><td class="text-muted">TTL</td><td>${ttlText}</td></tr><tr><td class="text-muted">Usage</td><td>${ph.usage_count || 0}</td></tr><tr><td class="text-muted">Created</td><td>${ph.created_at || ''}</td></tr></table></div><div class="modal-actions"><button type="button" class="btn" data-action="modal-close">Close</button><a href="/admin/placeholders" class="btn btn-primary">Open in Phantom Tokens →</a></div>`);
+      DW.modal.open('#phantom-detail-modal');
     });
 }
 
+/* ---------- body capture ---------- */
+var allClients = [];
+var captureClientIds = [];
+var captureEnabled = false;
+
+function loadCaptureSettings() {
+  Promise.all([
+    fetch('/api/clients', {credentials: 'same-origin'}).then(function(r) { return r.ok ? r.json() : []; }),
+    fetch('/api/settings', {credentials: 'same-origin'}).then(function(r) { return r.ok ? r.json() : {}; })
+  ]).then(function(res) {
+    allClients = res[0] || [];
+    var s = res[1] || {};
+    captureEnabled = s.request_log_capture_enabled === '1';
+    try {
+      captureClientIds = JSON.parse(s.request_log_capture_clients || '[]');
+      if (!Array.isArray(captureClientIds)) captureClientIds = [];
+    } catch (e) { captureClientIds = []; }
+    $('capture-toggle').checked = captureEnabled;
+    paintCapture();
+  }).catch(function() { $('capture-state').textContent = 'unknown'; });
+}
+function paintCapture() {
+  var span = $('capture-label');
+  span.textContent = captureEnabled ? 'ON' : 'OFF';
+  span.className = captureEnabled ? 'badge badge-green' : 'badge badge-gray';
+  $('capture-clients-row').hidden = !captureEnabled;
+  var txt = captureEnabled ? (captureClientIds.length ? 'on for ' + captureClientIds.length + ' client' + (captureClientIds.length === 1 ? '' : 's') : 'on for all clients') : 'off';
+  $('capture-state').textContent = txt;
+  DW.setHTML($('capture-clients-list'), DW.html`${allClients.map(function(c) {
+    var on = captureClientIds.indexOf(c.id) >= 0;
+    return DW.html`<button type="button" class="lg-chip" aria-pressed="${on ? 'true' : 'false'}" data-action="toggleCaptureClient" data-id="${c.id}">${c.name}</button>`;
+  })}`);
+}
+DW.actions.toggleCaptureClient = function(el) {
+  var id = el.dataset.id;
+  var i = captureClientIds.indexOf(id);
+  if (i >= 0) captureClientIds.splice(i, 1); else captureClientIds.push(id);
+  saveCapture(captureEnabled).then(paintCapture);
+};
+// POST the atomic /api/logs/capture endpoint: toggle + client filter + (when
+// disabling) drop of stored details in one transaction.
+function saveCapture(enabled) {
+  return fetch('/api/logs/capture', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, credentials: 'same-origin',
+    body: JSON.stringify({enabled: enabled, clients: captureClientIds})
+  }).then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    captureEnabled = enabled;
+  }).catch(function() { DW.toast('Could not update capture settings', 'error'); loadCaptureSettings(); });
+}
+DW.actions.onCaptureToggle = function() {
+  var want = $('capture-toggle').checked;
+  if (!want) {
+    $('capture-toggle').checked = true;
+    DW.modal.open('#capture-off-modal');
+    return;
+  }
+  saveCapture(true).then(function() { paintCapture(); DW.toast('Detail recording enabled', 'success'); });
+};
+DW.actions.captureOffCancel = function() { DW.modal.close('#capture-off-modal'); };
+DW.actions.captureOffConfirm = function() {
+  DW.modal.close('#capture-off-modal');
+  $('capture-toggle').checked = false;
+  saveCapture(false).then(function() {
+    paintCapture();
+    DW.toast('Detail recording disabled, stored bodies dropped', 'success');
+    load(true);
+  });
+};
+
+/* ---------- init ---------- */
+function loadFacets() {
+  return fetch('/api/logs/facets', {credentials: 'same-origin'})
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(f) { if (f) { facets = f; syncControls(); } })
+    .catch(function() {});
+}
 document.addEventListener('DOMContentLoaded', function() {
-  loadLogs();
+  S = readURL();
+  syncControls();
+  writeURL(true);
+  load(false);
+  loadFacets();
   loadCaptureSettings();
 });
+})();
 </script>
 {{end}}
