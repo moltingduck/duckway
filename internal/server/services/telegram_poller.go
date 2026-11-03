@@ -67,7 +67,7 @@ func (p *TelegramPoller) pollLoop() {
 
 		updates, err := p.getUpdates()
 		if err != nil {
-			log.Printf("[telegram-poll] Error: %v", err)
+			log.Printf("[telegram-poll] Error: %v", scrubNetErr(err))
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -90,9 +90,9 @@ type tgUpdate struct {
 }
 
 type tgCallbackQuery struct {
-	ID      string `json:"id"`
-	Data    string `json:"data"`
-	From    struct {
+	ID   string `json:"id"`
+	Data string `json:"data"`
+	From struct {
 		Username string `json:"username"`
 	} `json:"from"`
 	Message struct {
@@ -138,11 +138,11 @@ func (p *TelegramPoller) getUpdates() ([]tgUpdate, error) {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return nil, scrubNetErr(fmt.Errorf("build request: %w", err))
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, scrubNetErr(err)
 	}
 	defer resp.Body.Close()
 
@@ -164,6 +164,8 @@ func (p *TelegramPoller) answerCallback(callbackID, text string) {
 	if resp, err := p.client.Post(url, "application/json", strings.NewReader(string(body))); err == nil {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
+	} else {
+		log.Printf("[telegram-poll] answerCallbackQuery failed: %v", scrubNetErr(err))
 	}
 }
 
@@ -178,5 +180,7 @@ func (p *TelegramPoller) editMessage(chatID int64, messageID int, text string) {
 	if resp, err := p.client.Post(url, "application/json", strings.NewReader(string(body))); err == nil {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
+	} else {
+		log.Printf("[telegram-poll] editMessageText failed: %v", scrubNetErr(err))
 	}
 }

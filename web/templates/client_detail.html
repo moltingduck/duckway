@@ -852,8 +852,11 @@ DW.actions.toggleCanary = function(b) {
 };
 DW.actions.genCanary = function() {
   showToast('Generating canary tokens...', '');
-  return sendJSON('POST', '/api/canary/clients/' + enc(CID) + '/generate?name=' + enc(C.name) + '&short_id=' + enc(C.short_id)).then(function(data) {
-    showToast((Array.isArray(data) ? data.length : 0) + ' canary tokens generated', 'success'); return refresh();
+  return sendJSON('POST', '/api/canary/clients/' + enc(CID) + '/generate').then(function(data) {
+    var n = (data && data.created) || 0, bad = data && (data.failed_types > 0 || data.delete_failed > 0);
+    var msg = n + ' canary tokens generated' + (data && data.notice ? '. ' + data.notice : '');
+    if (data && data.delete_failed > 0) msg += '. ' + data.delete_failed + ' old tokens could not be removed from canarytokens.org and were kept';
+    showToast(msg, bad || !n ? 'error' : 'success'); return refresh();
   }).catch(function(err) { showToast(err.message, 'error'); });
 };
 DW.actions.dzRemoveCanary = function(b) {

@@ -104,6 +104,7 @@
       <span class="text-sm" id="cn-confirm-state" role="status"></span>
       <div class="modal-actions cn-modalbtns">
         <button type="button" class="btn" data-action="modal-close" id="cn-confirm-cancel">Cancel</button>
+        <button type="button" class="btn" data-action="cnConfirmLocal" id="cn-confirm-local" hidden>Remove locally only</button>
         <button type="button" class="btn btn-danger" data-action="cnConfirmGo" id="cn-confirm-go">Confirm</button>
       </div>
     </div>
@@ -117,6 +118,7 @@
   var byId = {};           // client id -> row
   var alertConfigured = null;   // null = not known yet: actions stay disabled
   var tokensLoaded = false;
+  var tokensError = '';        // set while the last token load failed (keeps the Retry box on fleet reloads)
   var selected = null;     // selected client id
   var selTokens = [];
   var pending = null;      // confirm callback info
@@ -184,7 +186,7 @@
   function selectClient(id, focus) {
     var c = byId[id]; if (!c) return;
     selected = id;
-    selTokens = []; tokensLoaded = false;
+    selTokens = []; tokensLoaded = false; tokensError = '';
     DW.setHTML($('cn-tokens'), DW.html`<p class="text-sm text-muted">Loading tokens…</p>`);
     $('cn-detail').hidden = false;
     $('cn-detail-h').textContent = c.name;
@@ -194,7 +196,7 @@
   }
   function loadTokens() {
     var id = selected, st = $('cn-detail-state');
-    tokensLoaded = false;
+    tokensLoaded = false; tokensError = '';
     st.textContent = 'Loading tokens…';
     return api('GET', '/api/canary/clients/' + encodeURIComponent(id)).then(function(tokens) {
       if (id !== selected) return;
@@ -204,13 +206,15 @@
     }).catch(function(e) {
       if (id !== selected) return;
       st.textContent = '';
-      DW.setHTML($('cn-tokens'), DW.html`<div class="cn-err" role="alert"><span>Could not load tokens: ${e.message}</span><button type="button" class="btn btn-sm" data-action="cnRetryTokens">Retry</button></div>`);
+      tokensError = e.message;
+      renderTokens();
     });
   }
   DW.actions.cnRetryTokens = function() { loadTokens(); };
 
   function renderTokens() {
     var box = $('cn-tokens');
+    if (tokensError) { DW.setHTML(box, DW.html`<div class="cn-err" role="alert"><span>Could not load tokens: ${tokensError}</span><button type="button" class="btn btn-sm" data-action="cnRetryTokens">Retry</button></div>`); return; }
     if (!tokensLoaded) { DW.setHTML(box, DW.html`<p class="text-sm text-muted">Loading tokens…</p>`); return; }
     var canAct = alertConfigured === true;
     if (!selTokens.length) {
@@ -234,7 +238,7 @@
   function doGenerate() {
     var id = selected, c = byId[id]; if (!c) return Promise.resolve();
     setDetailState('Generating tokens… this may take a moment');
-    return api('POST', '/api/canary/clients/' + encodeURIComponent(id) + '/generate?name=' + encodeURIComponent(c.name)).then(function(d) {
+    return api('POST', '/api/canary/clients/' + encodeURIComponent(id) + '/generate').then(function(d) {
       var n = (d && d.created) || 0;
       var msg = n ? ('Generated ' + n + ' tokens') : 'No tokens were created. Check that an alert email is set.';
       if (d && d.failed_types > 0) msg += '. ' + d.failed_types + ' types could not be regenerated; their existing tokens were kept';
@@ -253,6 +257,7 @@
     DW.setHTML($('cn-confirm-impact'), DW.html`<strong>Impact:</strong> ${opts.impact}`);
     $('cn-confirm-go').textContent = opts.go;
     $('cn-confirm-go').disabled = false;
+    $('cn-confirm-local').hidden = true;
     $('cn-confirm-state').textContent = '';
     DW.modal.open('#cn-confirm');
     $('cn-confirm-cancel').focus();
@@ -270,7 +275,19 @@
     var p = pending, btn = $('cn-confirm-go');
     btn.disabled = true;
     $('cn-confirm-state').textContent = p.working;
-    p.run().then(closeConfirm).catch(function(e) {
+    p.run(false).then(closeConfirm).catch(function(e) {
+      btn.disabled = false;
+      $('cn-confirm-state').textContent = 'Failed: ' + e.message;
+      // A token canarytokens.org will not delete (for example already gone) can be dropped from Duckway only.
+      if (p.local) { $('cn-confirm-local').hidden = false; $('cn-confirm-state').textContent += '. If the token no longer exists on canarytokens.org you can remove it from Duckway only.'; }
+    });
+  };
+  DW.actions.cnConfirmLocal = function() {
+    if (!pending || !pending.local) return;
+    var p = pending, btn = $('cn-confirm-local');
+    btn.disabled = true;
+    $('cn-confirm-state').textContent = 'Removing locally…';
+    p.run(true).then(closeConfirm).catch(function(e) {
       btn.disabled = false;
       $('cn-confirm-state').textContent = 'Failed: ' + e.message;
     });
@@ -281,8 +298,8 @@
     var n = selTokens.length;
     openConfirm({
       title: 'Regenerate all tokens?',
-      body: DW.html`Every canary token for ${c.name} is deleted, including on canarytokens.org, and a fresh set is generated. The client receives the new files on its next sync.`,
-      impact: DW.html`${n} existing ${n === 1 ? 'token' : 'tokens'} will be replaced. Old decoys stop alerting.`,
+      body: DW.html`Each canary token whose type is regenerated is deleted, including on canarytokens.org, and replaced. Tokens of types that are no longer enabled, or that fail to regenerate, are kept. The client receives the new files on its next sync.`,
+      impact: DW.html`${n} existing ${n === 1 ? 'token' : 'tokens'} are checked; those that get a replacement stop alerting.`,
       go: 'Regenerate all', working: 'Regenerating…',
       run: function() { return doGenerate(); }
     });
@@ -294,9 +311,9 @@
       title: 'Delete all tokens?',
       body: DW.html`All canary tokens for ${c.name} are removed from Duckway and from canarytokens.org. Nothing is generated again until you ask.`,
       impact: DW.html`${n} ${n === 1 ? 'token' : 'tokens'} will be deleted. This cannot be undone.`,
-      go: 'Delete all', working: 'Deleting…',
-      run: function() {
-        return api('DELETE', '/api/canary/clients/' + encodeURIComponent(id)).then(function() {
+      go: 'Delete all', working: 'Deleting…', local: true,
+      run: function(localOnly) {
+        return api('DELETE', '/api/canary/clients/' + encodeURIComponent(id) + (localOnly ? '?local_only=1' : '')).then(function() {
           DW.toast('All tokens deleted', 'success'); setDetailState('All tokens deleted');
           return Promise.all([loadFleet(), id === selected ? loadTokens() : null]);
         });
@@ -310,9 +327,9 @@
       title: 'Delete this token?',
       body: DW.html`The ${t.token_type} token at ~/${t.deploy_path} is removed from Duckway and from canarytokens.org.`,
       impact: DW.html`1 token will be deleted. This cannot be undone.`,
-      go: 'Delete token', working: 'Deleting…',
-      run: function() {
-        return api('DELETE', '/api/canary/tokens/' + encodeURIComponent(tid)).then(function() {
+      go: 'Delete token', working: 'Deleting…', local: true,
+      run: function(localOnly) {
+        return api('DELETE', '/api/canary/tokens/' + encodeURIComponent(tid) + (localOnly ? '?local_only=1' : '')).then(function() {
           DW.toast('Token deleted', 'success'); setDetailState('Token deleted');
           return Promise.all([loadFleet(), id === selected ? loadTokens() : null]);
         });

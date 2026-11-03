@@ -222,8 +222,17 @@ func (h *ClientHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	// Delete canary tokens from canarytokens.org + DB
 	if h.canarySvc != nil {
-		if err := h.canarySvc.DeleteClientTokens(id); err != nil {
+		_, failed, err := h.canarySvc.DeleteClientTokens(id, false)
+		if err != nil {
 			log.Printf("Warning: failed to clean up canary tokens for client %s: %v", id, err)
+		}
+		if failed > 0 {
+			// The client is being deleted, so its rows must go too; the remote
+			// tokens may stay live until removed on canarytokens.org.
+			log.Printf("Warning: %d canary tokens of deleted client %s could not be removed on canarytokens.org", failed, id)
+			if _, _, err := h.canarySvc.DeleteClientTokens(id, true); err != nil {
+				log.Printf("Warning: local canary cleanup for client %s: %v", id, err)
+			}
 		}
 	}
 

@@ -150,3 +150,15 @@ func (q *CanaryQueries) ClientCanaryEnabled(clientID string) (enabled, found boo
 	}
 	return enabled, true, nil
 }
+
+// ClientNameAndShortID resolves a client's name and short ID by its ID.
+func (q *CanaryQueries) ClientNameAndShortID(clientID string) (name, shortID string, found bool, err error) {
+	err = q.db.QueryRow("SELECT name, short_id FROM clients WHERE id = ?", clientID).Scan(&name, &shortID)
+	if err == sql.ErrNoRows {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	return name, shortID, true, nil
+}

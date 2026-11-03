@@ -854,7 +854,8 @@ cp .env.example .dev.env
     setToc(false);
   });
   window.addEventListener('hashchange', function () {
-    var id = decodeURIComponent(location.hash.replace(/^#/, ''));
+    var id = location.hash.replace(/^#/, '');
+    try { id = decodeURIComponent(id); } catch (err) { return; } // malformed escape: ignore
     if (revealFor(id)) { var t = document.getElementById(id); if (t && t.scrollIntoView) t.scrollIntoView(); }
   });
 

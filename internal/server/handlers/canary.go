@@ -171,48 +171,59 @@ func (h *CanaryHandler) Overview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Admin: delete a single canary token (from DB + canarytokens.org)
+// Admin: delete a single canary token (from canarytokens.org, then the DB).
+// ?local_only=1 removes just the row, for tokens already gone remotely.
 func (h *CanaryHandler) DeleteToken(w http.ResponseWriter, r *http.Request) {
 	tokenID := r.PathValue("tokenId")
-	token, err := h.canaryQ.GetByID(tokenID)
-	if err != nil {
-		jsonError(w, "token not found", http.StatusNotFound)
+	localOnly := r.URL.Query().Get("local_only") == "1"
+	if err := h.service.DeleteToken(tokenID, localOnly); err != nil {
+		switch {
+		case errors.Is(err, services.ErrCanaryTokenNotFound):
+			jsonError(w, "token not found", http.StatusNotFound)
+		case errors.Is(err, services.ErrCanaryRemoteDeleteFailed):
+			jsonError(w, err.Error(), http.StatusBadGateway)
+		default:
+			log.Printf("canary delete token %s: %v", tokenID, err)
+			jsonError(w, "failed to delete token", http.StatusInternalServerError)
+		}
 		return
 	}
-
-	// Delete from canarytokens.org
-	if err := h.service.DeleteRemoteToken(token.CanaryToken, token.AuthToken); err != nil {
-		// Log but don't fail — still delete from our DB
-		log.Printf("Warning: remote delete failed for %s: %v", token.CanaryToken, err)
-	}
-
-	if err := h.canaryQ.DeleteByID(tokenID); err != nil {
-		jsonError(w, "failed to delete token", http.StatusInternalServerError)
-		return
-	}
-
 	jsonResponse(w, map[string]string{"status": "deleted"})
 }
 
-// Admin: delete ALL canary tokens for a client (DB + canarytokens.org)
+// Admin: delete ALL canary tokens for a client. Tokens that cannot be deleted
+// on canarytokens.org are kept; ?local_only=1 removes the rows regardless.
 func (h *CanaryHandler) DeleteClientTokens(w http.ResponseWriter, r *http.Request) {
 	clientID := r.PathValue("clientId")
-	if err := h.service.DeleteClientTokens(clientID); err != nil {
-		jsonError(w, "failed to delete tokens: "+err.Error(), http.StatusInternalServerError)
+	localOnly := r.URL.Query().Get("local_only") == "1"
+	deleted, failed, err := h.service.DeleteClientTokens(clientID, localOnly)
+	if err != nil {
+		log.Printf("canary delete client tokens %s: %v", clientID, err)
+		jsonError(w, "failed to delete tokens", http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]string{"status": "deleted"})
+	if failed > 0 {
+		jsonError(w, fmt.Sprintf("%d tokens could not be deleted on canarytokens.org and were kept (%d deleted)", failed, deleted), http.StatusBadGateway)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{"status": "deleted", "deleted": deleted})
 }
 
 // Admin: manually (re)generate canary tokens for a client
 func (h *CanaryHandler) GenerateForClient(w http.ResponseWriter, r *http.Request) {
 	clientID := r.PathValue("clientId")
-	clientName := r.URL.Query().Get("name")
-	if clientName == "" {
-		clientName = clientID
+	// The name and short ID come from the server's own client record, never
+	// from the query string: the exclusion check matches on the name.
+	clientName, shortID, found, lookupErr := h.canaryQ.ClientNameAndShortID(clientID)
+	if lookupErr != nil {
+		log.Printf("canary generate: look up client %s: %v", clientID, lookupErr)
+		jsonError(w, "failed to look up client", http.StatusInternalServerError)
+		return
 	}
-
-	shortID := r.URL.Query().Get("short_id")
+	if !found {
+		jsonError(w, "client not found", http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	res, err := h.service.RegenerateForClient(clientID, clientName, shortID)
 	if err != nil {
@@ -264,9 +275,16 @@ func (h *CanaryHandler) ClientGetCanaries(w http.ResponseWriter, r *http.Request
 
 	// Auto-generate if client has canary enabled but no tokens yet
 	if client.CanaryEnabled {
-		existing, _ := h.canaryQ.ListByClient(client.ID)
+		existing, lerr := h.canaryQ.ListByClient(client.ID)
+		if lerr != nil {
+			log.Printf("client canaries: list tokens for %s: %v", client.ID, lerr)
+			jsonError(w, "failed to list canary tokens", http.StatusInternalServerError)
+			return
+		}
 		if len(existing) == 0 {
-			h.service.GenerateForClient(client.ID, client.Name, client.ShortID)
+			if gerr := h.service.GenerateForClient(client.ID, client.Name, client.ShortID); gerr != nil {
+				log.Printf("client canaries: generate for %s: %v", client.ID, gerr)
+			}
 		}
 	}
 

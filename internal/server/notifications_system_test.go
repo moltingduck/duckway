@@ -283,6 +283,17 @@ func TestNotificationRestartRequiredAndNoStore(t *testing.T) {
 	e := newNtEnv(t)
 	tg := e.create("telegram", "tg", map[string]string{"bot_token": ntTgToken, "chat_id": "42"})
 	wh := e.create("webhook", "wh", map[string]string{"url": "https://hooks.example/" + ntHookToken})
+	for typ, cfg := range map[string]map[string]string{"telegram": {"bot_token": "1:x", "chat_id": "2"}, "webhook": {"url": "https://h.example/x"}} {
+		cj, _ := json.Marshal(cfg)
+		rec := e.do("POST", "/api/notifications", map[string]string{"channel_type": typ, "name": "c-" + typ, "config": string(cj)})
+		var v struct {
+			R bool `json:"restart_required"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &v)
+		if rec.Code != http.StatusCreated || v.R != (typ == "telegram") {
+			t.Fatalf("create %s: %d restart_required=%v", typ, rec.Code, v.R)
+		}
+	}
 	flag := func(rec *httptest.ResponseRecorder) bool {
 		var v struct {
 			R bool `json:"restart_required"`

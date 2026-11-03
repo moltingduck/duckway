@@ -92,7 +92,10 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	noStore(w)
 	w.WriteHeader(http.StatusCreated)
-	jsonResponse(w, notificationView(*ch))
+	jsonResponse(w, struct {
+		NotificationView
+		RestartRequired bool `json:"restart_required"`
+	}{notificationView(*ch), listenerChannel(ch.ChannelType)})
 }
 
 func (h *NotificationHandler) Test(w http.ResponseWriter, r *http.Request) {

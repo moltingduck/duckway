@@ -604,7 +604,10 @@ func (s *CanaryService) RegenerateForClient(clientID, clientName, shortID string
 			continue
 		}
 		if err := s.canaryQ.DeleteByID(t.ID); err != nil {
-			return out, fmt.Errorf("delete old token: %w", err)
+			// The remote token is gone but its row remains: count it and carry on.
+			log.Printf("Warning: kept canary token row %s: db delete failed: %v", t.ID, err)
+			out.DeleteFailed++
+			continue
 		}
 		out.Replaced++
 	}
@@ -735,15 +738,56 @@ func (s *CanaryService) DeleteRemoteToken(canaryToken, authToken string) error {
 	return fmt.Errorf("delete failed: %s", string(respBody))
 }
 
-// DeleteClientTokens deletes all canary tokens for a client, both from DB and canarytokens.org.
-func (s *CanaryService) DeleteClientTokens(clientID string) error {
-	tokens, _ := s.canaryQ.ListByClient(clientID)
-	for _, t := range tokens {
-		if err := s.DeleteRemoteToken(t.CanaryToken, t.AuthToken); err != nil {
-			log.Printf("Warning: failed to delete remote canary token %s: %v", t.CanaryToken, err)
+// ErrCanaryTokenNotFound means no token with that ID exists.
+var ErrCanaryTokenNotFound = errors.New("canary token not found")
+
+// ErrCanaryRemoteDeleteFailed means canarytokens.org could not delete the
+// token, so its row was kept (a live remote token must stay tracked). The
+// remote API does not distinguish "already gone" from other failures, so the
+// admin can retry with localOnly to remove the row without a remote call.
+var ErrCanaryRemoteDeleteFailed = errors.New("could not delete the token on canarytokens.org; it was kept")
+
+// DeleteToken deletes one token: remote first, then the DB row. With localOnly
+// the remote call is skipped (the token is already gone or unreachable).
+func (s *CanaryService) DeleteToken(tokenID string, localOnly bool) error {
+	token, err := s.canaryQ.GetByID(tokenID)
+	if err != nil {
+		return ErrCanaryTokenNotFound
+	}
+	unlock := s.clientLock(token.ClientID)
+	defer unlock()
+	if !localOnly {
+		if err := s.DeleteRemoteToken(token.CanaryToken, token.AuthToken); err != nil {
+			log.Printf("Warning: kept canary token %s: remote delete failed: %v", token.ID, err)
+			return ErrCanaryRemoteDeleteFailed
 		}
 	}
-	return s.canaryQ.DeleteByClient(clientID)
+	return s.canaryQ.DeleteByID(tokenID)
+}
+
+// DeleteClientTokens deletes all canary tokens for a client. Tokens whose
+// remote delete fails are kept (unless localOnly) and counted in failed.
+func (s *CanaryService) DeleteClientTokens(clientID string, localOnly bool) (deleted, failed int, err error) {
+	unlock := s.clientLock(clientID)
+	defer unlock()
+	tokens, err := s.canaryQ.ListByClient(clientID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list tokens: %w", err)
+	}
+	for _, t := range tokens {
+		if !localOnly {
+			if rerr := s.DeleteRemoteToken(t.CanaryToken, t.AuthToken); rerr != nil {
+				log.Printf("Warning: kept canary token %s: remote delete failed: %v", t.ID, rerr)
+				failed++
+				continue
+			}
+		}
+		if derr := s.canaryQ.DeleteByID(t.ID); derr != nil {
+			return deleted, failed, fmt.Errorf("delete token: %w", derr)
+		}
+		deleted++
+	}
+	return deleted, failed, nil
 }
 
 func (s *CanaryService) createToken(tokenType, email, memo string) (*canaryResponse, error) {

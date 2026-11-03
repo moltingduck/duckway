@@ -220,3 +220,45 @@ func TestCanaryGenerateExcludedIs409AndResponsesNoStore(t *testing.T) {
 		t.Fatalf("token list cache=%q", rec.Header().Get("Cache-Control"))
 	}
 }
+
+func TestCanaryGenerateIgnoresNameQueryAndResolvesServerSide(t *testing.T) {
+	s, shared := newClientDetailServer(t)
+	seedDetailClient(t, s, "c1", "alpha", "tok1")
+	if rec := svcDo(s, shared, http.MethodPost, "/api/canary/settings", `{"email":"a@b.co","exclude_clients":["alpha"]}`, true); rec.Code != 200 {
+		t.Fatal(rec.Code)
+	}
+	// A spoofed ?name= must not dodge the exclusion that matches the real name.
+	rec := svcDo(s, shared, http.MethodPost, "/api/canary/clients/c1/generate?name=not-excluded", "", true)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("spoofed name => %d %s, want 409", rec.Code, rec.Body.String())
+	}
+	if rec := svcDo(s, shared, http.MethodPost, "/api/canary/clients/nope/generate?name=alpha", "", true); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown client => %d", rec.Code)
+	}
+}
+
+func TestCanaryDeleteEndpointsKeepRowsOnRemoteFailureAndLocalOnly(t *testing.T) {
+	s, shared := newClientDetailServer(t)
+	seedDetailClient(t, s, "c1", "alpha", "tok1")
+	svcExec(t, s, `INSERT INTO canary_tokens (id, client_id, token_type, canary_token, auth_token, token_value, memo, deploy_path, deploy_content) VALUES ('t1','c1','env_file','TOK','AUTH','v','m','.x/a','c')`)
+	// Remote delete cannot succeed in tests (no network): the row must be kept.
+	rec := svcDo(s, shared, http.MethodDelete, "/api/canary/tokens/t1", "", true)
+	if rec.Code != http.StatusBadGateway {
+		t.Skipf("environment reached canarytokens.org (%d); skipping offline assertion", rec.Code)
+	}
+	var n int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM canary_tokens WHERE id='t1'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("row must be kept, n=%d", n)
+	}
+	if rec := svcDo(s, shared, http.MethodDelete, "/api/canary/clients/c1", "", true); rec.Code != http.StatusBadGateway {
+		t.Fatalf("client delete => %d", rec.Code)
+	}
+	if rec := svcDo(s, shared, http.MethodDelete, "/api/canary/tokens/t1?local_only=1", "", true); rec.Code != 200 {
+		t.Fatalf("local_only => %d %s", rec.Code, rec.Body.String())
+	}
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM canary_tokens WHERE id='t1'`).Scan(&n)
+	if n != 0 {
+		t.Fatal("local_only must remove the row")
+	}
+}

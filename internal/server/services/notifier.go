@@ -481,3 +481,22 @@ func scrubNetErr(err error) error {
 	msg = urlInText.ReplaceAllString(msg, "[url]")
 	return errors.New(msg)
 }
+
+// ErrChannelNotAuthoritative is returned when an approve/reject arrives from a
+// listener whose notification channel is now disabled, deleted or edited.
+var ErrChannelNotAuthoritative = errors.New("this notification channel is disabled or was changed; approvals from it are refused")
+
+// GuardChannelAction wraps an approve/reject callback so it only runs while
+// the channel it came from is still active and its stored config still equals
+// the one the listener started with. The DB is consulted on every call and
+// nothing is cached, so a disabled or edited channel loses the ability to
+// approve immediately, even though its listener runs until the next restart.
+func GuardChannelAction(q *queries.NotificationQueries, channelID, startedConfig string, fn func(string) error) func(string) error {
+	return func(approvalID string) error {
+		cur, err := q.GetByID(channelID)
+		if err != nil || !cur.IsActive || cur.Config != startedConfig {
+			return ErrChannelNotAuthoritative
+		}
+		return fn(approvalID)
+	}
+}

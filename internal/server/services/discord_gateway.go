@@ -118,7 +118,7 @@ func (g *DiscordGateway) SendApprovalMessage(notif ApprovalNotification) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("[discord-gw] Failed to send approval message: %v", err)
+		log.Printf("[discord-gw] Failed to send approval message: %v", scrubNetErr(err))
 		return
 	}
 	defer resp.Body.Close()
@@ -165,7 +165,7 @@ func (g *DiscordGateway) connectLoop() {
 		}
 
 		if err := g.connect(); err != nil {
-			log.Printf("[discord-gw] Connection error: %v", err)
+			log.Printf("[discord-gw] Connection error: %v", scrubNetErr(err))
 		}
 
 		select {
@@ -430,7 +430,7 @@ func (g *DiscordGateway) sendHeartbeat(ws *websocket.Conn) {
 func (g *DiscordGateway) discordDo(method, url string, body io.Reader, contentType string) {
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
-		log.Printf("[discord-gw] build request %s %s: %v", method, url, err)
+		log.Printf("[discord-gw] build request %s: %v", method, scrubNetErr(err))
 		return
 	}
 	req.Header.Set("Authorization", "Bot "+g.botToken)

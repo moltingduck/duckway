@@ -577,17 +577,41 @@
     function text(d) { return d.date + ': ' + (metric === 'cost' ? fmtUSD(d.value) : fmtInt(d.value) + ' tokens'); }
     $('us-heat').setAttribute('aria-label', 'Daily ' + metric + ' for the last ' + span + ' days');
     DW.setHTML($('us-heat'), DW.html`${days.map(function (d) {
-      return DW.html`<button type="button" class="${'us-heat-cell us-heat-' + level(d.value)}" data-action="usHeatCell" data-text="${text(d)}" aria-pressed="false" aria-label="${text(d)}" title="${text(d)}">${d.day}</button>`;
+      return DW.html`<button type="button" class="${'us-heat-cell us-heat-' + level(d.value)}" data-action="usHeatCell" data-text="${text(d)}" tabindex="-1" aria-pressed="false" aria-label="${text(d)}" title="${text(d)}">${d.day}</button>`;
     })}`);
     DW.setHTML($('us-heat-legend'), DW.html`<span>Less</span>${[0, 1, 2, 3, 4].map(function (l) { return DW.html`<i class="${'us-heat-' + l}"></i>`; })}<span>More</span>`);
     $('us-heat-readout').textContent = 'Select a day for its value.';
+    var firstCell = $('us-heat').querySelector('.us-heat-cell'); if (firstCell) firstCell.tabIndex = 0;
     $('us-heat-note').textContent = span === RANGES[st.range].days ? 'Showing the ' + rangeLabel() + '.' : 'Showing the last ' + span + ' days (the daily view needs at least a week to be readable); totals above follow the ' + rangeLabel() + '.';
   }
   DW.actions.usHeatCell = function (el) {
     document.querySelectorAll('.us-heat-cell[aria-pressed="true"]').forEach(function (b) { b.setAttribute('aria-pressed', 'false'); });
     el.setAttribute('aria-pressed', 'true');
+    setRoving(el);
     $('us-heat-readout').textContent = el.dataset.text;
   };
+  // The grid is a single tab stop (roving tabindex); arrow keys move inside it.
+  function setRoving(cell) {
+    document.querySelectorAll('.us-heat-cell').forEach(function (b) { b.tabIndex = b === cell ? 0 : -1; });
+  }
+  $('us-heat').addEventListener('keydown', function (e) {
+    var cells = Array.prototype.slice.call($('us-heat').querySelectorAll('.us-heat-cell'));
+    var i = cells.indexOf(document.activeElement);
+    if (i < 0) return;
+    var cols = 1;
+    while (cols < cells.length && cells[cols].offsetTop === cells[0].offsetTop) cols++;
+    var n = -1;
+    if (e.key === 'ArrowRight') n = i + 1;
+    else if (e.key === 'ArrowLeft') n = i - 1;
+    else if (e.key === 'ArrowDown') n = i + cols;
+    else if (e.key === 'ArrowUp') n = i - cols;
+    else if (e.key === 'Home') n = 0;
+    else if (e.key === 'End') n = cells.length - 1;
+    if (n < 0 || n >= cells.length) { if (n !== -1) e.preventDefault(); return; }
+    e.preventDefault();
+    setRoving(cells[n]);
+    cells[n].focus();
+  });
 
   /* ---------- Sessions ---------- */
   function loadSessions() {
