@@ -303,7 +303,8 @@ func (h *AdminHandler) ClientsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminHandler) ClientUpdatesPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, r, "client_updates", pageData{Title: "Rollouts", Active: "clients"})
+	clients, _ := h.clients.List()
+	h.render(w, r, "client_updates", pageData{Title: "Rollouts", Active: "clients", Clients: clients})
 }
 
 // KeyPoolsPage renders the Key pools shell. Both pool kinds (legacy

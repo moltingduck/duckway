@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -256,11 +257,18 @@ func (h *PlaceholderHandler) ListWithApprovals(w http.ResponseWriter, r *http.Re
 		ApprovalStatus string  `json:"approval_status"`
 		ApprovedAt     *string `json:"approved_at"`
 		ExpiresAt      *string `json:"expires_at"`
+		Requests7d     int64   `json:"requests_7d"`
+	}
+
+	requests7d, err := h.placeholders.RequestCountsSince(time.Now().Add(-7*24*time.Hour), clientID)
+	if err != nil {
+		jsonError(w, "failed to count requests", http.StatusInternalServerError)
+		return
 	}
 
 	var result []phWithApproval
 	for _, p := range list {
-		pa := phWithApproval{PlaceholderKey: p}
+		pa := phWithApproval{PlaceholderKey: p, Requests7d: requests7d[p.ID]}
 		if a, err := approvalQ.LatestByPlaceholder(p.ID); err == nil {
 			pa.ApprovalStatus = a.Status
 			pa.ApprovedAt = a.ApprovedAt

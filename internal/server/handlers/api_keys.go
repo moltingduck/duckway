@@ -45,6 +45,9 @@ func (h *APIKeyHandler) WithHTTPClient(client *http.Client) *APIKeyHandler {
 type apiKeyListItem struct {
 	models.APIKey
 	UsedBy queries.KeyUsedBy `json:"used_by"`
+	// Tokens7d is input+output tokens over the last 7 days; nil when the
+	// credential has no token data in that window.
+	Tokens7d *int64 `json:"tokens_7d"`
 }
 
 func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +60,11 @@ func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
 	usedBy, err := h.apiKeys.UsedByCounts()
 	if err != nil {
 		jsonError(w, "failed to list key usage", http.StatusInternalServerError)
+		return
+	}
+	tokens7d, err := h.apiKeys.TokensSince(time.Now().Add(-7 * 24 * time.Hour))
+	if err != nil {
+		jsonError(w, "failed to list key token usage", http.StatusInternalServerError)
 		return
 	}
 	out := make([]apiKeyListItem, 0, len(list))
@@ -75,7 +83,11 @@ func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
 			list[i].UpstreamProxyURL = ""
 		}
 		sanitizeAPIKeyForAdmin(&list[i])
-		out = append(out, apiKeyListItem{APIKey: list[i], UsedBy: usedBy[list[i].ID]})
+		item := apiKeyListItem{APIKey: list[i], UsedBy: usedBy[list[i].ID]}
+		if n, ok := tokens7d[list[i].ID]; ok {
+			item.Tokens7d = &n
+		}
+		out = append(out, item)
 	}
 	jsonResponse(w, out)
 }

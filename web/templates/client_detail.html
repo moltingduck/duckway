@@ -32,11 +32,12 @@
     <div class="cd-main">
       <section class="cd-panel" id="cd-panel-overview" role="tabpanel" aria-labelledby="cd-tab-overview"><div id="cd-overview"></div></section>
       <section class="cd-panel" id="cd-panel-credentials" role="tabpanel" aria-labelledby="cd-tab-credentials" hidden>
+        <h2 class="dp-sect-h">Phantom tokens <button type="button" class="term-hint" data-term="phantom-token" aria-label="What is a phantom token?">ⓘ</button></h2>
         <div id="cd-banners"></div>
         <div class="card cd-tablecard">
           <div class="table-wrap">
             <table class="cd-table">
-              <thead><tr><th scope="col">Environment variable</th><th scope="col">Credential</th><th scope="col">From</th><th scope="col">Approval</th><th scope="col">Rules</th><th scope="col" class="text-right">Requests</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+              <thead><tr><th scope="col">Environment variable</th><th scope="col">Credential</th><th scope="col">From</th><th scope="col">Approval</th><th scope="col">Rules</th><th scope="col" class="text-right">Requests · 7d</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
               <tbody id="cd-creds"><tr><td colspan="7" class="text-muted">Loading…</td></tr></tbody>
             </table>
           </div>
@@ -396,7 +397,7 @@ function mapPh(p) {
   return {id: p.id, envName: p.env_name, placeholder: p.placeholder, serviceName: p.service_name || '', serviceId: p.service_id,
     apiKeyId: p.api_key_id || '', apiKeyName: p.api_key_name || '', groupId: p.group_id || '', suiteId: p.suite_id || '',
     clientId: p.client_id, keyPath: p.key_path || '', permissionConfig: p.permission_config || '',
-    requiresApproval: !!p.requires_approval, approvalTTL: p.approval_ttl_minutes || 0, usageCount: p.usage_count || 0,
+    requiresApproval: !!p.requires_approval, approvalTTL: p.approval_ttl_minutes || 0, usageCount: p.usage_count || 0, requests7d: p.requests_7d || 0,
     approvalStatus: p.approval_status || '', approvedAt: p.approved_at || '', expiresAt: p.expires_at || ''};
 }
 var loadSeq = 0;
@@ -536,16 +537,16 @@ function credRow(p) {
     <td data-label="From">${from}</td>
     <td data-label="Approval">${approvalCell(p)}</td>
     <td data-label="Rules" class="cl-muted">${rulesSummary(p.permissionConfig)}</td>
-    <td class="cd-num" data-label="Requests">${p.usageCount.toLocaleString()}</td>
-    <td><div class="cd-rowactions"><a class="btn btn-sm" href="${'/admin/phantom-tokens/' + encodeURIComponent(p.id)}" aria-label="${'Access rules for ' + p.envName}">Rules</a><button type="button" class="btn btn-sm" data-action="editPh" data-id="${p.id}" data-env="${p.envName}" data-key-path="${p.keyPath}" aria-label="${'Edit ' + p.envName}">Edit</button><button type="button" class="btn btn-sm btn-dz" data-action="unassignPh" data-id="${p.id}" aria-label="${'Unassign ' + p.envName}">Unassign</button></div></td></tr>`;
+    <td class="cd-num" data-label="Requests · 7d">${p.requests7d.toLocaleString()}</td>
+    <td><div class="cd-rowactions"><a class="btn btn-sm" href="${'/admin/phantom-tokens/' + encodeURIComponent(p.id)}" aria-label="${'Access rules for ' + p.envName}">Rules</a><details class="more-menu"><summary class="btn btn-sm" aria-label="${'More actions for ' + p.envName}">More</summary><div class="more-menu-list" role="menu"><button type="button" role="menuitem" data-action="editPh" data-id="${p.id}" data-env="${p.envName}" data-key-path="${p.keyPath}">Edit</button><button type="button" role="menuitem" class="dp-menu-dz" data-action="unassignPh" data-id="${p.id}">Unassign</button></div></details></div></td></tr>`;
 }
 function renderCreds() {
   var banners = assignedSuites.map(function(s) {
     var n = placeholders.filter(function(p) { return p.suiteId === s.id; }).length;
-    return DW.html`<div class="cd-banner"><span class="cd-banner-text">Key bundle <strong>${s.name}</strong> provides ${plural(n, 'of these token', 'of these tokens')}.</span>
+    return DW.html`<div class="cd-banner"><span class="cd-banner-text">Key bundle <button type="button" class="term-hint" data-term="key-bundle" aria-label="What is a key bundle?">ⓘ</button> <strong>${s.name}</strong> provides ${plural(n, 'of these token', 'of these tokens')}.</span>
       <span class="cd-banner-actions"><button type="button" class="btn btn-sm" data-action="changeBundle" data-id="${s.id}">Change bundle</button><button type="button" class="btn btn-sm btn-dz" data-action="dzUnassignBundle" data-id="${s.id}">Unassign…</button></span></div>`;
   });
-  if (!assignedSuites.length) banners = [DW.html`<div class="cd-banner"><span class="cd-banner-text">No key bundle assigned. A bundle adds a set of credentials in one step.</span><span class="cd-banner-actions"><button type="button" class="btn btn-sm" data-action="changeBundle" data-id="">Assign bundle</button></span></div>`];
+  if (!assignedSuites.length) banners = [DW.html`<div class="cd-banner"><span class="cd-banner-text">No key bundle <button type="button" class="term-hint" data-term="key-bundle" aria-label="What is a key bundle?">ⓘ</button> assigned. A bundle adds a set of credentials in one step.</span><span class="cd-banner-actions"><button type="button" class="btn btn-sm" data-action="changeBundle" data-id="">Assign bundle</button></span></div>`];
   DW.setHTML(el('cd-banners'), DW.html`<div class="cd-main">${banners}</div>`);
   var body = el('cd-creds');
   if (!placeholders.length) {
@@ -556,12 +557,12 @@ function renderCreds() {
 }
 function renderChannel() {
   if (!ccForClient) {
-    DW.setHTML(el('cd-channel'), DW.raw('<div class="card cd-card"><h2>Control channel</h2><p class="text-muted text-sm">No control channel is assigned to this client. Control channels are created and edited on the Control channels page, not here.</p><p class="mt-2"><a class="btn btn-primary" href="/admin/cc">Go to Control channels</a></p></div>'));
+    DW.setHTML(el('cd-channel'), DW.raw('<div class="card cd-card"><h2>Control channel <button type="button" class="term-hint" data-term="control-channel" aria-label="What is a control channel?">ⓘ</button></h2><p class="text-muted text-sm">No control channel is assigned to this client. Control channels are created and edited on the Control channels page, not here.</p><p class="mt-2"><a class="btn btn-primary" href="/admin/cc">Go to Control channels</a></p></div>'));
     return;
   }
   var cc = ccForClient;
   var st = cc.is_active ? DW.raw('<span class="cl-pill cl-pill-ok">Active</span>') : DW.raw('<span class="cl-pill cl-pill-mute">Inactive</span>');
-  DW.setHTML(el('cd-channel'), DW.html`<div class="card cd-card"><h2>Control channel</h2><dl class="cd-dl"><dt>Name</dt><dd>${cc.name}</dd><dt>Agent</dt><dd>${agentLabel(cc.agent_type)}</dd><dt>Status</dt><dd>${st}</dd></dl><p class="text-muted text-sm mt-2">Creating and editing a control channel happens on the Control channels page.</p><p class="mt-2"><a class="btn" href="${'/admin/cc#cc-' + enc(cc.id)}">Edit in Control channels</a></p></div>`);
+  DW.setHTML(el('cd-channel'), DW.html`<div class="card cd-card"><h2>Control channel <button type="button" class="term-hint" data-term="control-channel" aria-label="What is a control channel?">ⓘ</button></h2><dl class="cd-dl"><dt>Name</dt><dd>${cc.name}</dd><dt>Agent</dt><dd>${agentLabel(cc.agent_type)}</dd><dt>Status</dt><dd>${st}</dd></dl><p class="text-muted text-sm mt-2">Creating and editing a control channel happens on the Control channels page.</p><p class="mt-2"><a class="btn" href="${'/admin/cc#cc-' + enc(cc.id)}">Edit in Control channels</a></p></div>`);
 }
 function canaryRow(t) {
   var cell;

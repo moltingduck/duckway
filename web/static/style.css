@@ -2190,3 +2190,21 @@ a.lg2-dec { display: inline-flex; align-items: center; min-height: 1.5rem; }
   .lg-seg button { min-width: 2.75rem; }
   a.lg2-dec { min-height: 2.75rem; }
 }
+
+/* Data pages (dp-*): 7-day columns, row More menus, pool drag reorder */
+.dp-titlerow { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.dp-titlerow h1 { margin: 0; }
+.dp-sect-h { display: flex; align-items: center; gap: 0.375rem; margin: 0 0 0.75rem; font-size: 1rem; }
+.dp-handle { display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; min-height: 2rem; border: 1px solid var(--line); border-radius: var(--radius); color: var(--muted); cursor: grab; user-select: none; font-size: 1.125rem; line-height: 1; }
+.dp-handle:hover { color: var(--ink); border-color: var(--muted); }
+.dp-handle:active { cursor: grabbing; }
+.kp-m.dp-dragging { opacity: 0.5; }
+.kp-m.dp-drop-before { box-shadow: 0 -2px 0 0 var(--accent); }
+.kp-m.dp-drop-after { box-shadow: 0 2px 0 0 var(--accent); }
+.dp-menu-dz { color: var(--danger-text); }
+.cl-subtabs a { gap: 0.25rem; }
+.cd-rowactions .more-menu, .kb-card-actions .more-menu, .kp-m-ctl .more-menu { position: relative; }
+@media (max-width: 640px) {
+  .dp-handle { min-width: 44px; min-height: 44px; }
+  .cl-subtabs a { min-height: 44px; }
+}

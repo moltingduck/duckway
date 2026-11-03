@@ -3,6 +3,7 @@ package queries
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/models"
 )
@@ -181,4 +182,33 @@ func (q *PlaceholderQueries) ActiveServiceIDsByClient(clientID string) (map[stri
 func (q *PlaceholderQueries) UpdatePlaceholder(id, newPlaceholder string) error {
 	_, err := q.db.Exec("UPDATE placeholder_keys SET placeholder=? WHERE id=?", newPlaceholder, id)
 	return err
+}
+
+// RequestCountsSince returns, per phantom token id, the number of request_log
+// rows at or after since. When clientID is set only that client's rows are
+// counted. One aggregate query with a Go-computed cutoff; tokens without
+// requests are absent from the map.
+func (q *PlaceholderQueries) RequestCountsSince(since time.Time, clientID string) (map[string]int64, error) {
+	query := `SELECT placeholder_id, COUNT(*) FROM request_log WHERE placeholder_id IS NOT NULL AND created_at >= ?`
+	args := []interface{}{since.UTC().Format(OverviewTimeFormat)}
+	if clientID != "" {
+		query += ` AND client_id = ?`
+		args = append(args, clientID)
+	}
+	query += ` GROUP BY placeholder_id`
+	rows, err := q.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var n int64
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
 }
