@@ -85,9 +85,17 @@
     return DW.html`<button type="button" class="pt-chip${on ? ' pt-chip-on' : ''}" aria-pressed="${on ? 'true' : 'false'}" data-action="ptMethod" data-i="${i}" data-m="${m}" data-fk="${'r' + i + 'm' + m}">${label}</button>`;
   }
   function ruleRow(r, i) {
-    var last = S.rules.length - 1;
+    // The GitHub rule always stays last (it ends with deny_all_other), so it
+    // can not move and nothing can move below it.
+    var gh = S.rules.some(function (x) { return x.t === 'g'; });
+    var last = S.rules.length - 1 - (gh ? 1 : 0);
     var hit = S.hit === i ? ' pt-hit' : '';
-    var ctl = DW.html`<div class="pt-rule-ctl"><button type="button" class="btn btn-sm" data-action="ptMove" data-i="${i}" data-d="-1" data-fk="${'r' + i + 'up'}" aria-label="${'Move rule ' + (i + 1) + ' up'}"${i === 0 ? ' disabled' : ''}>&uarr;</button><button type="button" class="btn btn-sm" data-action="ptMove" data-i="${i}" data-d="1" data-fk="${'r' + i + 'dn'}" aria-label="${'Move rule ' + (i + 1) + ' down'}"${i === last ? ' disabled' : ''}>&darr;</button><button type="button" class="btn btn-sm btn-dz" data-action="ptRemove" data-i="${i}" aria-label="${'Remove rule ' + (i + 1)}">Remove</button></div>`;
+    var fixed = r.t === 'g';
+    var ctl = DW.html`<div class="pt-rule-ctl"><button type="button" class="btn btn-sm" data-action="ptMove" data-i="${i}" data-d="-1" data-fk="${'r' + i + 'up'}" aria-label="${'Move rule ' + (i + 1) + ' up'}"${i === 0 || fixed ? ' disabled' : ''}>&uarr;</button><button type="button" class="btn btn-sm" data-action="ptMove" data-i="${i}" data-d="1" data-fk="${'r' + i + 'dn'}" aria-label="${'Move rule ' + (i + 1) + ' down'}"${i >= last ? ' disabled' : ''}>&darr;</button><button type="button" class="btn btn-sm btn-dz" data-action="ptRemove" data-i="${i}" aria-label="${'Remove rule ' + (i + 1)}">Remove</button></div>`;
+    if (r.t === 'g') {
+      var n = Object.keys(r.caps).length;
+      return DW.html`<li class="pt-rule pt-rule-gh${hit}" data-i="${i}"><span class="pt-rule-n" aria-hidden="true">${i + 1}</span><div class="pt-rule-body"><div class="pt-rule-line"><span class="cl-pill cl-pill-info">GitHub repositories</span><strong class="pt-rule-name">${r.name}</strong></div><p class="pt-rule-desc">Generated from the GitHub repositories card: ${n} ${n === 1 ? 'repository' : 'repositories'}. It denies everything else, so it always stays last. Edit it in that card.</p></div>${ctl}</li>`;
+    }
     if (r.t === 'c') {
       return DW.html`<li class="pt-rule pt-rule-custom${hit}" data-i="${i}"><span class="pt-rule-n" aria-hidden="true">${i + 1}</span><div class="pt-rule-body"><div class="pt-rule-line"><span class="cl-pill cl-pill-warn">Custom rule</span><strong class="pt-rule-name">${r.raw && r.raw.name ? r.raw.name : 'Unnamed rule'}</strong></div><p class="pt-rule-desc">${PTACL.describeCustom(r.raw)}.</p><p class="pt-hint">The builder can not show this rule. It is kept exactly as written when you save. <button type="button" class="pt-linkbtn" data-action="ptTab" data-tab="json">Edit in JSON</button></p></div>${ctl}</li>`;
     }
@@ -95,7 +103,7 @@
     var methods = PTACL.METHODS.concat(['*']).map(function (m) { return methodChip(r, i, m); });
     return DW.html`<li class="pt-rule${hit}" data-i="${i}"><span class="pt-rule-n" aria-hidden="true">${i + 1}</span><div class="pt-rule-body">
       <div class="pt-rule-line">
-        <label class="pt-fld"><span class="pt-fld-k">Effect</span><select class="pt-effect pt-eff-${r.effect}" data-on-change="ptEffect" data-i="${i}" data-fk="${'r' + i + 'eff'}" aria-label="${'Rule ' + (i + 1) + ' effect'}"><option value="allow"${r.effect === 'allow' ? ' selected' : ''}>Allow</option><option value="deny"${r.effect === 'deny' ? ' selected' : ''}>Deny</option></select></label>
+        <label class="pt-fld"><span class="pt-fld-k">Effect</span><select class="pt-effect pt-eff-${r.effect}" data-on-change="ptEffect" data-i="${i}" data-fk="${'r' + i + 'eff'}" aria-label="${'Rule ' + (i + 1) + ' effect'}"><option value="allow"${r.effect === 'allow' ? ' selected' : ''}>Allow</option><option value="deny"${r.effect === 'deny' ? ' selected' : ''}>Deny</option><option value="approve"${r.effect === 'approve' ? ' selected' : ''}>Require approval</option></select></label>
         <div class="pt-fld pt-fld-methods" role="group" aria-label="${'Rule ' + (i + 1) + ' methods'}"><span class="pt-fld-k">Methods</span><div class="pt-chips">${methods}</div></div>
       </div>
       <label class="pt-fld pt-fld-path"><span class="pt-fld-k">Path pattern</span><input type="text" class="mono" value="${r.path}" data-on-input="ptPath" data-i="${i}" data-fk="${'r' + i + 'path'}" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="${'Rule ' + (i + 1) + ' path pattern'}"></label>
@@ -107,7 +115,7 @@
     var active = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.fk : '';
     var box = $('pt-rules');
     if (S.v2) {
-      DW.setHTML(box, DW.html`<div class="pt-notice" role="status"><strong>GitHub repository grants</strong><p>This token uses repository grants, which the gateway turns into path rules itself. Edit them in the GitHub repositories card, or in the JSON tab. The rule builder is not available for this format.</p></div>`);
+      DW.setHTML(box, DW.html`<div class="pt-notice" role="status"><strong>GitHub repository grants</strong><p>This token uses repository grants, which the gateway turns into path rules itself. Convert them to capability rows in the GitHub repositories card, or edit the JSON tab. The rule builder is not available for this format.</p></div>`);
       $('pt-add-rule').disabled = true;
       Array.prototype.forEach.call(document.querySelectorAll('[data-preset]'), function (b) { b.disabled = true; });
       $('pt-clear-rules').disabled = true;
@@ -163,7 +171,7 @@
     if (S.approval && !(parseInt(S.ttlVal, 10) >= 1)) return 'Enter how long an approval stays valid.';
     return '';
   }
-  function edited() { S.hit = -1; clearTest(); rebuildJSON(); refresh(); }
+  function edited() { S.hit = -1; PTACL.settle(S.rules); clearTest(); rebuildJSON(); refresh(); }
 
   /* ---------- rule actions ---------- */
   DW.actions.ptAddRule = function () {
@@ -179,7 +187,7 @@
   };
   DW.actions.ptMove = function (el) {
     var i = +el.dataset.i, j = i + (+el.dataset.d);
-    if (j < 0 || j >= S.rules.length) return;
+    if (j < 0 || j >= S.rules.length || S.rules[i].t === 'g' || S.rules[j].t === 'g') return;
     var t = S.rules[i]; S.rules[i] = S.rules[j]; S.rules[j] = t;
     edited();
     var key = 'r' + j + (+el.dataset.d < 0 ? 'up' : 'dn');
@@ -207,7 +215,8 @@
   DW.actions.ptEffect = function (el) {
     var r = S.rules[+el.dataset.i];
     if (!r || r.t !== 's') return;
-    r.effect = el.value === 'deny' ? 'deny' : 'allow';
+    r.effect = PTACL.EFFECTS.indexOf(el.value) === -1 ? 'allow' : el.value;
+    r.auto = r.auto || !r.hasName;
     edited(); renderRules();
   };
   DW.actions.ptPath = function (el) {
@@ -221,14 +230,30 @@
     ae.textContent = adv; ae.hidden = !adv;
     edited();
   };
-  DW.actions.ptPreset = function (el) {
-    var p = PTACL.PRESETS[el.dataset.preset];
+  function applyPreset(key) {
+    var p = PTACL.PRESETS[key];
     if (!p) return;
     var replaced = S.rules.length;
     S.version = '1'; S.v2 = null;
     S.rules = p.rules();
     edited(); renderRules();
     setText('pt-rules-status', p.label + ' applied' + (replaced ? '; it replaced ' + replaced + (replaced === 1 ? ' rule' : ' rules') : '') + '. Use Discard to undo.');
+  }
+  // Applying a preset over existing rules asks first, in the page (no native dialogs).
+  DW.actions.ptPreset = function (el) {
+    var p = PTACL.PRESETS[el.dataset.preset];
+    if (!p) return;
+    if (!S.rules.length && !S.v2) { applyPreset(el.dataset.preset); return; }
+    S.pendingPreset = el.dataset.preset;
+    var n = S.v2 ? Object.keys(S.v2.repositories).length : S.rules.length;
+    $('pt-preset-msg').textContent = 'Applying "' + p.label + '" replaces ' + (S.v2 ? 'the ' + n + (n === 1 ? ' repository grant' : ' repository grants') : 'your ' + n + (n === 1 ? ' rule' : ' rules')) + ' on this token. ' + p.help;
+    DW.modal.open('#pt-preset-modal');
+  };
+  DW.actions.ptPresetApply = function () {
+    var key = S.pendingPreset;
+    S.pendingPreset = '';
+    DW.modal.close('#pt-preset-modal');
+    if (key) applyPreset(key);
   };
   DW.actions.ptClearRules = function () {
     var n = S.rules.length;
@@ -293,9 +318,10 @@
     var pill;
     if (l.result === 'skipped') pill = DW.html`<span class="cl-pill cl-pill-mute">Not checked</span>`;
     else if (l.result === 'deny') pill = DW.html`<span class="cl-pill cl-pill-bad">Denies</span>`;
+    else if (l.result === 'approve') pill = DW.html`<span class="cl-pill cl-pill-warn">Requires approval</span>`;
     else pill = DW.html`<span class="cl-pill cl-pill-ok">Allows</span>`;
     var detail;
-    if (l.result === 'deny') detail = l.reason;
+    if (l.result === 'deny' || l.result === 'approve') detail = l.reason;
     else if (l.result === 'skipped') detail = l.note;
     else if (!l.configured) detail = 'No rules, so nothing is restricted here.';
     else if (l.default) detail = 'No rule matched, so the request is allowed here.';
@@ -303,9 +329,12 @@
     return DW.html`<tr><th scope="row">${LAYER_NAMES[l.layer] || l.layer}${l.label ? DW.html` <span class="text-muted">${l.label}</span>` : ''}</th><td>${pill}</td><td class="pt-layer-detail">${detail}${l.note && l.result !== 'skipped' ? DW.html` <span class="text-muted">${l.note}</span>` : ''}</td></tr>`;
   }
   function renderTest(r) {
-    var allow = r.decision === 'allow';
+    var allow = r.decision === 'allow', approve = r.decision === 'approve';
     var headline;
-    if (!allow) {
+    var whoOf = function (d) { return d === 'token' ? 'this token' : (d === 'service' ? 'the service rules' : 'the credential rules'); };
+    if (approve) {
+      headline = 'Requires approval by ' + (r.rule_index >= 0 ? 'rule ' + (r.rule_index + 1) + (r.rule_name ? ' "' + r.rule_name + '"' : '') + ' on ' : '') + whoOf(r.decided_by) + '. No layer denies it, so it waits in Approvals and is sent upstream only after an admin approves it.';
+    } else if (!allow) {
       var who = r.decided_by === 'token' ? 'this token' : (r.decided_by === 'service' ? 'the service rules' : 'the credential rules');
       headline = 'Denied by ' + (r.rule_index >= 0 ? 'rule ' + (r.rule_index + 1) + ' on ' : '') + who + '.';
       var others = r.layers.filter(function (l) { return l.layer !== r.decided_by && l.result === 'allow'; });
@@ -314,9 +343,9 @@
       headline = r.decided_by === 'default' ? 'Allowed. No rule matched, so the request is allowed by default.' :
         'Allowed by ' + (r.rule_index >= 0 ? 'rule ' + (r.rule_index + 1) + ' on ' : '') + (r.decided_by === 'token' ? 'this token' : (r.decided_by === 'service' ? 'the service rules' : 'the credential rules')) + '.';
     }
-    var approval = r.approval.required ? DW.html`<p class="pt-hint">Approval: an admin must approve this token before the request is sent upstream (valid for ${fmtTTL(r.approval.ttl_minutes)} once approved).</p>` : DW.html`<p class="pt-hint">Approval: not required.</p>`;
+    var approval = r.approval.required ? DW.html`<p class="pt-hint">Approval: an admin must approve this token before the request is sent upstream (valid for ${fmtTTL(r.approval.ttl_minutes)} once approved).</p>` : (approve ? DW.html`<p class="pt-hint">Token-wide approval is off. Only the rule above asks for approval.</p>` : DW.html`<p class="pt-hint">Approval: not required.</p>`);
     var body = r.needs_body ? DW.html`<p class="pt-hint">A matching rule has body constraints. Add a request body below for a complete answer.</p>` : '';
-    DW.setHTML($('pt-test-out'), DW.html`<div class="pt-result ${allow ? 'pt-result-allow' : 'pt-result-deny'}" role="status"><p class="pt-result-head"><span class="cl-pill ${allow ? 'cl-pill-ok' : 'cl-pill-bad'}">${allow ? 'Allowed' : 'Denied'}</span> <span class="mono">${r.method} ${r.path}</span></p><p>${headline}</p><div class="table-wrap"><table class="pt-layers-table"><thead><tr><th scope="col">Layer</th><th scope="col">Result</th><th scope="col">Why</th></tr></thead><tbody>${r.layers.map(layerLine)}</tbody></table></div>${body}${approval}</div>`);
+    DW.setHTML($('pt-test-out'), DW.html`<div class="pt-result ${approve ? 'pt-result-approve' : (allow ? 'pt-result-allow' : 'pt-result-deny')}" role="status"><p class="pt-result-head"><span class="cl-pill ${approve ? 'cl-pill-warn' : (allow ? 'cl-pill-ok' : 'cl-pill-bad')}">${approve ? 'Requires approval' : (allow ? 'Allowed' : 'Denied')}</span> <span class="mono">${r.method} ${r.path}</span></p><p>${headline}</p><div class="table-wrap"><table class="pt-layers-table"><thead><tr><th scope="col">Layer</th><th scope="col">Result</th><th scope="col">Why</th></tr></thead><tbody>${r.layers.map(layerLine)}</tbody></table></div>${body}${approval}</div>`);
     S.hit = (r.decided_by === 'token' && r.rule_index >= 0 && !S.v2) ? r.rule_index : -1;
     if (S.mode === 'rules') renderRules();
   }
@@ -348,49 +377,118 @@
   };
 
   /* ---------- GitHub card ---------- */
-  var ghSeeded = false;
+  var LEVELS = [['none', 'None'], ['read', 'Read'], ['write', 'Write']];
+  function ghRule() { return S.rules.filter(function (r) { return r.t === 'g'; })[0] || null; }
+  function ghCaps() { var r = ghRule(); return r ? r.caps : {}; }
+  function ghStatus(msg) { setText('pt-gh-status', msg || ''); }
+  function ghError(msg) { var e = $('pt-gh-err'); e.textContent = msg || ''; e.hidden = !msg; }
+  function capSelect(repo, c, level) {
+    var opts = LEVELS.map(function (l) { return DW.html`<option value="${l[0]}"${level === l[0] ? ' selected' : ''}>${l[1]}</option>`; });
+    return DW.html`<label class="pt-fld pt-gh-cap"><span class="pt-fld-k">${c.label}</span><select data-on-change="ptGhCap" data-repo="${repo}" data-cap="${c.key}" data-fk="${'g:' + repo + ':' + c.key}" aria-label="${repo + ' ' + c.label + ' access'}">${opts}</select></label>`;
+  }
+  function ghRow(repo, caps) {
+    var row = caps[repo] || {}, defs = PTACL.ghCapabilities();
+    var any = defs.some(function (c) { return row[c.key] === 'read' || row[c.key] === 'write'; });
+    return DW.html`<li class="pt-gh-row"><div class="pt-gh-head"><span class="mono pt-repo">${repo}</span>${any ? '' : DW.html`<span class="pt-cap pt-cap-none">no access</span>`}<button type="button" class="btn btn-sm btn-dz" data-action="ptGhRemove" data-repo="${repo}" data-fk="${'g:' + repo + ':rm'}" aria-label="${'Remove ' + repo}">Remove</button></div><div class="pt-gh-caps">${defs.map(function (c) { return capSelect(repo, c, row[c.key] || 'none'); })}</div></li>`;
+  }
   function renderGitHub() {
     var card = $('pt-github');
     if (!card || !D.is_github) return;
+    var rows = $('pt-gh-rows'), v2box = $('pt-gh-v2'), form = $('pt-gh-add-form');
+    var active = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.fk : '';
     var grants = S.jsonErr ? [] : PT.gitGrantsFromACL(S.jsonText);
-    if (!ghSeeded && !S.jsonErr) {
-      ghSeeded = true;
-      $('pt-gh-repos').value = grants.map(function (g) { return g.repo; }).join('\n');
-      $('pt-gh-mode').value = grants.length ? PT.grantMode(grants.find(function (g) { return PT.grantMode(g) === 'cicd'; }) || grants.find(function (g) { return g.push; }) || grants[0]) : 'deploy';
-      var first = grants[0] || {};
-      $('pt-gh-wf').value = (first.workflow_allowlist || []).join(', ');
-      $('pt-gh-refs').value = (first.ref_allowlist || []).join(', ');
-      $('pt-gh-envs').value = (first.environment_allowlist || []).join(', ');
-    }
-    if (!grants.length) {
-      DW.setHTML($('pt-gh-grants'), DW.html`<p class="text-muted text-sm">No repository grants in this token's rules.</p>`);
-    } else {
-      DW.setHTML($('pt-gh-grants'), DW.html`<ul class="pt-repos">${grants.map(function (g) {
+    if (S.jsonErr) {
+      DW.setHTML(rows, DW.html`<p class="text-muted text-sm">Fix the JSON error in Advanced JSON to edit repositories here.</p>`);
+      v2box.hidden = true; form.hidden = true;
+    } else if (S.v2) {
+      DW.setHTML(rows, DW.html``);
+      DW.setHTML(v2box, DW.html`<div class="pt-notice"><strong>Repository grants (older format)</strong><ul class="pt-repos">${grants.map(function (g) {
         var caps = PT.grantCapabilities(g);
         return DW.html`<li><span class="mono pt-repo">${g.repo}</span><span class="pt-caps">${caps.length ? caps.map(function (c) { return DW.html`<span class="pt-cap">${c}</span>`; }) : DW.html`<span class="pt-cap pt-cap-none">no access</span>`}</span></li>`;
-      })}</ul>`);
+      })}</ul><button type="button" class="btn" data-action="ptGhConvert">Convert to capability rows</button></div>`);
+      v2box.hidden = false; form.hidden = true;
+    } else {
+      var caps = ghCaps(), repos = Object.keys(caps).sort(function (a, b) { return a.toLowerCase() < b.toLowerCase() ? -1 : 1; });
+      v2box.hidden = true; form.hidden = false;
+      if (!repos.length) DW.setHTML(rows, DW.html`<p class="text-muted text-sm">No repositories yet. Without rows, this token's GitHub requests are limited only by the rules above and the service and credential layers.</p>`);
+      else DW.setHTML(rows, DW.html`<ul class="pt-gh-list" aria-label="Repository capabilities">${repos.map(function (r) { return ghRow(r, caps); })}</ul>`);
+      if (active && active.indexOf('g:') === 0) {
+        var el = rows.querySelector('[data-fk="' + active.replace(/"/g, '') + '"]');
+        if (el && !el.disabled) el.focus();
+      }
     }
     var sel = $('pt-gh-clone'), keep = sel.value;
     DW.setHTML(sel, DW.html`${grants.map(function (g) { return DW.html`<option value="${g.repo}">${g.repo}</option>`; })}`);
     if (grants.some(function (g) { return g.repo === keep; })) sel.value = keep;
     sel.disabled = !grants.length;
     var repo = sel.value || 'OWNER/REPO';
-    var mode = grants.length ? PT.grantMode(grants.find(function (g) { return g.repo === repo; }) || grants[0]) : 'deploy';
-    $('pt-gh-cmds').textContent = ['duckway git list', 'duckway git setup', '', '# pick a repository from `duckway git list`:', 'duckway git clone ' + repo, '', 'cd ' + repo.split('/').pop(), mode === 'deploy' ? 'git pull --ff-only' : 'git pull --ff-only && git push'].join('\n');
+    var cur = grants.find(function (g) { return g.repo === repo; }) || grants[0];
+    var canPush = !!(cur && cur.push);
+    $('pt-gh-cmds').textContent = ['duckway git list', 'duckway git setup', '', '# pick a repository from `duckway git list`:', 'duckway git clone ' + repo, '', 'cd ' + repo.split('/').pop(), canPush ? 'git pull --ff-only && git push' : 'git pull --ff-only'].join('\n');
   }
-  DW.actions.ptGhApply = function () {
-    var repos = PT.parseGitRepoList($('pt-gh-repos').value), err = $('pt-gh-err');
-    if (!repos.length) { err.textContent = 'Enter at least one repository as OWNER/REPO.'; err.hidden = false; return; }
-    if (S.jsonErr) { err.textContent = 'The Advanced JSON has an error. Fix it first, or applying repository grants would overwrite your edits.'; err.hidden = false; return; }
-    err.hidden = true;
-    var cfg = PT.gitACLForRepos(repos, $('pt-gh-mode').value || 'deploy', $('pt-gh-wf').value, $('pt-gh-refs').value, $('pt-gh-envs').value);
-    var p = PTACL.parse(JSON.stringify(cfg));
-    if (!p.ok) { err.textContent = p.err; err.hidden = false; return; }
-    applyParsed(p);
+  function ghEnsureRule() {
+    var r = ghRule();
+    if (!r) { r = PTACL.newGitHubRule(); S.rules.push(r); }
+    return r;
+  }
+  function ghDropEmpty() {
+    var r = ghRule();
+    if (r && !Object.keys(r.caps).length) S.rules.splice(S.rules.indexOf(r), 1);
+  }
+  DW.actions.ptGhAdd = function () {
+    var input = $('pt-gh-new'), raw = input.value.trim();
+    ghError(''); ghStatus('');
+    if (S.jsonErr || S.v2) return;
+    var repo = raw ? PT.normalizeGitRepo(raw) : '';
+    if (!repo || repo === 'ORG/REPO' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) { ghError('Enter a repository as OWNER/REPO.'); input.focus(); return; }
+    var caps = ghCaps();
+    if (Object.keys(caps).some(function (k) { return k.toLowerCase() === repo.toLowerCase(); })) { ghError(repo + ' is already listed.'); input.focus(); return; }
+    ghEnsureRule().caps[repo] = { contents: 'read', pull_requests: 'none', issues: 'none', actions: 'none' };
+    input.value = '';
     edited(); renderRules();
-    setText('pt-gh-status', 'Repository grants applied to the draft rules. Save to keep them.');
+    ghStatus(repo + ' added with read access to contents. Save to keep it.');
+  };
+  DW.actions.ptGhCap = function (el) {
+    var r = ghRule(), repo = el.dataset.repo;
+    if (!r || !r.caps[repo]) return;
+    r.caps[repo][el.dataset.cap] = el.value;
+    ghError(''); ghStatus('');
+    edited(); renderRules();
+  };
+  DW.actions.ptGhRemove = function (el) {
+    var r = ghRule();
+    if (!r) return;
+    delete r.caps[el.dataset.repo];
+    ghDropEmpty();
+    ghError('');
+    ghStatus(el.dataset.repo + ' removed. Use Discard to undo.');
+    edited(); renderRules();
+    var n = $('pt-gh-new'); if (n && !n.hidden) n.focus();
   };
   DW.actions.ptGhClone = function () { renderGitHub(); };
+  // Older (version 2) grants become capability rows after an in-page confirmation.
+  DW.actions.ptGhConvert = function () { DW.modal.open('#pt-v2-modal'); };
+  DW.actions.ptGhConvertGo = function () {
+    DW.modal.close('#pt-v2-modal');
+    if (!S.v2) return;
+    var level = function (read, write) { return write ? 'write' : (read ? 'read' : 'none'); };
+    var caps = {}, repos = S.v2.repositories || {};
+    Object.keys(repos).forEach(function (repo) {
+      var c = (repos[repo] || {}).capabilities || {};
+      caps[repo] = {
+        contents: level(c.clone || c.releases_read || c.push || c.releases_write, c.push || c.releases_write),
+        pull_requests: level(c.pull_requests_read || c.pull_requests_write, c.pull_requests_write),
+        issues: level(c.issues_read || c.issues_write, c.issues_write),
+        actions: level(c.actions_read || c.workflow_dispatch || c.workflow_rerun || c.workflow_cancel, c.workflow_dispatch || c.workflow_rerun || c.workflow_cancel)
+      };
+    });
+    S.version = '1'; S.v2 = null;
+    var g = PTACL.newGitHubRule();
+    g.caps = caps;
+    S.rules = [g];
+    edited(); renderRules();
+    ghStatus('Converted to capability rows. Review them, then save.');
+  };
 
   /* ---------- approval card ---------- */
   function renderApproval() {
@@ -471,7 +569,6 @@
   }
   DW.actions.ptDiscard = function () {
     loadFromOrig();
-    ghSeeded = false;
     showBanner('');
     setText('pt-rules-status', '');
     setText('pt-gh-status', '');
@@ -497,6 +594,7 @@
   });
 
   /* ---------- init ---------- */
+  PTACL.setGitHubTable(D.github_caps || []);
   S.orig = { config: D.permission_config || '', approval: !!D.requires_approval, ttl: D.approval_ttl_minutes || 0 };
   renderHeader();
   renderClientCard();

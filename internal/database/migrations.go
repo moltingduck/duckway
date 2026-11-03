@@ -454,6 +454,8 @@ func runMigrations(db *sql.DB) error {
 
 	// Safe column additions for existing databases
 	safeAlters := []string{
+		// '' = token-wide approval; otherwise the request signature an approve rule gated.
+		"ALTER TABLE approvals ADD COLUMN scope TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE clients ADD COLUMN canary_enabled INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE clients ADD COLUMN short_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE clients ADD COLUMN update_policy TEXT NOT NULL DEFAULT 'managed'",

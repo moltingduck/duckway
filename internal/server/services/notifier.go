@@ -39,6 +39,7 @@ type ApprovalNotification struct {
 	ServiceName   string `json:"service_name"`
 	Method        string `json:"method"`
 	Path          string `json:"path"`
+	Rule          string `json:"rule,omitempty"` // approve rule (and layer) that held the request; empty for token-wide approval
 	AdminURL      string `json:"admin_url"`
 }
 
@@ -87,6 +88,9 @@ func (n *Notifier) sendTelegram(configJSON string, notif ApprovalNotification) e
 		"🔑 *Duckway Approval Required*\n\nClient: `%s`\nService: `%s`\nRequest: `%s %s`\nApproval ID: `%s`",
 		notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID,
 	)
+	if notif.Rule != "" {
+		text += fmt.Sprintf("\nRule: `%s`", strings.ReplaceAll(notif.Rule, "`", "'"))
+	}
 
 	// Inline keyboard with Approve/Reject buttons
 	keyboard := map[string]interface{}{
@@ -130,7 +134,7 @@ func (n *Notifier) sendDiscord(configJSON string, notif ApprovalNotification) er
 	embed := map[string]interface{}{
 		"title":       "🔑 Duckway Approval Required",
 		"color":       16750848,
-		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`", notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID),
+		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`", notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID) + ruleLine(notif.Rule),
 		"footer":      map[string]string{"text": "Reply: !approve " + notif.ApprovalID},
 	}
 
@@ -172,7 +176,7 @@ func (n *Notifier) sendDiscordBot(configJSON string, notif ApprovalNotification)
 	embed := map[string]interface{}{
 		"title":       "🔑 Duckway Approval Required",
 		"color":       16750848,
-		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`", notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID),
+		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`", notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID) + ruleLine(notif.Rule),
 		"footer":      map[string]string{"text": "Reply: !approve " + notif.ApprovalID + "  or  !reject " + notif.ApprovalID},
 	}
 
@@ -513,4 +517,13 @@ func GuardChannelAction(q *queries.NotificationQueries, channelID, startedConfig
 		}
 		return fn(approvalID)
 	}
+}
+
+// ruleLine is the extra notification line naming the approve rule that held a
+// request ("" for token-wide approvals).
+func ruleLine(rule string) string {
+	if rule == "" {
+		return ""
+	}
+	return "\n**Rule:** `" + strings.ReplaceAll(rule, "`", "'") + "`"
 }

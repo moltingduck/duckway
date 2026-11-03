@@ -175,6 +175,28 @@ func TestACLTestEndpointUsesRealEngine(t *testing.T) {
 			t.Fatalf("deny_all_other: %+v", r)
 		}
 	})
+	t.Run("approve rule reports requires approval with the rule", func(t *testing.T) {
+		cfg := `{"version":"1","provider":"svc","rules":[{"name":"gate","endpoints":[{"method":"GET","path":"/v1/*","allow":true},{"method":"POST","path":"/v1/*","approve":true}]}]}`
+		mk := func(id, method, path string) ptTestResult {
+			b, _ := json.Marshal(map[string]interface{}{"method": method, "path": path, "permission_config": cfg})
+			code, r, raw := e.aclTest(t, id, string(b))
+			if code != 200 {
+				t.Fatalf("%d %s", code, raw)
+			}
+			return r
+		}
+		r := mk("ph-pt", "POST", "/v1/files")
+		if r.Decision != "approve" || r.DecidedBy != "token" || r.RuleIndex != 0 || r.RuleName != "gate" || r.Layers[2].Result != "approve" || !strings.Contains(r.Reason, "requires approval") {
+			t.Fatalf("%+v", r)
+		}
+		if r := mk("ph-pt", "GET", "/v1/files"); r.Decision != "allow" {
+			t.Fatalf("allow rule: %+v", r)
+		}
+		// A deny on another layer wins over an approve on the token.
+		if r := mk("ph-narrow", "POST", "/v1/chat"); r.Decision != "deny" || r.DecidedBy != "service" {
+			t.Fatalf("deny must beat approve: %+v", r)
+		}
+	})
 	t.Run("git discovery normalised like the proxy", func(t *testing.T) {
 		cfg := `{"version":"1","provider":"github","rules":[{"name":"push","endpoints":[{"method":"POST","path":"/acme/app.git/git-receive-pack","allow":false}]}]}`
 		b, _ := json.Marshal(map[string]interface{}{"method": "GET", "path": "/acme/app.git/info/refs?service=git-receive-pack", "permission_config": cfg})

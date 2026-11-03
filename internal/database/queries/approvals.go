@@ -2,6 +2,7 @@ package queries
 
 import (
 	"database/sql"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -21,9 +22,43 @@ func (q *ApprovalQueries) GetValidApproval(placeholderID string) (*models.Approv
 	err := q.db.QueryRow(
 		`SELECT id, placeholder_id, status, approved_at, expires_at, request_info, created_at
 		 FROM approvals
-		 WHERE placeholder_id = ? AND status = 'approved' AND (expires_at IS NULL OR expires_at > datetime('now'))
+		 WHERE placeholder_id = ? AND scope = '' AND status = 'approved' AND (expires_at IS NULL OR expires_at > datetime('now'))
 		 ORDER BY approved_at DESC LIMIT 1`,
 		placeholderID,
+	).Scan(&a.ID, &a.PlaceholderID, &a.Status, &a.ApprovedAt, &a.ExpiresAt, &a.RequestInfo, &a.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// GetValidScopedApproval returns an unexpired approval granted for one specific
+// per-rule request signature (see CreateScoped). Token-wide approvals have an
+// empty scope and never satisfy a scoped lookup, and vice versa.
+func (q *ApprovalQueries) GetValidScopedApproval(placeholderID, scope string) (*models.Approval, error) {
+	var a models.Approval
+	err := q.db.QueryRow(
+		`SELECT id, placeholder_id, status, approved_at, expires_at, request_info, created_at
+		 FROM approvals
+		 WHERE placeholder_id = ? AND scope = ? AND scope <> '' AND status = 'approved' AND (expires_at IS NULL OR expires_at > datetime('now'))
+		 ORDER BY approved_at DESC LIMIT 1`,
+		placeholderID, scope,
+	).Scan(&a.ID, &a.PlaceholderID, &a.Status, &a.ApprovedAt, &a.ExpiresAt, &a.RequestInfo, &a.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// GetPendingScoped returns the newest pending approval for a per-rule request
+// signature, so a client retrying while the admin decides reuses it instead of
+// queueing (and notifying) again.
+func (q *ApprovalQueries) GetPendingScoped(placeholderID, scope string) (*models.Approval, error) {
+	var a models.Approval
+	err := q.db.QueryRow(
+		`SELECT id, placeholder_id, status, approved_at, expires_at, request_info, created_at
+		 FROM approvals WHERE placeholder_id = ? AND scope = ? AND scope <> '' AND status = 'pending' ORDER BY created_at DESC LIMIT 1`,
+		placeholderID, scope,
 	).Scan(&a.ID, &a.PlaceholderID, &a.Status, &a.ApprovedAt, &a.ExpiresAt, &a.RequestInfo, &a.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -92,7 +127,31 @@ func (q *ApprovalQueries) Create(a *models.Approval) error {
 	return err
 }
 
+// CreateScoped inserts a pending approval limited to one request signature
+// (an approve rule matched). scope must be non-empty.
+func (q *ApprovalQueries) CreateScoped(a *models.Approval, scope string) error {
+	_, err := q.db.Exec(
+		"INSERT INTO approvals (id, placeholder_id, status, request_info, scope) VALUES (?, ?, ?, ?, ?)",
+		a.ID, a.PlaceholderID, a.Status, a.RequestInfo, scope,
+	)
+	return err
+}
+
+// approvalExpiryExpr matches the relative expiry callers pass to Approve.
+var approvalExpiryExpr = regexp.MustCompile(`^datetime\('now', '\+(\d{1,9}) (minutes|hours)'\)$`)
+
+// Approve marks an approval granted. expiresAt is either a concrete timestamp
+// or a relative expression such as datetime('now', '+60 minutes'), which is
+// evaluated by the database. (It used to be bound as a literal string, which
+// sorted after every real timestamp and so never expired.)
 func (q *ApprovalQueries) Approve(id string, expiresAt string) error {
+	if m := approvalExpiryExpr.FindStringSubmatch(expiresAt); m != nil {
+		_, err := q.db.Exec(
+			"UPDATE approvals SET status = 'approved', approved_at = datetime('now'), expires_at = datetime('now', '+' || ? || ' ' || ?) WHERE id = ?",
+			m[1], m[2], id,
+		)
+		return err
+	}
 	_, err := q.db.Exec(
 		"UPDATE approvals SET status = 'approved', approved_at = datetime('now'), expires_at = ? WHERE id = ?",
 		expiresAt, id,

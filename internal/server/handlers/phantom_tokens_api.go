@@ -21,7 +21,7 @@ type aclTestLayer struct {
 	Layer      string `json:"layer"` // service | credential | token
 	Label      string `json:"label"` // human name of the config owner
 	Configured bool   `json:"configured"`
-	Result     string `json:"result"` // allow | deny | skipped
+	Result     string `json:"result"` // allow | deny | approve | skipped
 	Reason     string `json:"reason,omitempty"`
 	RuleIndex  int    `json:"rule_index"` // -1 when no rule decided
 	RuleName   string `json:"rule_name,omitempty"`
@@ -30,7 +30,7 @@ type aclTestLayer struct {
 }
 
 type aclTestResponse struct {
-	Decision  string         `json:"decision"`   // allow | deny
+	Decision  string         `json:"decision"`   // allow | deny | approve
 	DecidedBy string         `json:"decided_by"` // service | credential | token | default
 	Reason    string         `json:"reason,omitempty"`
 	RuleIndex int            `json:"rule_index"` // index within the deciding layer's rules, -1 if none
@@ -144,6 +144,8 @@ func (h *PlaceholderHandler) TestACL(w http.ResponseWriter, r *http.Request) {
 		l.RuleIndex, l.RuleName, l.Default = ex.RuleIndex, ex.RuleName, ex.Default && l.Configured
 		if ex.Allowed {
 			l.Result = "allow"
+		} else if ex.NeedsApproval {
+			l.Result, l.Reason = "approve", ex.Reason
 		} else {
 			l.Result, l.Reason = "deny", ex.Reason
 		}
@@ -161,6 +163,17 @@ func (h *PlaceholderHandler) TestACL(w http.ResponseWriter, r *http.Request) {
 		if l.Result == "deny" {
 			resp.Decision, resp.DecidedBy, resp.Reason, resp.RuleIndex, resp.RuleName = "deny", l.Layer, l.Reason, l.RuleIndex, l.RuleName
 			break
+		}
+	}
+	if resp.Decision == "allow" {
+		// No deny anywhere: if any layer matched an approve rule the proxy holds
+		// the request for approval. The first such layer (service, credential,
+		// token) is the one the proxy reports.
+		for _, l := range resp.Layers {
+			if l.Result == "approve" {
+				resp.Decision, resp.DecidedBy, resp.Reason, resp.RuleIndex, resp.RuleName = "approve", l.Layer, l.Reason, l.RuleIndex, l.RuleName
+				break
+			}
 		}
 	}
 	if resp.Decision == "allow" {

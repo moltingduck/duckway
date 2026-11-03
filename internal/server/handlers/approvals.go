@@ -129,15 +129,23 @@ func (h *ApprovalHandler) Reject(w http.ResponseWriter, r *http.Request) {
 
 // CreatePendingApproval creates an approval request for a placeholder key.
 // Called by the proxy handler when approval is needed.
-func CreatePendingApproval(approvals *queries.ApprovalQueries, placeholderID, method, path string) (string, error) {
+//
+// scope and rule are empty for token-wide approvals. For an approve rule,
+// scope binds the approval to one request signature and rule records which
+// rule (and ACL layer) asked for it; both are shown on the approvals page.
+func CreatePendingApproval(approvals *queries.ApprovalQueries, placeholderID, method, path, scope, rule string) (string, error) {
 	id, err := svc.GenerateToken(16)
 	if err != nil {
 		return "", fmt.Errorf("generate approval ID: %w", err)
 	}
-	requestInfo, _ := json.Marshal(map[string]string{
+	info := map[string]string{
 		"method": method,
 		"path":   path,
-	})
+	}
+	if rule != "" {
+		info["rule"] = rule
+	}
+	requestInfo, _ := json.Marshal(info)
 
 	approval := &models.Approval{
 		ID:            id,
@@ -146,6 +154,12 @@ func CreatePendingApproval(approvals *queries.ApprovalQueries, placeholderID, me
 		RequestInfo:   strPtr(string(requestInfo)),
 	}
 
+	if scope != "" {
+		if err := approvals.CreateScoped(approval, scope); err != nil {
+			return "", err
+		}
+		return id, nil
+	}
 	if err := approvals.Create(approval); err != nil {
 		return "", err
 	}

@@ -50,11 +50,12 @@
               <span class="pt-presets-k">Presets</span>
               <button type="button" class="btn btn-sm" data-action="ptPreset" data-preset="readonly" title="Allows GET, HEAD and OPTIONS anywhere and denies every other method.">Read-only</button>
               <button type="button" class="btn btn-sm" data-action="ptPreset" data-preset="nodeletes" title="Denies DELETE requests; everything else stays allowed.">No deletes</button>
+              <button type="button" class="btn btn-sm" data-action="ptPreset" data-preset="approvewrites" title="Allows GET and HEAD. POST, PUT, PATCH and DELETE wait for an admin to approve.">Approve writes</button>
               <button type="button" class="btn btn-sm" id="pt-clear-rules" data-action="ptClearRules">Clear rules</button>
             </div>
           </div>
           <p class="pt-hint" id="pt-rules-status" role="status"></p>
-          <p class="pt-hint">Path patterns match whole segments: <code>*</code> stands for any one segment and a trailing <code>*</code> matches everything below. Per-rule approval is not available; approval applies to every request (see Require approval).</p>
+          <p class="pt-hint">Path patterns match whole segments: <code>*</code> stands for any one segment and a trailing <code>*</code> matches everything below. A <strong>Require approval</strong> rule holds a matching request until an admin approves it in Approvals; a deny anywhere still wins. Use the Require approval card for a token-wide approval.</p>
         </div>
 
         <div id="pt-panel-json" role="tabpanel" aria-labelledby="pt-tab-json" hidden>
@@ -94,27 +95,17 @@
     <aside class="pt-side">
       <section class="card pt-card" id="pt-github" aria-labelledby="pt-gh-h" hidden>
         <h2 id="pt-gh-h">GitHub repositories</h2>
-        <div id="pt-gh-grants"></div>
-        <div class="form-group">
-          <label for="pt-gh-repos">Authorized repositories</label>
-          <textarea id="pt-gh-repos" class="pt-textarea-sm mono" placeholder="OWNER/REPO&#10;OWNER/ANOTHER_REPO"></textarea>
-        </div>
-        <div class="form-group"><label for="pt-gh-mode">Access</label>
-          <select id="pt-gh-mode">
-            <option value="deploy">Read only (pull)</option>
-            <option value="dev">Developer</option>
-            <option value="cicd">CI/CD operator</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label for="pt-gh-wf">Workflow constraints</label>
-          <input type="text" id="pt-gh-wf" placeholder="Workflows: ci.yml" aria-label="Workflows">
-          <input type="text" id="pt-gh-refs" class="mt-1" placeholder="Refs: main, release/*" aria-label="Refs">
-          <input type="text" id="pt-gh-envs" class="mt-1" placeholder="Environments: staging" aria-label="Environments">
-        </div>
+        <p class="pt-hint">Each repository gets its own access level per capability. The rows become one rule at the end of Access rules; requests for any other repository or capability are denied. Every request still mints a short-lived GitHub token for just that repository and permission.</p>
+        <div id="pt-gh-rows"></div>
+        <form class="pt-gh-add" id="pt-gh-add-form" data-on-submit="ptGhAdd">
+          <label class="pt-fld pt-fld-grow"><span class="pt-fld-k">Add a repository</span>
+            <input type="text" id="pt-gh-new" class="mono" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="OWNER/REPO" aria-describedby="pt-gh-err">
+          </label>
+          <button type="submit" class="btn" id="pt-gh-add-go">Add repository</button>
+        </form>
         <p class="pt-bad pt-hint" id="pt-gh-err" role="alert" hidden></p>
-        <button type="button" class="btn" data-action="ptGhApply">Update rules from repositories</button>
         <p class="pt-hint" id="pt-gh-status" role="status"></p>
+        <div id="pt-gh-v2" hidden></div>
         <div class="form-group pt-gh-clone">
           <label for="pt-gh-clone">Client commands for</label>
           <select id="pt-gh-clone" data-on-change="ptGhClone"></select>
@@ -158,6 +149,29 @@
     <span class="pt-note" data-pt-note></span>
     <button type="button" class="btn" data-action="ptDiscard" data-pt-discard disabled>Discard</button>
     <button type="button" class="btn btn-primary" data-action="ptSave" data-pt-save disabled>Save changes</button>
+  </div>
+</div>
+
+<div id="pt-preset-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pt-preset-h">
+    <h2 id="pt-preset-h">Replace the current rules?</h2>
+    <p id="pt-preset-msg"></p>
+    <p class="pt-hint">Nothing is saved until you press Save changes, and Discard brings the old rules back.</p>
+    <div class="modal-actions">
+      <button type="button" class="btn" id="pt-preset-cancel" data-action="modal-close">Cancel</button>
+      <button type="button" class="btn btn-primary" id="pt-preset-go" data-action="ptPresetApply">Replace rules</button>
+    </div>
+  </div>
+</div>
+
+<div id="pt-v2-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pt-v2-h">
+    <h2 id="pt-v2-h">Convert to repository capabilities?</h2>
+    <p>The existing repository grants are turned into capability rows. Workflow, ref and environment allowlists cannot be carried over, so dispatching workflows becomes plain Actions write access. Review the rows before you save.</p>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="modal-close">Cancel</button>
+      <button type="button" class="btn btn-primary" data-action="ptGhConvertGo">Convert</button>
+    </div>
   </div>
 </div>
 

@@ -96,6 +96,6 @@ func (q *CodexRemoteQueries) RelayAuthorization(ctx context.Context, binding *Co
  WHERE e.capability_hash=? AND e.client_id=? AND e.api_key_id=? AND e.account_hash=? AND e.expires_at>?
  AND c.is_active=1 AND p.is_active=1 AND k.is_active=1 AND s.is_active=1 AND s.name='openai'
  AND k.refresh_token<>'' AND (p.api_key_id=k.id OR (p.api_key_id IS NULL AND EXISTS(SELECT 1 FROM api_key_group_members m WHERE m.group_id=p.group_id AND m.api_key_id=k.id)))
- AND (p.requires_approval=0 OR EXISTS(SELECT 1 FROM approvals a WHERE a.placeholder_id=p.id AND a.status='approved' AND (a.expires_at IS NULL OR a.expires_at>datetime('now'))))`, binding.CapabilityHash, binding.ClientID, binding.APIKeyID, binding.AccountHash, now).Scan(&v.PlaceholderID, &v.KeyEncrypted, &v.SubscriptionInfo, &v.TokenEndpoint, &v.ServiceACL, &v.KeyACL, &v.PlaceholderACL)
+ AND (p.requires_approval=0 OR EXISTS(SELECT 1 FROM approvals a WHERE a.placeholder_id=p.id AND a.scope='' AND a.status='approved' AND (a.expires_at IS NULL OR a.expires_at>datetime('now'))))`, binding.CapabilityHash, binding.ClientID, binding.APIKeyID, binding.AccountHash, now).Scan(&v.PlaceholderID, &v.KeyEncrypted, &v.SubscriptionInfo, &v.TokenEndpoint, &v.ServiceACL, &v.KeyACL, &v.PlaceholderACL)
 	return v, err
 }

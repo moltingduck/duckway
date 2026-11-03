@@ -3,6 +3,7 @@ package handlers_test
 import (
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -500,15 +501,24 @@ func TestAPIKeyListMarksGitHubAppCredentialAsMintable(t *testing.T) {
 
 func TestAPIKeyListGitHubAppRepositories(t *testing.T) {
 	var mintCount, repoListCount int
+	var mintBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/app/installations/123":
+			if got := r.Header.Get("Authorization"); !strings.HasPrefix(got, "Bearer ") || strings.Contains(got, "ghs_") {
+				t.Fatalf("installation lookup must use the app JWT, got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"id":123,"permissions":{"contents":"read","issues":"write","metadata":"read"}}`))
 		case "/app/installations/123/access_tokens":
 			mintCount++
 			if got := r.Header.Get("Authorization"); !strings.HasPrefix(got, "Bearer ") {
 				t.Fatalf("missing JWT auth header: %q", got)
 			}
+			b, _ := io.ReadAll(r.Body)
+			mintBody = string(b)
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"token":"ghs_repo_list_token","expires_at":"2099-07-08T12:30:00Z","permissions":{"contents":"read"}}`))
+			w.Write([]byte(`{"token":"ghs_repo_list_token","expires_at":"2099-07-08T12:30:00Z","permissions":{"metadata":"read"}}`))
 		case "/installation/repositories":
 			repoListCount++
 			if got := r.Header.Get("Authorization"); got != "Bearer ghs_repo_list_token" {
@@ -589,8 +599,20 @@ func TestAPIKeyListGitHubAppRepositories(t *testing.T) {
 	if mintCount != 1 || repoListCount != 1 {
 		t.Fatalf("mintCount=%d repoListCount=%d, want 1/1", mintCount, repoListCount)
 	}
-	if resp.InstallationPermissions["contents"] != "read" {
+	if resp.InstallationPermissions["contents"] != "read" || resp.InstallationPermissions["issues"] != "write" {
 		t.Fatalf("installation permissions = %+v", resp.InstallationPermissions)
+	}
+	// Mint audit: the repository-list token is down-scoped to metadata:read (never
+	// an empty body, which means the whole installation) and never leaves the handler.
+	var gotMint struct {
+		Repositories []string          `json:"repositories"`
+		Permissions  map[string]string `json:"permissions"`
+	}
+	if err := json.Unmarshal([]byte(mintBody), &gotMint); err != nil || len(gotMint.Permissions) != 1 || gotMint.Permissions["metadata"] != "read" {
+		t.Fatalf("repo-list mint body = %q (%v)", mintBody, err)
+	}
+	if strings.Contains(rec.Body.String(), "ghs_repo_list_token") || strings.Contains(rec.Header().Get("Set-Cookie"), "ghs_") {
+		t.Fatalf("installation token leaked in response: %s", rec.Body.String())
 	}
 }
 
