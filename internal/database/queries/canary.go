@@ -103,3 +103,37 @@ func (q *CanaryQueries) DeleteByClient(clientID string) error {
 	_, err := q.db.Exec("DELETE FROM canary_tokens WHERE client_id = ?", clientID)
 	return err
 }
+
+// CanaryClientOverview is one row of the fleet overview: the client, whether
+// canary deployment is enabled for it, and how many tokens it currently holds.
+// LastCreatedAt is when the newest token was generated (empty when none).
+// Trigger events are not stored by Duckway (canarytokens.org sends the alert
+// email), so no last-triggered value exists.
+type CanaryClientOverview struct {
+	ClientID      string `json:"client_id"`
+	Name          string `json:"name"`
+	CanaryEnabled bool   `json:"canary_enabled"`
+	TokenCount    int    `json:"token_count"`
+	LastCreatedAt string `json:"last_created_at"`
+}
+
+// Overview lists every non-draft client with its canary token count.
+func (q *CanaryQueries) Overview() ([]CanaryClientOverview, error) {
+	rows, err := q.db.Query(`SELECT c.id, c.name, c.canary_enabled, COUNT(t.id), COALESCE(MAX(t.created_at), '')
+		FROM clients c LEFT JOIN canary_tokens t ON t.client_id = c.id
+		WHERE c.id NOT IN (SELECT client_id FROM client_drafts)
+		GROUP BY c.id, c.name, c.canary_enabled ORDER BY c.name COLLATE NOCASE, c.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CanaryClientOverview{}
+	for rows.Next() {
+		var o CanaryClientOverview
+		if err := rows.Scan(&o.ClientID, &o.Name, &o.CanaryEnabled, &o.TokenCount, &o.LastCreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}

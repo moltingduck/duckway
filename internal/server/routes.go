@@ -282,6 +282,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("DELETE /api/notifications/{id}", notifH.Delete)
 	adminAPIMux.HandleFunc("POST /api/notifications/{id}/test", notifH.Test)
 
+	adminAPIMux.HandleFunc("GET /api/canary/overview", canaryH.Overview)
 	adminAPIMux.HandleFunc("GET /api/canary/settings", canaryH.GetSettings)
 	adminAPIMux.HandleFunc("POST /api/canary/settings", canaryH.SaveSettings)
 	adminAPIMux.HandleFunc("GET /api/canary/clients/{clientId}", canaryH.ListByClient)

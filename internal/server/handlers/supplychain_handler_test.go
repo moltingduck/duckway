@@ -20,7 +20,7 @@ func TestSupplyChainPageRenders(t *testing.T) {
 		t.Fatalf("render status %d, body=%s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	for _, want := range []string{"Package Manager Hardening", "Minimum package age", "/api/supply-chain"} {
+	for _, want := range []string{"Minimum package age", "Mitigations", "/api/supply-chain"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered page missing %q", want)
 		}

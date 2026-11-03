@@ -1,346 +1,392 @@
 {{define "content"}}
-<div class="page-header">
-  <h1>Canary Tokens</h1>
+<div class="page-header cn-header">
+  <div>
+    <h1>Canary tokens</h1>
+    <p class="cn-sub">Decoy credentials planted on each client. If an attacker uses one, canarytokens.org emails you.</p>
+  </div>
 </div>
 
-<!-- Deployed Canary Tokens (now at top, always expanded) -->
-<div class="card">
-  <h3>Deployed Canary Tokens</h3>
-  <div class="form-group mt-1">
-    <select id="canary-client-select" data-on-change="loadClientCanaries">
-      <option value="">Select client...</option>
-    </select>
-  </div>
-  <div id="canary-tokens-table"></div>
+<div id="cn-warn" class="cn-warn" role="alert" hidden>
+  <strong>No alert destination configured.</strong>
+  Canary tokens are inactive: none are generated and nobody would be told if one fired. Set an alert email under
+  <a href="#cn-settings" data-action="cnOpenSettings">Settings</a>. Notification channels do not receive canary alerts.
 </div>
 
-<!-- Settings (collapsible) -->
-<div class="card mt-2">
-  <div class="flex-between" style="cursor:pointer" data-action="toggleSection" data-target="settings-body" role="button" tabindex="0" aria-expanded="false" aria-controls="settings-body">
-    <h3 style="margin:0">Settings <span class="toggle-arrow">&#9654;</span></h3>
-  </div>
-  <div id="settings-body" style="display:none;margin-top:1rem">
-    <div id="canary-warning" style="display:none;background:rgba(239,68,68,0.1);border:1px solid var(--danger);border-radius:var(--radius);padding:0.75rem;margin-bottom:1rem">
-      <strong style="color:var(--danger)">Canary tokens inactive</strong> — enter an alert email below to enable them.
-    </div>
-    <p class="text-sm text-muted mb-1">Canary tokens are <strong>enabled by default</strong> for all new clients. When a client registers, Duckway auto-generates decoy credentials via <a href="https://canarytokens.org" target="_blank">canarytokens.org</a>. If an attacker steals and uses them, you get an email alert.</p>
-
-    <form id="canary-settings-form" class="mt-2" data-on-submit="saveCanarySettings">
-      <div class="form-group">
-        <label>Alert Email (required for canary tokens to work)</label>
-        <input type="email" id="canary-email" placeholder="you@example.com">
+<div class="cn-layout">
+  <div class="cn-main">
+    <section class="card cn-card" aria-labelledby="cn-fleet-h">
+      <div class="cn-cardhead">
+        <h2 id="cn-fleet-h">Fleet overview</h2>
+        <span class="text-sm text-muted" id="cn-summary" role="status">Loading…</span>
       </div>
-
-      <div class="form-group">
-        <label>Token Types to Deploy</label>
-        <p class="text-sm text-muted">If none selected, all types are deployed by default.</p>
-
-        <div class="mt-1 mb-1"><strong class="text-sm">API Tokens</strong> <span class="badge badge-green">via canarytokens.org</span></div>
-        <div id="canary-types-api"></div>
-
-        <div class="mt-1 mb-1"><strong class="text-sm">Local Decoy Files</strong> <span class="badge badge-blue">self-generated with DNS canary</span></div>
-        <div id="canary-types-local"></div>
+      <p class="text-sm text-muted">Last triggered is not shown: Duckway does not store trigger events. Alerts go straight to your alert email.</p>
+      <div id="cn-fleet-err" class="cn-err" role="alert" hidden>
+        <span id="cn-fleet-errmsg"></span>
+        <button type="button" class="btn btn-sm" data-action="cnRetryFleet">Retry</button>
       </div>
+      <div class="table-wrap">
+        <table class="cn-table">
+          <thead><tr><th scope="col">Client</th><th scope="col">Canary</th><th scope="col">Tokens</th><th scope="col">Last generated</th><th scope="col">Last triggered</th><th scope="col"><span class="cn-sr">Action</span></th></tr></thead>
+          <tbody id="cn-fleet-body"><tr><td colspan="6" class="text-muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
 
-      <div class="form-group">
-        <label>Exclude Clients</label>
-        <div class="text-sm text-muted mb-1">Clients that should NOT receive canary tokens.</div>
-        <div class="flex gap-sm mb-1">
-          <input type="text" id="exclude-search" placeholder="Search clients..." style="flex:1" data-on-input="filterExcludeList">
-          <button type="button" class="btn btn-sm" data-action="showExcludeDropdown">+ Add</button>
+    <section class="card cn-card" id="cn-detail" aria-labelledby="cn-detail-h" tabindex="-1" hidden>
+      <div class="cn-cardhead">
+        <h2 id="cn-detail-h">Client</h2>
+        <span class="text-sm text-muted" id="cn-detail-state" role="status"></span>
+      </div>
+      <div id="cn-tokens"></div>
+    </section>
+
+    <details class="card cn-card cn-settings" id="cn-settings">
+      <summary><h2>Settings</h2></summary>
+      <form id="cn-form" data-on-submit="cnSave" novalidate>
+        <div class="form-group">
+          <label for="cn-email">Alert email</label>
+          <input type="email" id="cn-email" placeholder="you@example.com" autocomplete="off" data-on-input="cnEmailInput" aria-describedby="cn-email-msg">
+          <span class="cn-msg" id="cn-email-msg" role="status"></span>
+          <span class="text-sm text-muted">Required: without it no tokens are generated. Each client gets a tagged address (you+shortid@…).</span>
         </div>
-        <div id="exclude-dropdown" style="display:none;position:relative">
-          <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);max-height:150px;overflow-y:auto;position:absolute;width:100%;z-index:10" id="exclude-dropdown-list"></div>
+        <fieldset class="cn-fieldset">
+          <legend>Token types to deploy</legend>
+          <p class="text-sm text-muted">If none are selected, the default types are deployed.</p>
+          <h3 class="cn-h3">API tokens <span class="badge badge-green">via canarytokens.org</span></h3>
+          <div id="cn-types-api" class="cn-types"></div>
+          <h3 class="cn-h3">Local decoy files <span class="badge badge-blue">self-generated, DNS canary</span></h3>
+          <div id="cn-types-local" class="cn-types"></div>
+        </fieldset>
+        <fieldset class="cn-fieldset">
+          <legend>Exclude clients</legend>
+          <p class="text-sm text-muted">Excluded clients do not receive canary tokens.</p>
+          <div class="cn-exrow">
+            <select id="cn-ex-select" aria-label="Client to exclude"></select>
+            <button type="button" class="btn" data-action="cnExAdd">Exclude</button>
+          </div>
+          <div id="cn-ex-list" class="cn-tags"></div>
+        </fieldset>
+        <div class="cn-savebar">
+          <span class="text-sm" id="cn-save-state" role="status"></span>
+          <button type="submit" class="btn btn-primary" id="cn-save">Save settings</button>
         </div>
-        <div id="exclude-list" style="display:flex;flex-wrap:wrap;gap:0.375rem"></div>
-      </div>
-
-      <button type="submit" class="btn btn-primary">Save Settings</button>
-    </form>
+      </form>
+    </details>
   </div>
+
+  <aside class="cn-help" aria-labelledby="cn-help-h">
+    <h2 id="cn-help-h">How canary tokens work</h2>
+    <p class="text-sm">Canary tokens are <strong>enabled by default</strong> for new clients. On registration Duckway creates decoy credentials; if one is used, you get an email.</p>
+    <p class="text-sm"><strong>API tokens</strong> are real tripwire credentials issued by canarytokens.org. <strong>Local decoy files</strong> embed a DNS canary hostname that alerts when resolved.</p>
+    <p class="text-sm">Decoys sit at realistic paths with <code>.bak</code> suffixes or non-standard locations. They are <strong>not</strong> in <code>keys.env</code>, so agents use the real phantom tokens and ignore them.</p>
+    <details>
+      <summary>Token types and paths</summary>
+      <div class="table-wrap">
+        <table class="cn-table cn-reftable">
+          <thead><tr><th scope="col">Type</th><th scope="col">Category</th><th scope="col">Deploy path</th></tr></thead>
+          <tbody id="cn-types-ref"></tbody>
+        </table>
+      </div>
+    </details>
+  </aside>
 </div>
 
-<!-- How It Works (collapsible) -->
-<div class="card mt-2">
-  <div class="flex-between" style="cursor:pointer" data-action="toggleSection" data-target="howitworks-body" role="button" tabindex="0" aria-expanded="false" aria-controls="howitworks-body">
-    <h3 style="margin:0">How It Works <span class="toggle-arrow">&#9654;</span></h3>
-  </div>
-  <div id="howitworks-body" style="display:none;margin-top:1rem">
-    <div class="table-wrap">
-    <table>
-      <thead><tr><th>Type</th><th>Category</th><th>What gets deployed</th><th>Deploy Path</th></tr></thead>
-      <tbody id="types-reference"></tbody>
-    </table>
+<div id="cn-confirm" class="modal-backdrop" hidden>
+  <div class="modal cn-modal" role="dialog" aria-labelledby="cn-confirm-title" aria-describedby="cn-confirm-body">
+    <h2 id="cn-confirm-title">Confirm</h2>
+    <div id="cn-confirm-body" class="text-sm"></div>
+    <div class="cn-impact" id="cn-confirm-impact"></div>
+    <div class="cn-savebar">
+      <span class="text-sm" id="cn-confirm-state" role="status"></span>
+      <div class="modal-actions cn-modalbtns">
+        <button type="button" class="btn" data-action="modal-close" id="cn-confirm-cancel">Cancel</button>
+        <button type="button" class="btn btn-danger" data-action="cnConfirmGo" id="cn-confirm-go">Confirm</button>
+      </div>
     </div>
-    <p class="text-sm text-muted mt-1"><strong>API tokens</strong> call canarytokens.org to generate real tripwire credentials. <strong>Local decoy files</strong> are self-generated with embedded DNS canary hostnames — when an attacker resolves the hostname (e.g., by curling a URL in the file), you get alerted.</p>
-    <p class="text-sm text-muted">All canary files are placed at paths that look realistic but use <code>.bak</code> suffixes or non-standard locations. They are <strong>NOT</strong> in <code>keys.env</code>, so AI agents use the real phantom tokens and ignore these decoys.</p>
   </div>
 </div>
 
 <script nonce="{{$.CSPNonce}}">
-DW.actions.loadClientCanaries = function() { loadClientCanaries(); };
-DW.actions.toggleSection = function(header) {
-  var el = document.getElementById(header.dataset.target);
-  var arrow = header.querySelector('.toggle-arrow');
-  if (el.style.display === 'none') {
-    el.style.display = '';
-    header.setAttribute('aria-expanded', 'true');
-    if (arrow) arrow.textContent = '\u25BC';
-  } else {
-    el.style.display = 'none';
-    header.setAttribute('aria-expanded', 'false');
-    if (arrow) arrow.textContent = '\u25B6';
+(function() {
+  var $ = function(id) { return document.getElementById(id); };
+  var fleet = [];          // overview rows
+  var byId = {};           // client id -> row
+  var alertConfigured = true;
+  var selected = null;     // selected client id
+  var selTokens = [];
+  var pending = null;      // confirm callback info
+  var lastFocus = null;
+  var allTypes = [];
+  var enabledTypes = [];
+  var excluded = [];       // excluded client names
+  var settingsLoaded = false;
+
+  function api(method, url) {
+    return fetch(url, {method: method, credentials: 'same-origin'}).then(function(r) {
+      if (r.status === 401 || r.redirected) { window.location = '/admin/login'; throw new Error('auth'); }
+      return r.json().catch(function() { return {}; }).then(function(d) {
+        if (!r.ok || (d && d.error)) throw new Error((d && d.error) || ('HTTP ' + r.status));
+        return d;
+      });
+    });
   }
-};
+  function safeURL(u) { return /^https?:\/\//i.test(String(u)) ? u : '#'; }
+  function when(s) { return s ? s : DW.raw('—'); }
 
-var allTypes = [];
-
-document.addEventListener('DOMContentLoaded', function() {
-  fetch('/api/canary/settings', {credentials:'same-origin'})
-    .then(function(r) {
-      if (r.status === 401 || r.redirected) { window.location = '/admin/login'; return; }
-      return r.json();
-    })
-    .then(function(data) {
-      if (!data) return;
-      document.getElementById('canary-email').value = data.email || '';
-      if (!data.email) {
-        document.getElementById('canary-warning').style.display = 'block';
-      }
-      allTypes = data.available_types || [];
-
-      var enabled = data.enabled_types || [];
-      var apiDiv = document.getElementById('canary-types-api');
-      var localDiv = document.getElementById('canary-types-local');
-      var refTbody = document.getElementById('types-reference');
-
-      // Sort: default-enabled first, then alphabetical
-      var apiTypes = allTypes.filter(function(t) { return t.category === 'api'; });
-      var localTypes = allTypes.filter(function(t) { return t.category !== 'api'; });
-      function sortByDefault(a, b) {
-        if (a.default_enabled === b.default_enabled) return a.name < b.name ? -1 : 1;
-        return a.default_enabled === 'true' ? -1 : 1;
-      }
-      apiTypes.sort(sortByDefault);
-      localTypes.sort(sortByDefault);
-
-      function renderType(t, container) {
-        var checked = enabled.length === 0 ? (t.default_enabled === 'true') : (enabled.indexOf(t.type) >= 0);
-        var mode = t.deploy_mode === 'append' ? DW.html`<span class="badge badge-yellow" style="font-size:0.6rem;vertical-align:middle">merge</span>` : '';
-        var path = t.deploy_path ? DW.html` <code style="font-size:0.75rem">~/${t.deploy_path}</code>` : '';
-        var label = document.createElement('label');
-        label.style.display = 'block';
-        label.style.marginBottom = '0.5rem';
-        label.style.lineHeight = '1.6';
-        if (t.default_enabled !== 'true') label.style.opacity = '0.7';
-        DW.setHTML(label, DW.html`<input type="checkbox" name="canary_type" value="${t.type}"${checked ? DW.raw(' checked') : ''}> <strong>${t.name}</strong> ${mode}<br><span style="margin-left:1.25rem" class="text-muted text-sm">${t.description}</span><br><span style="margin-left:1.25rem">${path}</span>`);
-        container.appendChild(label);
-      }
-
-      apiTypes.forEach(function(t) { renderType(t, apiDiv); });
-      localTypes.forEach(function(t) { renderType(t, localDiv); });
-
-      // Populate reference table
-      allTypes.forEach(function(t) {
-        var tr = document.createElement('tr');
-        DW.setHTML(tr, DW.html`<td><span class="badge badge-blue">${t.type}</span></td><td><span class="badge ${t.category === 'api' ? 'badge-green' : 'badge-gray'}">${t.category}</span></td><td class="text-sm">${t.description}</td><td class="mono text-sm">~/${t.deploy_path || ''}</td>`);
-        refTbody.appendChild(tr);
-      });
-
-      // Exclude list
-      var exclude = data.exclude_clients || [];
-      exclude.forEach(function(name) { addExcludeTag(name); });
+  /* ---- fleet overview ---- */
+  function renderFleet() {
+    var body = $('cn-fleet-body');
+    var withTokens = fleet.filter(function(c) { return c.token_count > 0; }).length;
+    $('cn-summary').textContent = fleet.length ? (withTokens + ' of ' + fleet.length + ' clients have canary tokens deployed') : 'No clients';
+    if (!fleet.length) { DW.setHTML(body, DW.html`<tr><td colspan="6" class="text-muted">No clients yet. Canary tokens are created when a client registers.</td></tr>`); return; }
+    var rows = fleet.map(function(c) {
+      var state;
+      if (c.token_count > 0) state = DW.html`<span class="cn-pill cn-ok">Deployed</span>`;
+      else if (c.excluded) state = DW.html`<span class="cn-pill cn-muted">Excluded</span>`;
+      else if (!c.canary_enabled) state = DW.html`<span class="cn-pill cn-muted">Disabled</span>`;
+      else state = DW.html`<span class="cn-pill cn-warnpill">Not deployed</span>`;
+      var cur = c.client_id === selected ? DW.raw(' aria-current="true"') : '';
+      return DW.html`<tr><th scope="row" class="cn-name">${c.name}</th><td>${state}</td><td>${c.token_count}</td><td class="text-sm">${when(c.last_created_at)}</td><td class="text-sm text-muted">Not recorded</td><td class="cn-act"><button type="button" class="btn btn-sm" data-action="cnSelect" data-client-id="${c.client_id}"${cur}>${c.client_id === selected ? 'Selected' : 'Manage'}<span class="cn-sr"> ${c.name}</span></button></td></tr>`;
     });
+    DW.setHTML(body, DW.html`${rows}`);
+  }
 
-  // Load clients
-  fetch('/api/clients', {credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(clients) {
-      allClients = clients;
-      var sel = document.getElementById('canary-client-select');
-      clients.forEach(function(c) {
-        var opt = document.createElement('option');
-        opt.value = c.id;
-        opt.textContent = c.name;
-        opt.dataset.name = c.name;
-        sel.appendChild(opt);
-      });
+  function loadFleet() {
+    $('cn-fleet-err').hidden = true;
+    $('cn-summary').textContent = 'Loading…';
+    return api('GET', '/api/canary/overview').then(function(d) {
+      fleet = d.clients || [];
+      byId = {}; fleet.forEach(function(c) { byId[c.client_id] = c; });
+      alertConfigured = !!d.alert_configured;
+      $('cn-warn').hidden = alertConfigured;
+      renderFleet();
+      renderExclude();
+    }).catch(function(e) {
+      $('cn-fleet-errmsg').textContent = 'Could not load the fleet overview: ' + e.message;
+      $('cn-fleet-err').hidden = false;
+      $('cn-summary').textContent = 'Load failed';
+      DW.setHTML($('cn-fleet-body'), DW.html`<tr><td colspan="6" class="text-muted">Not loaded.</td></tr>`);
     });
-});
+  }
+  DW.actions.cnRetryFleet = function() { loadFleet(); };
 
-DW.actions.saveCanarySettings = function() {
-  var email = document.getElementById('canary-email').value;
-  var types = [];
-  document.querySelectorAll('input[name="canary_type"]:checked').forEach(function(cb) {
-    types.push(cb.value);
-  });
+  /* ---- client detail ---- */
+  DW.actions.cnSelect = function(el) { selectClient(el.dataset.clientId, true); };
+  function selectClient(id, focus) {
+    var c = byId[id]; if (!c) return;
+    selected = id;
+    $('cn-detail').hidden = false;
+    $('cn-detail-h').textContent = c.name;
+    renderFleet();
+    loadTokens();
+    if (focus) $('cn-detail').focus();
+  }
+  function loadTokens() {
+    var id = selected, st = $('cn-detail-state');
+    st.textContent = 'Loading tokens…';
+    return api('GET', '/api/canary/clients/' + encodeURIComponent(id)).then(function(tokens) {
+      if (id !== selected) return;
+      selTokens = tokens || [];
+      st.textContent = '';
+      renderTokens();
+    }).catch(function(e) {
+      if (id !== selected) return;
+      st.textContent = '';
+      DW.setHTML($('cn-tokens'), DW.html`<div class="cn-err" role="alert"><span>Could not load tokens: ${e.message}</span><button type="button" class="btn btn-sm" data-action="cnRetryTokens">Retry</button></div>`);
+    });
+  }
+  DW.actions.cnRetryTokens = function() { loadTokens(); };
 
-  var exclude = getExcludeList();
-
-  fetch('/api/canary/settings', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({email: email, enabled_types: types, exclude_clients: exclude}),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('Canary settings saved', 'success');
-    if (document.getElementById('canary-email').value) {
-      document.getElementById('canary-warning').style.display = 'none';
+  function renderTokens() {
+    var box = $('cn-tokens');
+    if (!selTokens.length) {
+      var why = alertConfigured ? '' : DW.html`<p class="text-sm cn-inline-warn">No alert email is set, so generating will create nothing.</p>`;
+      DW.setHTML(box, DW.html`<p class="text-sm text-muted">No canary tokens deployed for this client.</p>${why}<div class="cn-btnrow"><button type="button" class="btn btn-primary" data-action="cnGenerate">Generate tokens</button></div>`);
+      return;
     }
-  });
-};
+    var rows = selTokens.map(function(t) {
+      var short = t.canary_token ? t.canary_token.substring(0, 12) + '…' : '(local)';
+      var link = t.manage_url
+        ? DW.html`<a href="${safeURL(t.manage_url)}" target="_blank" rel="noopener noreferrer" class="mono text-sm">${short}</a>`
+        : DW.html`<span class="mono text-sm text-muted">${short}</span>`;
+      return DW.html`<tr><td><span class="badge badge-blue">${t.token_type}</span></td><td>${link}</td><td class="mono text-sm">~/${t.deploy_path}</td><td class="text-sm text-muted">${t.created_at}</td><td class="cn-act"><button type="button" class="btn btn-sm btn-danger" data-action="cnDeleteToken" data-token-id="${t.id}">Delete<span class="cn-sr"> ${t.token_type}</span></button></td></tr>`;
+    });
+    DW.setHTML(box, DW.html`<div class="table-wrap"><table class="cn-table"><thead><tr><th scope="col">Type</th><th scope="col">Token ID</th><th scope="col">Deploy path</th><th scope="col">Created</th><th scope="col"><span class="cn-sr">Action</span></th></tr></thead><tbody>${rows}</tbody></table></div><div class="cn-btnrow"><button type="button" class="btn" data-action="cnRegenAll">Regenerate all</button><button type="button" class="btn btn-danger" data-action="cnDeleteAll">Delete all</button></div>`);
+  }
 
-function loadClientCanaries() {
-  var sel = document.getElementById('canary-client-select');
-  var clientId = sel.value;
-  var clientName = sel.options[sel.selectedIndex].dataset.name || '';
-  var div = document.getElementById('canary-tokens-table');
+  function setDetailState(msg) { $('cn-detail-state').textContent = msg; }
 
-  if (!clientId) { div.replaceChildren(); return; }
+  DW.actions.cnGenerate = function() { doGenerate(); };
+  function doGenerate() {
+    var id = selected, c = byId[id]; if (!c) return Promise.resolve();
+    setDetailState('Generating tokens… this may take a moment');
+    return api('POST', '/api/canary/clients/' + encodeURIComponent(id) + '/generate?name=' + encodeURIComponent(c.name)).then(function(tokens) {
+      var n = (tokens || []).length;
+      var msg = n ? ('Generated ' + n + ' tokens') : 'No tokens were created. Check that an alert email is set.';
+      setDetailState(msg); DW.toast(msg, n ? 'success' : 'error');
+      return Promise.all([loadFleet(), id === selected ? loadTokens() : null]);
+    });
+  }
 
-  fetch('/api/canary/clients/' + clientId, {credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(tokens) {
-      if (!tokens || tokens.length === 0) {
-        DW.setHTML(div, DW.html`<p class="text-muted text-sm mt-1">No canary tokens for this client. <button class="btn btn-sm btn-primary" data-action="generateCanaries" data-client-id="${clientId}" data-client-name="${clientName}">Generate Now</button></p>`);
-        return;
+  /* ---- confirm dialog ---- */
+  function openConfirm(opts) {
+    pending = opts;
+    lastFocus = document.activeElement;
+    $('cn-confirm-title').textContent = opts.title;
+    DW.setHTML($('cn-confirm-body'), DW.html`<p>${opts.body}</p>`);
+    DW.setHTML($('cn-confirm-impact'), DW.html`<strong>Impact:</strong> ${opts.impact}`);
+    $('cn-confirm-go').textContent = opts.go;
+    $('cn-confirm-go').disabled = false;
+    $('cn-confirm-state').textContent = '';
+    DW.modal.open('#cn-confirm');
+    $('cn-confirm-cancel').focus();
+  }
+  function closeConfirm() {
+    DW.modal.close('#cn-confirm');
+    pending = null;
+    if (lastFocus && document.contains(lastFocus)) lastFocus.focus(); else if (selected) $('cn-detail').focus();
+  }
+  DW.actions.cnConfirmGo = function() {
+    if (!pending) return;
+    var p = pending, btn = $('cn-confirm-go');
+    btn.disabled = true;
+    $('cn-confirm-state').textContent = p.working;
+    p.run().then(closeConfirm).catch(function(e) {
+      btn.disabled = false;
+      $('cn-confirm-state').textContent = 'Failed: ' + e.message;
+    });
+  };
+
+  DW.actions.cnRegenAll = function() {
+    var c = byId[selected]; if (!c) return;
+    var n = selTokens.length;
+    openConfirm({
+      title: 'Regenerate all tokens?',
+      body: DW.html`Every canary token for ${c.name} is deleted, including on canarytokens.org, and a fresh set is generated. The client receives the new files on its next sync.`,
+      impact: DW.html`${n} existing ${n === 1 ? 'token' : 'tokens'} will be replaced. Old decoys stop alerting.`,
+      go: 'Regenerate all', working: 'Regenerating…',
+      run: function() { return doGenerate(); }
+    });
+  };
+  DW.actions.cnDeleteAll = function() {
+    var c = byId[selected]; if (!c) return;
+    var id = selected, n = selTokens.length;
+    openConfirm({
+      title: 'Delete all tokens?',
+      body: DW.html`All canary tokens for ${c.name} are removed from Duckway and from canarytokens.org. Nothing is generated again until you ask.`,
+      impact: DW.html`${n} ${n === 1 ? 'token' : 'tokens'} will be deleted. This cannot be undone.`,
+      go: 'Delete all', working: 'Deleting…',
+      run: function() {
+        return api('DELETE', '/api/canary/clients/' + encodeURIComponent(id)).then(function() {
+          DW.toast('All tokens deleted', 'success'); setDetailState('All tokens deleted');
+          return Promise.all([loadFleet(), id === selected ? loadTokens() : null]);
+        });
       }
-
-      var rows = tokens.map(function(t) {
-        var tokenShort = t.canary_token ? t.canary_token.substring(0, 12) + '...' : '(local)';
-        var manageLink = t.manage_url
-          ? DW.html`<a href="${safeURL(t.manage_url)}" target="_blank" rel="noopener noreferrer" class="mono text-sm" title="View on canarytokens.org">${tokenShort}</a>`
-          : DW.html`<span class="mono text-sm text-muted">${tokenShort}</span>`;
-        return DW.html`<tr id="ct-${t.id}"><td><span class="badge badge-blue">${t.token_type}</span></td><td>${manageLink}</td><td class="mono text-sm">~/${t.deploy_path}</td><td class="text-muted text-sm">${t.created_at}</td><td class="text-right"><button class="btn btn-sm btn-danger" data-action="deleteCanaryToken" data-token-id="${t.id}">Delete</button></td></tr>`;
-      });
-      DW.setHTML(div, DW.html`<div class="table-wrap"><table class="mt-1"><thead><tr><th>Type</th><th>Token ID</th><th>Deploy Path</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table></div><div class="mt-1 flex gap-sm"><button class="btn btn-sm" data-action="generateCanaries" data-client-id="${clientId}" data-client-name="${clientName}">Regenerate All</button><button class="btn btn-sm btn-danger" data-action="deleteAllCanaries" data-client-id="${clientId}">Delete All</button></div>`);
     });
-}
-
-// Only http(s) URLs are allowed as link targets (other schemes are rejected).
-function safeURL(u) {
-  return /^https?:\/\//i.test(String(u)) ? u : '#';
-}
-
-DW.actions.deleteCanaryToken = function(el) {
-  var tokenId = el.dataset.tokenId;
-  if (!confirm('Delete this canary token? It will also be removed from canarytokens.org.')) return;
-  fetch('/api/canary/tokens/' + tokenId, {method:'DELETE',credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.error) { showToast(data.error, 'error'); return; }
-      var row = document.getElementById('ct-' + tokenId);
-      if (row) row.remove();
-      showToast('Token deleted (DB + canarytokens.org)', 'success');
+  };
+  DW.actions.cnDeleteToken = function(el) {
+    var tid = el.dataset.tokenId, id = selected;
+    var t = selTokens.filter(function(x) { return x.id === tid; })[0]; if (!t) return;
+    openConfirm({
+      title: 'Delete this token?',
+      body: DW.html`The ${t.token_type} token at ~/${t.deploy_path} is removed from Duckway and from canarytokens.org.`,
+      impact: DW.html`1 token will be deleted. This cannot be undone.`,
+      go: 'Delete token', working: 'Deleting…',
+      run: function() {
+        return api('DELETE', '/api/canary/tokens/' + encodeURIComponent(tid)).then(function() {
+          DW.toast('Token deleted', 'success'); setDetailState('Token deleted');
+          return Promise.all([loadFleet(), id === selected ? loadTokens() : null]);
+        });
+      }
     });
-};
+  };
 
-DW.actions.deleteAllCanaries = function(el) {
-  var clientId = el.dataset.clientId;
-  if (!confirm('Delete ALL canary tokens for this client? This removes them from canarytokens.org too.')) return;
-  fetch('/api/canary/clients/' + clientId, {method:'DELETE',credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.error) { showToast(data.error, 'error'); return; }
-      showToast('All tokens deleted', 'success');
-      loadClientCanaries();
-    });
-};
+  /* ---- settings ---- */
+  DW.actions.cnOpenSettings = function(el, ev) { if (ev) ev.preventDefault(); $('cn-settings').open = true; $('cn-email').focus(); };
 
-// Exclude list management
-var allClients = [];
-var excludeSet = new Set();
+  function emailValid(v) { return v === '' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v); }
+  DW.actions.cnEmailInput = function() {
+    var v = $('cn-email').value.trim(), m = $('cn-email-msg'), inp = $('cn-email');
+    if (emailValid(v)) { m.textContent = ''; inp.removeAttribute('aria-invalid'); }
+    else { m.textContent = 'Enter a valid email address, for example you@example.com.'; inp.setAttribute('aria-invalid', 'true'); }
+  };
 
-function addExcludeTag(name) {
-  if (excludeSet.has(name)) return;
-  excludeSet.add(name);
-  var list = document.getElementById('exclude-list');
-  var tag = document.createElement('span');
-  tag.className = 'badge badge-gray';
-  tag.style.cursor = 'pointer';
-  tag.style.padding = '0.25rem 0.5rem';
-  tag.dataset.name = name;
-  tag.appendChild(document.createTextNode(name + ' '));
-  var x = document.createElement('span');
-  x.style.cssText = 'margin-left:0.25rem;opacity:0.6';
-  x.textContent = 'x';
-  tag.appendChild(x);
-  tag.addEventListener('click', function() {
-    excludeSet.delete(name);
-    tag.remove();
-  });
-  list.appendChild(tag);
-}
-
-function getExcludeList() {
-  return Array.from(excludeSet);
-}
-
-DW.actions.showExcludeDropdown = function() {
-  var dd = document.getElementById('exclude-dropdown');
-  dd.style.display = dd.style.display === 'none' ? 'block' : 'none';
-  renderExcludeDropdown('');
-};
-
-DW.actions.filterExcludeList = function() {
-  var q = document.getElementById('exclude-search').value.toLowerCase();
-  renderExcludeDropdown(q);
-  document.getElementById('exclude-dropdown').style.display = 'block';
-};
-
-function renderExcludeDropdown(query) {
-  var list = document.getElementById('exclude-dropdown-list');
-  list.replaceChildren();
-  allClients.forEach(function(c) {
-    if (excludeSet.has(c.name)) return;
-    if (query && c.name.toLowerCase().indexOf(query) < 0) return;
-    var item = document.createElement('div');
-    item.style.padding = '0.5rem 0.75rem';
-    item.style.cursor = 'pointer';
-    item.style.fontSize = '0.875rem';
-    item.textContent = c.name;
-    item.addEventListener('mouseover', function() { item.style.background = 'var(--border)'; });
-    item.addEventListener('mouseout', function() { item.style.background = ''; });
-    item.addEventListener('click', function() {
-      addExcludeTag(c.name);
-      document.getElementById('exclude-dropdown').style.display = 'none';
-      document.getElementById('exclude-search').value = '';
-    });
-    list.appendChild(item);
-  });
-  if (list.children.length === 0) {
-    var empty = document.createElement('div');
-    empty.style.padding = '0.5rem 0.75rem';
-    empty.className = 'text-muted text-sm';
-    empty.textContent = query ? 'No matching clients' : 'All clients excluded';
-    list.appendChild(empty);
+  function renderTypes() {
+    var apiBox = $('cn-types-api'), localBox = $('cn-types-local');
+    var apiT = allTypes.filter(function(t) { return t.category === 'api'; });
+    var locT = allTypes.filter(function(t) { return t.category !== 'api'; });
+    function cmp(a, b) { if (a.default_enabled === b.default_enabled) return a.name < b.name ? -1 : 1; return a.default_enabled === 'true' ? -1 : 1; }
+    apiT.sort(cmp); locT.sort(cmp);
+    function one(t) {
+      var checked = enabledTypes.length === 0 ? (t.default_enabled === 'true') : (enabledTypes.indexOf(t.type) >= 0);
+      var mode = t.deploy_mode === 'append' ? DW.html` <span class="badge badge-yellow">merge</span>` : '';
+      var path = t.deploy_path ? DW.html`<code>~/${t.deploy_path}</code>` : '';
+      return DW.html`<label class="cn-type"><input type="checkbox" name="canary_type" value="${t.type}"${checked ? DW.raw(' checked') : ''}><span><strong>${t.name}</strong>${mode}<span class="cn-type-d">${t.description}</span>${path}</span></label>`;
+    }
+    DW.setHTML(apiBox, DW.html`${apiT.map(one)}`);
+    DW.setHTML(localBox, DW.html`${locT.map(one)}`);
+    DW.setHTML($('cn-types-ref'), DW.html`${allTypes.map(function(t) {
+      return DW.html`<tr><td><span class="badge badge-blue">${t.type}</span></td><td><span class="badge ${t.category === 'api' ? 'badge-green' : 'badge-gray'}">${t.category}</span></td><td class="mono text-sm">~/${t.deploy_path || ''}</td></tr>`;
+    })}`);
   }
-}
 
-// Close dropdown on outside click
-document.addEventListener('click', function(e) {
-  var dd = document.getElementById('exclude-dropdown');
-  if (!e.target.closest('#exclude-dropdown') && !e.target.closest('#exclude-search') && e.target.textContent !== '+ Add') {
-    dd.style.display = 'none';
+  function renderExclude() {
+    var sel = $('cn-ex-select');
+    var opts = fleet.filter(function(c) { return excluded.indexOf(c.name) < 0; });
+    DW.setHTML(sel, DW.html`<option value="">Select client…</option>${opts.map(function(c) { return DW.html`<option value="${c.client_id}">${c.name}</option>`; })}`);
+    var list = $('cn-ex-list');
+    if (!excluded.length) { DW.setHTML(list, DW.html`<span class="text-sm text-muted">No clients excluded.</span>`); return; }
+    DW.setHTML(list, DW.html`${excluded.map(function(n, i) {
+      return DW.html`<button type="button" class="cn-tag" data-action="cnExRemove" data-index="${i}" aria-label="Remove exclusion for ${n}"><span class="cn-tagname">${n}</span><span aria-hidden="true">×</span></button>`;
+    })}`);
   }
-});
+  DW.actions.cnExAdd = function() {
+    var id = $('cn-ex-select').value, c = byId[id];
+    if (!c) { $('cn-save-state').textContent = 'Choose a client to exclude first.'; return; }
+    if (excluded.indexOf(c.name) < 0) excluded.push(c.name);
+    $('cn-save-state').textContent = 'Exclusion list changed. Save settings to apply.';
+    renderExclude();
+  };
+  DW.actions.cnExRemove = function(el) {
+    excluded.splice(parseInt(el.dataset.index, 10), 1);
+    $('cn-save-state').textContent = 'Exclusion list changed. Save settings to apply.';
+    renderExclude();
+    $('cn-ex-select').focus();
+  };
 
-DW.actions.generateCanaries = function(el) {
-  var clientId = el.dataset.clientId, clientName = el.dataset.clientName || '';
-  showToast('Generating canary tokens... this may take a moment', '');
-  fetch('/api/canary/clients/' + clientId + '/generate?name=' + encodeURIComponent(clientName), {
-    method: 'POST',
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('Canary tokens generated', 'success');
-    loadClientCanaries();
-  });
-};
+  function loadSettings() {
+    return api('GET', '/api/canary/settings').then(function(d) {
+      $('cn-email').value = d.email || '';
+      allTypes = d.available_types || [];
+      enabledTypes = d.enabled_types || [];
+      excluded = (d.exclude_clients || []).slice();
+      settingsLoaded = true;
+      renderTypes(); renderExclude();
+    }).catch(function(e) {
+      $('cn-save-state').textContent = 'Could not load settings: ' + e.message;
+    });
+  }
+
+  DW.actions.cnSave = function() {
+    if (!settingsLoaded) { $('cn-save-state').textContent = 'Settings did not load. Reload the page.'; return; }
+    var email = $('cn-email').value.trim();
+    if (!emailValid(email)) { DW.actions.cnEmailInput(); $('cn-email').focus(); $('cn-save-state').textContent = 'Fix the email address first.'; return; }
+    var types = [];
+    document.querySelectorAll('input[name="canary_type"]:checked').forEach(function(cb) { types.push(cb.value); });
+    var btn = $('cn-save'); btn.disabled = true;
+    $('cn-save-state').textContent = 'Saving…';
+    fetch('/api/canary/settings', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, credentials: 'same-origin',
+      body: JSON.stringify({email: email, enabled_types: types, exclude_clients: excluded})
+    }).then(function(r) { return r.json().catch(function() { return {}; }).then(function(d) { if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status)); }); })
+    .then(function() {
+      $('cn-save-state').textContent = 'Settings saved.'; DW.toast('Canary settings saved', 'success');
+      return loadFleet();
+    }).catch(function(e) { $('cn-save-state').textContent = 'Save failed: ' + e.message; })
+    .then(function() { btn.disabled = false; });
+  };
+
+  document.addEventListener('DOMContentLoaded', function() { loadFleet(); loadSettings(); });
+})();
 </script>
 {{end}}

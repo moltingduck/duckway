@@ -94,8 +94,8 @@ func (h *SupplyChainHandler) SetMinAge(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if req.Days <= 0 {
-		jsonError(w, "days must be a positive integer", http.StatusBadRequest)
+	if req.Days <= 0 || req.Days > 365 {
+		jsonError(w, "days must be a whole number from 1 to 365", http.StatusBadRequest)
 		return
 	}
 	if err := h.settings.Set(services.SettingKeySupplyChainMinAgeDays(), strconv.Itoa(req.Days)); err != nil {
