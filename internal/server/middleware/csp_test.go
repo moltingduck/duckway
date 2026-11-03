@@ -65,3 +65,19 @@ func TestCSPEnforcesTrustedTypesWithSingleDWPolicy(t *testing.T) {
 		t.Errorf("CSP must not allow a default Trusted Types policy: %s", v)
 	}
 }
+
+func TestCSPAllowsSelfHostedFontsOnly(t *testing.T) {
+	v := CSPHeaderValue("abc")
+	found := false
+	for _, d := range strings.Split(v, "; ") {
+		if d == "font-src 'self'" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("CSP must carry font-src 'self': %s", v)
+	}
+	if strings.Contains(v, "fonts.gstatic") || strings.Contains(v, "fonts.googleapis") {
+		t.Errorf("CSP must not allow third-party font hosts: %s", v)
+	}
+}

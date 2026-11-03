@@ -39,6 +39,39 @@
   var baselineTimer = null;
   var started = false;
 
+
+  /* ---- outage toast: one per outage, with a real countdown to the next SSE attempt ---- */
+  var outage = null; // {el, tick, at, dismissed}
+  function outageText(secs) {
+    return "Couldn't reach " + URL_ + ' \u2014 ' + (secs > 0 ? 'retrying in ' + secs + 's' : 'retrying now\u2026');
+  }
+  function outageRender() {
+    if (!outage) return;
+    var secs = Math.max(0, Math.ceil((outage.at - Date.now()) / 1000));
+    if (outage.el && outage.el.isConnected) outage.el.setText(outageText(secs));
+  }
+  function noteRetry(delay) {
+    if (!window.DW || typeof DW.toast !== 'function') return;
+    if (!outage) outage = { el: null, tick: null, at: 0, dismissed: false };
+    outage.at = Date.now() + delay;
+    if (!outage.el && !outage.dismissed) {
+      outage.el = DW.toast(outageText(Math.ceil(delay / 1000)), { kind: 'error', duration: 0 });
+      // The countdown changes every second: announce the outage once, not each tick.
+      outage.el.setAttribute('aria-live', 'off');
+      outage.el.setAttribute('data-live-outage', '');
+    } else if (outage.el && !outage.el.isConnected) {
+      outage.el = null; outage.dismissed = true; // user dismissed it: stay quiet for this outage
+    }
+    if (!outage.tick) outage.tick = setInterval(outageRender, 1000);
+    outageRender();
+  }
+  function outageOver() {
+    if (!outage) return;
+    if (outage.tick) clearInterval(outage.tick);
+    if (outage.el && outage.el.isConnected) outage.el.dismiss();
+    outage = null;
+  }
+
   function statusEl() { return document.getElementById('live-status'); }
   var ANNOUNCE = {
     reconnecting: 'Live updates disconnected. Reconnecting.',
@@ -175,6 +208,7 @@
       everConnected = true;
       upSince = Date.now();
       stopPolling();
+      outageOver();
       setState('live');
       baselineInvalidate();
     });
@@ -195,6 +229,7 @@
         else { setState('reconnecting'); delay = Math.max(5000, backoff()); }
       }
       upSince = 0;
+      if (failures > 0) noteRetry(delay);
       retryTimer = setTimeout(function () { connect(true); }, delay);
     });
     TOPICS.forEach(function (topic) {
@@ -226,6 +261,7 @@
       delay = backoff();
     }
     clearRetry();
+    noteRetry(delay);
     retryTimer = setTimeout(connect, delay);
   }
 
@@ -285,7 +321,7 @@
     flushHeld();
   });
   window.addEventListener('pagehide', function () {
-    clearRetry(); stopPolling(); closeES();
+    clearRetry(); stopPolling(); closeES(); outageOver();
     if (baselineTimer) { clearTimeout(baselineTimer); baselineTimer = null; }
     upSince = 0;
     setState('reconnecting');

@@ -165,17 +165,29 @@
       buttons.appendChild(actionButton('Check now', 'Check ' + plugin.name + ' for an available version', function () {
         mutate('/api/plugins/' + encodeURIComponent(plugin.name) + '/check', {}, 'Checking ' + plugin.name + '…', 'Checked ' + plugin.name + '. Publish an available version explicitly to distribute it.');
       }));
-      if (plugin.available_version) buttons.appendChild(actionButton('Publish available version', 'Publish available version of ' + plugin.name, function () {
-        if (busy || !window.confirm('Publish ' + plugin.name + ' version ' + plugin.available_version + ' and enable distribution? Only continue if you trust this source. All artifacts will be downloaded and verified. Installed clients will update only when explicitly requested.')) return;
+      if (plugin.available_version) buttons.appendChild(actionButton('Publish available version', 'Publish available version of ' + plugin.name, async function () {
+        if (busy) return;
+        const ok = await DW.confirm({
+          title: 'Publish ' + plugin.name + ' version ' + plugin.available_version + '?',
+          body: 'This enables distribution. Only continue if you trust this source. All artifacts will be downloaded and verified. Installed clients will update only when explicitly requested.',
+          confirmLabel: 'Publish and enable'
+        });
+        if (!ok || busy) return;
         mutate('/api/plugins/' + encodeURIComponent(plugin.name) + '/publish', {version: plugin.available_version, manifest_digest: plugin.available_manifest_digest}, 'Downloading and verifying ' + plugin.name + '…', 'Published and enabled ' + plugin.name + '. Clients can install or update explicitly.');
       }));
       if (plugin.version) {
         const action = plugin.enabled ? 'disable' : 'enable';
-        buttons.appendChild(actionButton(plugin.enabled ? 'Disable' : 'Enable', (plugin.enabled ? 'Disable' : 'Enable') + ' distribution for ' + plugin.name, function () {
-          const prompt = plugin.enabled
-            ? 'Disable future distribution of ' + plugin.name + '? Already installed plugins will keep running and will not be removed.'
-            : 'Enable distribution of the previously published ' + plugin.name + '? Clients will be able to install this native plugin.';
-          if (busy || !window.confirm(prompt)) return;
+        buttons.appendChild(actionButton(plugin.enabled ? 'Disable' : 'Enable', (plugin.enabled ? 'Disable' : 'Enable') + ' distribution for ' + plugin.name, async function () {
+          if (busy) return;
+          const ok = await DW.confirm({
+            title: plugin.enabled ? 'Disable distribution of ' + plugin.name + '?' : 'Enable distribution of ' + plugin.name + '?',
+            body: plugin.enabled
+              ? 'Future distribution stops. Already installed plugins will keep running and will not be removed.'
+              : 'Clients will be able to install this previously published native plugin.',
+            confirmLabel: plugin.enabled ? 'Disable' : 'Enable',
+            danger: plugin.enabled
+          });
+          if (!ok || busy) return;
           mutate('/api/plugins/' + encodeURIComponent(plugin.name) + '/' + action, {}, 'Changing distribution for ' + plugin.name + '…', 'Distribution ' + (plugin.enabled ? 'disabled' : 'enabled') + ' for ' + plugin.name + '.');
         }, plugin.enabled));
       }

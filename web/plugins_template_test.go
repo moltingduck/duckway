@@ -26,6 +26,13 @@ func TestPluginsPageExplainsServerAndClientLifecycle(t *testing.T) {
 		PendingApprovals                         int
 		WhatsNewShow                             bool
 		WhatsNewMoves                            []struct{ Old, New, Path string }
+		Shell                                    struct {
+			Crumbs []struct {
+				Label, Href string
+				Current     bool
+			}
+			AdminUser, Initial, GatewayHost, Version string
+		}
 	}{Title: `<script>alert("title")</script>`, Active: "plugins", CSPNonce: "testnonce"})
 	if err != nil {
 		t.Fatal(err)
