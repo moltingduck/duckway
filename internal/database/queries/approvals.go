@@ -143,6 +143,11 @@ type ApprovalListItem struct {
 	CreatedAt     string  `json:"created_at"`
 	ApprovedAt    *string `json:"approved_at"`
 	ExpiresAt     *string `json:"expires_at"`
+	// Additive detail fields for the inbox view.
+	CredentialName   string  `json:"credential_name"`   // API key or key group name ("" if unknown)
+	RequiresApproval bool    `json:"requires_approval"` // phantom token flag that caused the hold
+	ClientLastSeenAt *string `json:"client_last_seen_at"`
+	ClientVersion    string  `json:"client_version"` // "" when the client never reported one
 }
 
 // ListEnriched returns approvals filtered by status (any of the given values)
@@ -151,11 +156,15 @@ func (q *ApprovalQueries) ListEnriched(statuses []string, limit int) ([]Approval
 	query := `SELECT a.id, a.placeholder_id, p.env_name,
 	          p.client_id, COALESCE(c.name, ''),
 	          p.service_id, COALESCE(s.name, ''),
-	          a.status, a.request_info, a.created_at, a.approved_at, a.expires_at
+	          a.status, a.request_info, a.created_at, a.approved_at, a.expires_at,
+	          COALESCE(k.name, g.name, ''), p.requires_approval, c.last_seen_at, COALESCE(rs.version, '')
 	          FROM approvals a
 	          JOIN placeholder_keys p ON a.placeholder_id = p.id
 	          LEFT JOIN clients c ON p.client_id = c.id
-	          LEFT JOIN services s ON p.service_id = s.id`
+	          LEFT JOIN services s ON p.service_id = s.id
+	          LEFT JOIN api_keys k ON p.api_key_id = k.id
+	          LEFT JOIN api_key_groups g ON p.group_id = g.id
+	          LEFT JOIN client_runtime_status rs ON rs.client_id = p.client_id`
 
 	args := []interface{}{}
 	if len(statuses) > 0 {
@@ -184,11 +193,14 @@ func (q *ApprovalQueries) ListEnriched(statuses []string, limit int) ([]Approval
 	var result []ApprovalListItem
 	for rows.Next() {
 		var a ApprovalListItem
+		var requires int
 		if err := rows.Scan(&a.ID, &a.PlaceholderID, &a.EnvName,
 			&a.ClientID, &a.ClientName, &a.ServiceID, &a.ServiceName,
-			&a.Status, &a.RequestInfo, &a.CreatedAt, &a.ApprovedAt, &a.ExpiresAt); err != nil {
+			&a.Status, &a.RequestInfo, &a.CreatedAt, &a.ApprovedAt, &a.ExpiresAt,
+			&a.CredentialName, &requires, &a.ClientLastSeenAt, &a.ClientVersion); err != nil {
 			return nil, err
 		}
+		a.RequiresApproval = requires != 0
 		result = append(result, a)
 	}
 	return result, rows.Err()
