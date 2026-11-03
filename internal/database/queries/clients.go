@@ -22,7 +22,7 @@ func scanClient(row interface{ Scan(...interface{}) error }, c *models.Client) e
 }
 
 func (q *ClientQueries) List() ([]models.Client, error) {
-	rows, err := q.db.Query("SELECT " + clientCols + " FROM clients ORDER BY created_at DESC")
+	rows, err := q.db.Query("SELECT " + clientCols + " FROM clients WHERE id NOT IN (SELECT client_id FROM client_drafts) ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func (q *ClientQueries) GetByID(id string) (*models.Client, error) {
 
 func (q *ClientQueries) GetByTokenHash(hash string) (*models.Client, error) {
 	var c models.Client
-	err := scanClient(q.db.QueryRow("SELECT "+clientCols+" FROM clients WHERE token_hash = ? AND is_active = 1", hash), &c)
+	err := scanClient(q.db.QueryRow("SELECT "+clientCols+" FROM clients WHERE token_hash = ? AND is_active = 1 AND id NOT IN (SELECT client_id FROM client_drafts)", hash), &c)
 	if err != nil {
 		return nil, err
 	}

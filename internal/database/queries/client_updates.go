@@ -109,7 +109,8 @@ func (q *ClientUpdateQueries) CreateRollout(target, artifacts string, maxConcurr
 		CASE WHEN c.is_active=1 AND c.update_policy='managed' AND s.client_id IS NOT NULL
 			AND s.capabilities LIKE '%"managed_update_v1"%' AND s.install_writable=1 AND s.version<>?
 			THEN NULL ELSE datetime('now') END
-		FROM clients c LEFT JOIN client_runtime_status s ON s.client_id=c.id`, id, target, target)
+		FROM clients c LEFT JOIN client_runtime_status s ON s.client_id=c.id
+		WHERE c.id NOT IN (SELECT client_id FROM client_drafts)`, id, target, target)
 	if err != nil {
 		return nil, err
 	}

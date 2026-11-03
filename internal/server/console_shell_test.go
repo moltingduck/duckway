@@ -140,9 +140,9 @@ func TestEveryAdminPageRendersWithNonceAndShell(t *testing.T) {
 	}
 	paths := []string{
 		"/admin/", "/admin/services", "/admin/keys", "/admin/usage", "/admin/placeholders",
-		"/admin/clients", "/admin/client-updates", "/admin/groups", "/admin/key-groups",
+		"/admin/clients", "/admin/clients/rollouts", "/admin/groups", "/admin/key-groups",
 		"/admin/key-groups/" + g.ID, "/admin/key-suites", "/admin/approvals", "/admin/logs",
-		"/admin/notifications", "/admin/canary", "/admin/oauth", "/admin/cc", "/admin/onboarding",
+		"/admin/notifications", "/admin/canary", "/admin/oauth", "/admin/cc", "/admin/clients/new",
 		"/admin/settings", "/admin/supply-chain", "/admin/docs", "/admin/plugins",
 	}
 	for _, p := range paths {

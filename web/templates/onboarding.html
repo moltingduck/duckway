@@ -1,711 +1,506 @@
 {{define "content"}}
-<style>
-.setup-details {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-input);
-  overflow: hidden;
-}
-.setup-details summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: .75rem;
-  padding: .65rem .75rem;
-  cursor: pointer;
-  font-size: .82rem;
-  font-weight: 600;
-  list-style: none;
-}
-.setup-details summary::-webkit-details-marker {
-  display: none;
-}
-.setup-details summary::after {
-  content: "Show";
-  color: var(--text-muted);
-  font-size: .72rem;
-  font-weight: 500;
-}
-.setup-details[open] summary::after {
-  content: "Hide";
-}
-.setup-details-body {
-  border-top: 1px solid var(--border);
-  padding: .75rem;
-}
-.setup-details-body pre {
-  margin-top: .5rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: .75rem;
-  overflow: auto;
-  font-size: .76rem;
-}
-.setup-details-body pre code {
-  background: transparent;
-  padding: 0;
-}
-</style>
-<div class="page-header">
-  <h1>Onboard Client</h1>
+<div class="wz-crumbs">
+  <nav aria-label="Breadcrumb" class="wz-crumb"><a href="/admin/clients">Clients</a><span aria-hidden="true" class="wz-sep">/</span><span aria-current="page">Add client</span></nav>
+  <span class="wz-draftnote" id="wz-draftnote" role="status">Not saved yet</span>
+  <button type="button" class="btn btn-sm wz-discard-btn" id="wz-discard-btn" data-action="askDiscard" data-id="" hidden>Discard draft</button>
 </div>
 
-<p class="text-muted" style="margin-bottom:1.5rem">
-  Provision a new client in one flow: create the client record, optionally assign a Key Suite, and optionally set up a Control Channel.
-</p>
+<section class="card wz-resume" id="wz-resume" aria-labelledby="wz-resume-h" hidden>
+  <h2 id="wz-resume-h" class="wz-resume-h">Resume a draft</h2>
+  <p class="text-muted text-sm">These clients were started but not finished. They have no token and cannot connect until you reach the Install step.</p>
+  <ul class="wz-drafts" id="wz-resume-list"></ul>
+</section>
 
-<!-- Step indicators -->
-<div id="step-bar" style="display:flex;gap:0;margin-bottom:1.5rem;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
-  <div class="step-tab active" id="tab-1" style="flex:1;padding:.6rem 1rem;text-align:center;font-size:.875rem;background:var(--primary);color:#fff;font-weight:600">1 · Client</div>
-  <div class="step-tab" id="tab-2" style="flex:1;padding:.6rem 1rem;text-align:center;font-size:.875rem;color:var(--text-muted);border-left:1px solid var(--border)">2 · Key Suite</div>
-  <div class="step-tab" id="tab-3" style="flex:1;padding:.6rem 1rem;text-align:center;font-size:.875rem;color:var(--text-muted);border-left:1px solid var(--border)">3 · Control Channel</div>
-  <div class="step-tab" id="tab-4" style="flex:1;padding:.6rem 1rem;text-align:center;font-size:.875rem;color:var(--text-muted);border-left:1px solid var(--border)">4 · Done</div>
-</div>
-
-<!-- Step 1: Create client -->
-<div id="step-1">
-  <div class="card">
-    <h2 style="margin-bottom:1rem;font-size:1.1rem">Create Client</h2>
-    <div class="form-group">
-      <label>Client name <span style="color:var(--danger)">*</span></label>
-      <input type="text" id="client-name" placeholder="e.g. dev-laptop" autofocus>
-    </div>
-    <div style="display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.5rem;margin-top:1rem">
-      <button class="btn btn-primary" data-action="createClient">Create &amp; Continue →</button>
-    </div>
+<div class="wz-layout" id="wz-layout">
+  <div class="wz-stepwrap">
+    <p class="wz-compact" id="wz-compact" aria-hidden="true"></p>
+    <ol class="wz-steps" id="wz-steps" aria-label="Steps"></ol>
   </div>
+  <section class="card wz-card" aria-labelledby="wz-title">
+    <div id="wz-body" class="wz-body"><p class="text-muted">Loading&hellip;</p></div>
+    <div class="wz-foot" id="wz-foot"></div>
+  </section>
 </div>
 
-<!-- Step 2: Assign Key Suite -->
-<div id="step-2" style="display:none">
-  <div class="card">
-    <h2 style="margin-bottom:.25rem;font-size:1.1rem">Assign Key Suite</h2>
-    <p class="text-muted text-sm" style="margin-bottom:1rem">
-      A Key Suite provisions a placeholder for each service in the bundle. Skip if you want to assign keys manually later.
-    </p>
-    <div class="form-group">
-      <label>Key Suite</label>
-      <select id="suite-select">
-        <option value="">— no suite —</option>
-      </select>
-    </div>
-    <div id="suite-entries-preview" style="display:none;margin-top:.5rem;padding:.75rem;background:var(--bg-input);border-radius:var(--radius);font-size:.85rem"></div>
-    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;margin-top:1rem">
-      <button class="btn" data-action="goStep" data-step="1">← Back</button>
-      <div style="display:flex;flex-wrap:wrap;gap:.5rem">
-        <button class="btn" data-action="goStep" data-step="3">Skip</button>
-        <button class="btn btn-primary" data-action="assignSuite">Assign &amp; Continue →</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Step 3: Control Channel -->
-<div id="step-3" style="display:none">
-  <div class="card">
-    <h2 style="margin-bottom:.25rem;font-size:1.1rem">Control Channel</h2>
-    <p class="text-muted text-sm" style="margin-bottom:1rem">
-      A Control Channel binds the client to a Discord category so you can message and manage the agent from Discord. Skip if not needed.
-    </p>
-    <div class="form-group">
-      <label>CC name</label>
-      <input type="text" id="cc-name" placeholder="e.g. dev-laptop CC">
-    </div>
-    <div class="form-group">
-      <label>Agent type</label>
-        <select id="cc-agent" data-on-change="renderOnboardingAgentOptions">
-          <option value="claude_code">claude_code</option>
-          <option value="codex">codex</option>
-          <option value="openclaw">openclaw</option>
-        </select>
-      <span class="text-muted text-sm">Only agents implemented by <code>duckway cc watch</code> are shown.</span>
-    </div>
-    <div id="onboarding-agent-options"></div>
-    <div class="form-group">
-      <label>Message channel</label>
-      <select id="cc-service" data-on-change="onCCServiceChange"></select>
-      <span class="text-muted text-sm">Only services that can carry Control Channel messages are shown.</span>
-    </div>
-    <div class="form-group">
-      <label>Bot token (API Key)</label>
-      <select id="cc-key" data-on-change="onCCKeyChange"></select>
-    </div>
-    <div id="cc-config-fields"></div>
-    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;margin-top:1rem">
-      <button class="btn" data-action="goStep" data-step="2">← Back</button>
-      <div style="display:flex;flex-wrap:wrap;gap:.5rem">
-        <button class="btn" data-action="finishOnboarding">Skip</button>
-        <button class="btn btn-primary" data-action="createCC">Create CC &amp; Finish →</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Step 4: Done -->
-<div id="step-4" style="display:none">
-  <div class="card" style="text-align:center;padding:2rem">
-    <div style="font-size:2.5rem;margin-bottom:1rem">✅</div>
-    <h2 style="margin-bottom:1.5rem">Client onboarded</h2>
-    <div id="summary" style="text-align:left;display:inline-block;min-width:min(320px,100%);max-width:480px;margin-bottom:1.5rem"></div>
-    <div id="setup-commands" style="text-align:left;max-width:760px;margin:0 auto 1.5rem"></div>
-    <div style="display:flex;flex-wrap:wrap;gap:.75rem;justify-content:center">
-      <a href="/admin/clients" class="btn btn-primary">View Clients</a>
-      <button class="btn" data-action="resetWizard">Onboard Another</button>
+<div id="wz-discard-modal" class="modal-backdrop wz-dlg" hidden>
+  <div class="modal wz-modal">
+    <h2>Discard this draft?</h2>
+    <p class="text-sm" id="wz-discard-impact"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="modal-close">Keep draft</button>
+      <button type="button" class="btn btn-danger" id="wz-discard-confirm" data-action="confirmDiscard">Discard draft</button>
     </div>
   </div>
 </div>
 
 <script nonce="{{$.CSPNonce}}">
-var state = { clientID: null, clientName: null, clientToken: null, suiteID: null, suiteName: null, suiteEntries: [], ccID: null };
-var allSuites = [];
-var allServices = [];
-var allKeys = [];
-var obDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
-var gatewayURL = window.location.origin;
-var gatewayURLValid = false;
-
-DW.actions.createClient = function() { createClient(); };
-DW.actions.goStep = function(el) { goStep(parseInt(el.dataset.step, 10)); };
-DW.actions.assignSuite = function() { assignSuite(); };
-DW.actions.renderOnboardingAgentOptions = function() { renderOnboardingAgentOptions(); };
-DW.actions.onCCServiceChange = function() { loadCCKeys(); renderCCConfig(); };
-DW.actions.onCCKeyChange = function() {
-  obDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
-  renderCCConfig();
+(function () {
+'use strict';
+var STEPS = [
+  {title: 'Client', sub: 'Name and update policy'},
+  {title: 'Credentials', sub: 'Key bundle'},
+  {title: 'Control channel', sub: 'Optional'},
+  {title: 'Install', sub: 'One-time command'}
+];
+var AGENTS = [
+  {value: 'claude_code', label: 'Claude Code'},
+  {value: 'codex', label: 'Codex'},
+  {value: 'openclaw', label: 'OpenClaw'}
+];
+var S = {
+  step: 1, draft: null, name: '', policy: 'managed', suiteID: '', suites: [], suiteDetail: {}, gone: false,
+  services: [], keys: [], drafts: [], ccs: [], cc: null,
+  ccf: {agent: 'claude_code', sandbox: 'workspace-write', keyID: '', guildID: '', categoryID: '', setup: null, categories: [], check: null, loading: ''},
+  token: '', reveal: false, saved: false, busy: false, err: '',
+  gatewayURL: window.location.origin, gatewayOK: false, ready: false
 };
-DW.actions.finishOnboarding = function() { finishOnboarding(); };
-DW.actions.createCC = function() { createCC(); };
-DW.actions.resetWizard = function() { resetWizard(); };
-DW.actions.loadOnboardingDiscordCategories = function() { loadOnboardingDiscordCategories(); };
-DW.actions.preflightOnboardingDiscordCategory = function() { preflightOnboardingDiscordCategory(); };
-DW.actions.grantOnboardingDiscordCategoryAccess = function() { grantOnboardingDiscordCategoryAccess(); };
-DW.actions.createOnboardingDiscordCategory = function() { createOnboardingDiscordCategory(); };
-DW.actions.loadOnboardingDiscordSetup = function() { loadOnboardingDiscordSetup(); };
+var discardTarget = null;
 
-document.addEventListener('DOMContentLoaded', function() {
-  loadGatewayURL();
-
-  fetch('/api/key-suites', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
-    allSuites = d || [];
-    var sel = document.getElementById('suite-select');
-    allSuites.forEach(function(s) {
-      var o = document.createElement('option');
-      o.value = s.id; o.textContent = s.name + (s.description ? ' — ' + s.description : '');
-      sel.appendChild(o);
+function $(id) { return document.getElementById(id); }
+function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+function api(method, url, body) {
+  var opts = {method: method, credentials: 'same-origin'};
+  if (body !== undefined) { opts.headers = {'Content-Type': 'application/json'}; opts.body = JSON.stringify(body); }
+  return fetch(url, opts).then(function (r) {
+    return r.text().then(function (t) {
+      var d = null;
+      try { d = t ? JSON.parse(t) : {}; } catch (e) { d = {}; }
+      if (!r.ok) { var err = new Error((d && d.error) || ('request failed (' + r.status + ')')); err.status = r.status; err.data = d; throw err; }
+      return d;
     });
-    sel.addEventListener('change', previewSuite);
   });
-
-  fetch('/api/services', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
-    allServices = (d || []).filter(isProvisionableMessageChannelService);
-    var sel = document.getElementById('cc-service');
-    allServices.forEach(function(s) {
-      var o = document.createElement('option');
-      o.value = s.id; o.textContent = (s.display_name || s.name) + ' (' + s.name + ')';
-      sel.appendChild(o);
-    });
-    if (allServices.length) loadCCKeys();
-    renderCCConfig();
-  });
-
-  fetch('/api/keys', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
-    allKeys = d || [];
-    loadCCKeys();
-  });
-});
-
-function loadGatewayURL() {
-  fetch('/api/settings', {credentials:'same-origin'})
-    .then(function(r){return r.json();})
-    .then(function(s) {
-      if (s.gateway_url) {
-        gatewayURL = s.gateway_url;
-        gatewayURLValid = true;
-        refreshSetupCommandsIfDone();
-        return;
-      }
-      fetch('/install.sh', {method:'HEAD'})
-        .then(function(r){ gatewayURLValid = !!r.ok; refreshSetupCommandsIfDone(); })
-        .catch(function(){ gatewayURLValid = false; refreshSetupCommandsIfDone(); });
-    });
+}
+function keepFocus(fn) {
+  var id = document.activeElement && document.activeElement.id;
+  fn();
+  if (id) { var el = $(id); if (el && el.focus) el.focus(); }
 }
 
-function refreshSetupCommandsIfDone() {
-  var done = document.getElementById('step-4');
-  if (done && done.style.display !== 'none') renderSetupCommands();
+/* ---------- rendering ---------- */
+function renderSteps() {
+  var items = STEPS.map(function (s, i) {
+    var n = i + 1, done = n < S.step, on = n === S.step;
+    return DW.html`<li class="wz-step${on ? ' is-current' : ''}${done ? ' is-done' : ''}"${on ? DW.raw(' aria-current="step"') : ''}><span class="wz-dot" aria-hidden="true">${done ? '✓' : String(n)}</span><span class="wz-step-text"><span class="wz-step-title">${s.title}</span><span class="wz-step-sub">${s.sub}${done ? ' · done' : ''}</span></span></li>`;
+  });
+  DW.setHTML($('wz-steps'), DW.html`${items}`);
+  $('wz-compact').textContent = 'Step ' + S.step + ' of 4 · ' + STEPS[S.step - 1].title;
+}
+function renderDraftNote() {
+  var note = $('wz-draftnote'), btn = $('wz-discard-btn');
+  if (S.token) { note.textContent = 'Client created'; btn.hidden = true; return; }
+  if (S.draft) {
+    note.textContent = 'Draft saved · resume any time from Clients';
+    btn.hidden = false; btn.setAttribute('data-id', S.draft.id);
+  } else {
+    note.textContent = 'Not saved yet · saved when you create the client';
+    btn.hidden = true;
+  }
+}
+function errBox() {
+  return S.err ? DW.html`<p class="wz-err" role="alert">${S.err}</p>` : DW.raw('<p class="wz-err" role="alert" hidden></p>');
+}
+function head(title, sub, optional) {
+  return DW.html`<div class="wz-head"><h1 id="wz-title" class="wz-title" tabindex="-1">${title}${optional ? DW.html` <span class="wz-opt">optional</span>` : ''}</h1><p class="text-muted wz-sub">${sub}</p></div>`;
 }
 
-function isProvisionableMessageChannelService(s) {
-  return s && s.is_active && s.name === 'discord';
+function step1() {
+  return DW.html`${head('Name the client', 'A client is one machine or container running the duckway agent.')}
+<div class="form-group"><label for="wz-name">Client name</label><input id="wz-name" type="text" value="${S.name}" maxlength="63" autocomplete="off" spellcheck="false" aria-describedby="wz-name-help" data-on-input="onName"><span class="text-sm text-muted" id="wz-name-help">Lowercase letters, digits and dashes. Shown in logs and approvals.</span></div>
+<fieldset class="wz-field"><legend class="wz-legend">Updates</legend>
+<label class="wz-opt-card"><input type="radio" name="wz-policy" value="managed" data-on-change="onPolicy"${S.policy === 'managed' ? DW.raw(' checked') : ''}><span><strong>Managed</strong><br><span class="text-sm text-muted">Joins fleet rollouts automatically.</span></span></label>
+<label class="wz-opt-card"><input type="radio" name="wz-policy" value="manual" data-on-change="onPolicy"${S.policy === 'manual' ? DW.raw(' checked') : ''}><span><strong>Manual</strong><br><span class="text-sm text-muted">You update this machine yourself.</span></span></label>
+</fieldset>${errBox()}`;
 }
 
-function goStep(n) {
-  [1,2,3,4].forEach(function(i) {
-    document.getElementById('step-'+i).style.display = i === n ? '' : 'none';
-    var tab = document.getElementById('tab-'+i);
-    if (i < n) {
-      tab.style.background = 'var(--bg-input)';
-      tab.style.color = 'var(--text-muted)';
-    } else if (i === n) {
-      tab.style.background = 'var(--primary)';
-      tab.style.color = '#fff';
-      tab.style.fontWeight = '600';
+function suiteOptions() {
+  var opts = [DW.html`<option value="">None for now</option>`];
+  S.suites.forEach(function (s) {
+    opts.push(DW.html`<option value="${s.id}"${s.id === S.suiteID ? DW.raw(' selected') : ''}>${s.name} (${plural(s.entry_count || 0, 'service', 'services')})</option>`);
+  });
+  return opts;
+}
+function entrySource(e) {
+  if (e.group_name) return 'pool “' + e.group_name + '”';
+  if (e.api_key_name) return 'credential “' + e.api_key_name + '”';
+  return 'credential';
+}
+function bundlePreview() {
+  if (!S.suiteID) return DW.raw('<p class="text-muted text-sm wz-nobundle">No bundle selected. No phantom tokens are created now. You can add single credentials from the client page later.</p>');
+  var d = S.suiteDetail[S.suiteID];
+  if (!d) return DW.raw('<p class="text-muted text-sm">Loading bundle&hellip;</p>');
+  var entries = d.entries || [];
+  if (!entries.length) return DW.raw('<p class="text-muted text-sm">This bundle has no entries yet, so no phantom tokens would be created.</p>');
+  return DW.html`<div class="wz-preview"><div class="wz-preview-head">This creates ${plural(entries.length, 'phantom token', 'phantom tokens')}</div><ul class="wz-preview-list">${entries.map(function (e) {
+    return DW.html`<li><span class="mono wz-env">${e.env_name}</span><span class="wz-src">${e.service_name || e.service_id} · ${entrySource(e)}</span></li>`;
+  })}</ul></div>`;
+}
+function step2() {
+  return DW.html`${head('Give it credentials', 'Pick a key bundle to create its phantom tokens in one step. You can add single credentials later.')}
+<div class="form-group"><label for="wz-suite">Key bundle</label><select id="wz-suite" data-on-change="onSuite">${suiteOptions()}</select></div>
+<div id="wz-preview" aria-live="polite">${bundlePreview()}</div>${errBox()}`;
+}
+
+function discordService() { return S.services.filter(function (s) { return s.is_active && s.name === 'discord'; })[0] || null; }
+function discordKeys() {
+  var svc = discordService();
+  return svc ? S.keys.filter(function (k) { return k.service_id === svc.id && k.is_active; }) : [];
+}
+function ccFields() {
+  var f = S.ccf;
+  var keys = discordKeys();
+  var keyOpts = [DW.html`<option value="">Select a bot credential</option>`].concat(keys.map(function (k) {
+    return DW.html`<option value="${k.id}"${k.id === f.keyID ? DW.raw(' selected') : ''}>${k.name}</option>`;
+  }));
+  var agentOpts = AGENTS.map(function (a) { return DW.html`<option value="${a.value}"${a.value === f.agent ? DW.raw(' selected') : ''}>${a.label}</option>`; });
+  var sandbox = '';
+  if (f.agent === 'codex') {
+    sandbox = DW.html`<div class="form-group"><label for="wz-sandbox">Codex sandbox</label><select id="wz-sandbox" data-on-change="onCCField">${['workspace-write', 'read-only', 'danger-full-access', 'none'].map(function (v) { return DW.html`<option value="${v}"${v === f.sandbox ? DW.raw(' selected') : ''}>${v}</option>`; })}</select><span class="text-sm text-muted">Use danger-full-access only on trusted machines.</span></div>`;
+  }
+  var dest = '';
+  if (f.keyID) {
+    if (f.loading === 'setup') dest = DW.raw('<p class="text-muted text-sm" role="status">Loading servers&hellip;</p>');
+    else if (f.setup && (f.setup.guilds || []).length) {
+      var guildOpts = f.setup.guilds.map(function (g) { return DW.html`<option value="${g.id}"${g.id === f.guildID ? DW.raw(' selected') : ''}>${g.name}</option>`; });
+      var catOpts = [DW.html`<option value="__new__"${f.categoryID === '__new__' ? DW.raw(' selected') : ''}>+ Create “${S.name}”</option>`].concat((f.categories || []).map(function (c) {
+        return DW.html`<option value="${c.id}"${c.id === f.categoryID ? DW.raw(' selected') : ''}>${c.name}</option>`;
+      }));
+      dest = DW.html`<div class="wz-grid"><div class="form-group"><label for="wz-guild">Server</label><select id="wz-guild" data-on-change="onGuild">${guildOpts}</select></div><div class="form-group"><label for="wz-category">Category</label><select id="wz-category" data-on-change="onCCField">${catOpts}</select></div></div>${checkRow()}`;
     } else {
-      tab.style.background = '';
-      tab.style.color = 'var(--text-muted)';
-      tab.style.fontWeight = '';
+      var why = f.setup && f.setup.guilds_error ? 'Could not list servers: ' + f.setup.guilds_error : 'The bot is not in any server yet.';
+      var invite = f.setup && f.setup.invite_url && /^https?:\/\//i.test(f.setup.invite_url) ? DW.html` <a href="${f.setup.invite_url}" target="_blank" rel="noopener">Invite the bot</a>` : '';
+      dest = DW.html`<p class="text-muted text-sm">${why}${invite} <button type="button" class="ro-linkbtn" data-action="reloadSetup">Refresh servers</button></p>`;
     }
-  });
-  if (n === 3) updateAgentTypeOptions();
-}
-
-function createClient() {
-  var name = document.getElementById('client-name').value.trim();
-  if (!name) { DW.toast('Client name is required', 'error'); return; }
-  fetch('/api/clients', {
-    method: 'POST', credentials: 'same-origin',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({name: name})
-  }).then(function(r) {
-    if (!r.ok) return r.json().then(function(e){ throw new Error(e.error || 'create failed'); });
-    return r.json();
-  }).then(function(c) {
-    state.clientID = c.id;
-    state.clientName = c.name;
-    state.clientToken = c.token || '';
-    document.getElementById('cc-name').value = name + ' CC';
-    goStep(2);
-  }).catch(function(e){ DW.toast(e.message, 'error'); });
-}
-
-function previewSuite() {
-  var id = document.getElementById('suite-select').value;
-  var preview = document.getElementById('suite-entries-preview');
-  if (!id) { preview.style.display = 'none'; return; }
-  fetch('/api/key-suites/'+encodeURIComponent(id), {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s){
-    if (!s.entries || !s.entries.length) {
-      preview.textContent = 'No entries in this suite.';
-    } else {
-      DW.setHTML(preview, DW.html`<strong style="display:block;margin-bottom:.35rem">Entries:</strong>${s.entries.map(function(e){
-        return DW.html`<div>· <strong>${e.service_name || e.service_id}</strong> → <code>${e.env_name}</code>${e.api_key_name ? ' (' + e.api_key_name + ')' : ''}${e.group_name ? ' [group: ' + e.group_name + ']' : ''}</div>`;
-      })}`);
-    }
-    preview.style.display = '';
-  });
-  renderOnboardingAgentOptions();
-}
-
-function assignSuite() {
-  var id = document.getElementById('suite-select').value;
-  if (!id) {
-    state.suiteID = null;
-    state.suiteName = null;
-    state.suiteEntries = [];
-    goStep(3);
-    return;
   }
-  fetch('/api/key-suites/'+encodeURIComponent(id)+'/assign', {
-    method: 'POST', credentials: 'same-origin',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({client_id: state.clientID})
-  }).then(function(r) {
-    if (!r.ok) return r.json().then(function(e){ throw new Error(e.error || 'assign failed'); });
-    return r.json();
-  }).then(function(res) {
-    var suite = allSuites.find(function(s){ return s.id === id; });
-    state.suiteID = id;
-    state.suiteName = suite ? suite.name : id;
-    fetch('/api/key-suites/'+encodeURIComponent(id), {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s) {
-      state.suiteEntries = s.entries || [];
-      updateAgentTypeOptions();
-    });
-    if (res.skipped && res.skipped.length) {
-      DW.toast('Assigned with ' + res.skipped.length + ' conflict(s) skipped', '');
-    }
-    goStep(3);
-  }).catch(function(e){ DW.toast(e.message, 'error'); });
+  return DW.html`<div class="wz-grid"><div class="form-group"><label for="wz-agent">Agent</label><select id="wz-agent" data-on-change="onCCField">${agentOpts}</select></div><div class="form-group"><label for="wz-bot">Discord bot</label><select id="wz-bot" data-on-change="onBot">${keyOpts}</select></div></div>${sandbox}${dest}`;
 }
-
-function updateAgentTypeOptions() {
-  var sel = document.getElementById('cc-agent');
-  if (!sel) return;
-  var entries = state.suiteEntries || [];
-  var hasOpenAI = entries.some(function(e){ return String(e.service_name || '').toLowerCase().indexOf('openai') >= 0; });
-  var hasAnthropic = entries.some(function(e){
-    var n = String(e.service_name || '').toLowerCase();
-    return n.indexOf('anthropic') >= 0 || n.indexOf('claude') >= 0;
-  });
-  var options = [];
-  if (hasAnthropic) options.push({value:'claude_code', label:'Claude Code (claude_code)'});
-  if (hasOpenAI) options.push({value:'codex', label:'Codex (codex)'});
-  options.push({value:'openclaw', label:'OpenClaw (openclaw)'});
-  if (options.length === 0) {
-    options = [
-      {value:'claude_code', label:'Claude Code (claude_code)'},
-      {value:'codex', label:'Codex (codex)'},
-      {value:'openclaw', label:'OpenClaw (openclaw)'}
-    ];
+function checkRow() {
+  var c = S.ccf.check;
+  var pill, text;
+  if (S.ccf.categoryID === '__new__') { pill = DW.raw('<span class="ro-pill ro-pill-mute">Not checked</span>'); text = 'The category is created with bot access when you continue.'; }
+  else if (!c) { pill = DW.raw('<span class="ro-pill ro-pill-mute">Not checked</span>'); text = 'Check that the bot can create channels and post in this category.'; }
+  else if (c.busy) { pill = DW.raw('<span class="ro-pill ro-pill-mute">Checking</span>'); text = 'Checking Discord permissions…'; }
+  else if (c.ok) { pill = DW.raw('<span class="ro-pill ro-pill-ok">Ready</span>'); text = 'Bot can create channels and post in this category.'; }
+  else { pill = DW.raw('<span class="ro-pill ro-pill-bad">Needs permissions</span>'); text = c.error || 'Permission check failed.'; }
+  var steps = c && !c.busy && !c.ok && c.steps ? DW.html`<ul class="wz-checks">${c.steps.map(function (s) { return DW.html`<li>${s.ok ? 'Pass' : 'Fail'} · ${s.name}${s.note ? ' — ' + s.note : ''}</li>`; })}</ul>` : '';
+  var fix = c && !c.busy && !c.ok ? DW.html` <button type="button" class="btn btn-sm" data-action="grantAccess">Grant access</button>` : '';
+  var dis = S.ccf.categoryID === '__new__' ? DW.raw(' disabled') : '';
+  return DW.html`<div class="wz-check" id="wz-check">${pill}<span class="wz-check-text">${text}</span>${fix}<button type="button" class="btn btn-sm" id="wz-check-btn" data-action="checkCC"${dis}>Check again</button></div>${steps}`;
+}
+function step3() {
+  var body;
+  if (S.cc) {
+    body = DW.html`<div class="wz-done-box"><span class="ro-pill ro-pill-ok">Created</span><span>Control channel “${S.cc.name}” is already set up for this client.</span></div>`;
+  } else if (!discordService() || !discordKeys().length) {
+    body = DW.raw('<p class="text-muted">No Discord bot credential is configured, so there is nothing to connect. Skip this step; you can add a control channel later.</p>');
+  } else {
+    body = DW.html`<div id="wz-cc-fields">${ccFields()}</div>`;
   }
-  sel.replaceChildren();
-  options.forEach(function(o) {
-    var opt = document.createElement('option');
-    opt.value = o.value;
-    opt.textContent = o.label;
-    sel.appendChild(opt);
-  });
-  var help = sel.parentElement.querySelector('.text-muted');
-  if (help) {
-    help.textContent = hasOpenAI || hasAnthropic
-      ? 'Shown from the assigned Key Suite credentials plus OpenClaw. Pick the agent installed on this client.'
-      : 'No Claude/OpenAI key was assigned by the suite, so supported agents are shown.';
-  }
-  renderOnboardingAgentOptions();
+  return DW.html`${head('Control channel', 'Drive this client’s agent from Discord. The bot token stays on the server.', true)}${body}<p class="text-sm text-muted">Next you get the install command with a one-time client token.</p>${errBox()}`;
 }
 
-function codexSandboxField(id, value) {
-  value = value || 'workspace-write';
-  var opts = ['workspace-write','read-only','danger-full-access','none'].map(function(v) {
-    return DW.html`<option value="${v}" ${v === value ? DW.raw('selected') : ''}>${v}</option>`;
-  });
-  return DW.html`<div class="form-group"><label>Codex sandbox</label><select id="${id}">${opts}</select><span class="text-muted text-sm">Only this enum is sent to the client. Use danger-full-access only for trusted Discord categories.</span></div>`;
-}
-
-function renderOnboardingAgentOptions() {
-  var box = document.getElementById('onboarding-agent-options');
-  var sel = document.getElementById('cc-agent');
-  if (!box || !sel) return;
-  if (sel.value === 'codex') DW.setHTML(box, codexSandboxField('onboarding-codex-sandbox', 'workspace-write'));
-  else box.replaceChildren();
-}
-
-function applyOnboardingAgentOptions(config, agentType) {
-  if (agentType === 'codex') {
-    config.agent_options = {sandbox: document.getElementById('onboarding-codex-sandbox').value};
-  } else if (config.agent_options) {
-    delete config.agent_options;
-  }
-  return config;
-}
-
-function loadCCKeys() {
-  var serviceID = document.getElementById('cc-service').value;
-  var sel = document.getElementById('cc-key');
-  sel.replaceChildren();
-  var first = document.createElement('option');
-  first.value = '';
-  first.textContent = '— select —';
-  sel.appendChild(first);
-  var matching = allKeys.filter(function(k){ return k.service_id === serviceID && k.is_active; });
-  matching.forEach(function(k){
-    var o = document.createElement('option');
-    o.value = k.id; o.textContent = k.name;
-    sel.appendChild(o);
-  });
-}
-
-function renderCCConfig() {
-  var svc = allServices.find(function(s){ return s.id === document.getElementById('cc-service').value; });
-  var fields = document.getElementById('cc-config-fields');
-  fields.replaceChildren();
-  if (!svc) return;
-  if (svc.name === 'discord' || (svc.display_name || '').toLowerCase().includes('discord')) {
-    DW.setHTML(fields, DW.raw('<div id="onboarding-discord-setup"></div>'));
-    renderOnboardingDiscordSetup();
-  }
-}
-
-function renderOnboardingDiscordSetup() {
-  var box = document.getElementById('onboarding-discord-setup');
-  if (!box) return;
-  var keyID = document.getElementById('cc-key').value;
-  if (!keyID) {
-    DW.setHTML(box, DW.raw('<div class="text-muted text-sm">Select a Discord bot token first.</div>'));
-    return;
-  }
-  var loaded = obDiscordSetup.apiKeyId === keyID;
-  var guilds = obDiscordSetup.guilds || [];
-  var cats = obDiscordSetup.categories || [];
-  var guildOptions = guilds.map(function(g){ return DW.html`<option value="${g.id}">${g.name} (${g.id})</option>`; });
-  var catOptions = cats.map(function(c){ return DW.html`<option value="${c.id}">${c.name} (${c.id})</option>`; });
-  var categoryName = state.clientName || document.getElementById('client-name').value.trim() || 'duckway';
-  var disabledAttr = !loaded ? DW.raw('disabled') : '';
-  var destination = loaded && guilds.length
-    ? DW.html`<div class="form-group"><label>Server</label><select id="cfg-guild" data-on-change="loadOnboardingDiscordCategories">${guildOptions}</select></div><div class="form-group"><label>Category</label><select id="cfg-category">${catOptions.length ? catOptions : DW.raw('<option value="">No categories loaded</option>')}</select><div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.5rem"><button type="button" class="btn btn-sm" data-action="preflightOnboardingDiscordCategory">Check permissions</button><button type="button" class="btn btn-sm" data-action="grantOnboardingDiscordCategoryAccess">Grant bot access</button><span class="text-muted text-sm">Grant writes category permissions; check creates and deletes a temporary channel.</span></div><div id="cfg-preflight-result" style="margin-top:.5rem"></div><span class="text-muted text-sm">If Grant fails, use Setup invite to add temporary Manage Roles permission, or add the bot in Discord category Permissions manually.</span></div><div class="form-group"><label>Create category</label><div style="display:flex;gap:.5rem;align-items:center"><input type="text" id="cfg-new-category" value="${categoryName}" placeholder="${categoryName}"><button type="button" class="btn btn-sm" data-action="createOnboardingDiscordCategory">Create</button></div></div>`
-    : DW.html`<div class="form-group"><label>Server ID</label><input type="text" id="cfg-guild" placeholder="Load setup, or paste server id as fallback" ${disabledAttr}></div><div class="form-group"><label>Category ID</label><input type="text" id="cfg-category" placeholder="Paste category id as fallback" ${disabledAttr}></div>`;
-  var inviteBtn = obDiscordSetup.invite_url ? DW.html`<a class="btn btn-sm" target="_blank" rel="noopener" href="${safeHref(obDiscordSetup.invite_url)}">Invite bot</a>` : '';
-  var setupInviteBtn = obDiscordSetup.setup_invite_url ? DW.html`<a class="btn btn-sm" target="_blank" rel="noopener" href="${safeHref(obDiscordSetup.setup_invite_url)}">Setup invite</a>` : '';
-  var botInfo = obDiscordSetup.bot ? DW.html`<div class="text-muted text-sm" style="margin-bottom:.5rem">Bot: <strong>${obDiscordSetup.bot.username || obDiscordSetup.bot.id}</strong></div>` : '';
-  var guildsErr = obDiscordSetup.guilds_error ? DW.html`<div class="text-muted text-sm" style="margin-bottom:.5rem">Could not list servers: ${obDiscordSetup.guilds_error}</div>` : '';
-  DW.setHTML(box, DW.html`<div class="form-group"><label>Discord setup</label><div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center"><button type="button" class="btn btn-sm" data-action="loadOnboardingDiscordSetup">${loaded ? 'Refresh servers' : 'Load Discord setup'}</button>${inviteBtn}${setupInviteBtn}</div><span class="text-muted text-sm">Invite bot uses Duckway runtime permissions. Setup invite additionally grants Manage Roles so Duckway can write category permission overrides.</span></div>${botInfo}${guildsErr}${destination}`);
-}
-
-// Only allow http(s) URLs in server-provided hrefs (blocks script-scheme URLs).
-function safeHref(u) {
-  var v = String(u == null ? '' : u).trim();
-  return /^https?:\/\//i.test(v) ? v : '#';
-}
-
-function loadOnboardingDiscordSetup() {
-  var keyID = document.getElementById('cc-key').value;
-  if (!keyID) { DW.toast('Select a Discord bot token first', 'error'); return; }
-  fetch('/api/cc/discord/setup?api_key_id=' + encodeURIComponent(keyID), {credentials:'same-origin'})
-    .then(function(r){return r.json();})
-    .then(function(d){
-      if (d.error) { DW.toast(d.error, 'error'); return; }
-      obDiscordSetup = {apiKeyId:keyID, bot:d.bot, invite_url:d.invite_url, setup_invite_url:d.setup_invite_url, guilds:d.guilds || [], guilds_error:d.guilds_error || '', categories:[]};
-      renderOnboardingDiscordSetup();
-      if ((obDiscordSetup.guilds || []).length) loadOnboardingDiscordCategories();
-      else DW.toast('Bot loaded. Invite it to a server, then refresh.', 'success');
-    });
-}
-
-function loadOnboardingDiscordCategories() {
-  var keyID = document.getElementById('cc-key').value;
-  var guild = document.getElementById('cfg-guild');
-  var guildID = guild ? guild.value : '';
-  if (!keyID || !guildID) return;
-  fetch('/api/cc/discord/categories?api_key_id=' + encodeURIComponent(keyID) + '&guild_id=' + encodeURIComponent(guildID), {credentials:'same-origin'})
-    .then(function(r){return r.json();})
-    .then(function(d){
-      if (d.error) { DW.toast(d.error, 'error'); return; }
-      obDiscordSetup.categories = d.categories || [];
-      renderOnboardingDiscordSetup();
-      var g = document.getElementById('cfg-guild');
-      if (g) g.value = guildID;
-    });
-}
-
-function createOnboardingDiscordCategory() {
-  var keyID = document.getElementById('cc-key').value;
-  var guildID = document.getElementById('cfg-guild').value;
-  var name = document.getElementById('cfg-new-category').value.trim() || state.clientName || 'duckway';
-  if (!keyID || !guildID) { DW.toast('Load setup and choose a server first', 'error'); return; }
-  fetch('/api/cc/discord/categories', {
-    method:'POST', credentials:'same-origin',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({api_key_id:keyID, guild_id:guildID, name:name})
-  }).then(function(r){return r.json();}).then(function(d){
-    if (d.error) { DW.toast(d.error, 'error'); return; }
-    DW.toast(d.permission_warning || 'Category created and bot access granted', d.permission_warning ? 'error' : 'success');
-    obDiscordSetup.categories = (obDiscordSetup.categories || []).concat([d]);
-    renderOnboardingDiscordSetup();
-    var g = document.getElementById('cfg-guild');
-    var c = document.getElementById('cfg-category');
-    if (g) g.value = guildID;
-    if (c) {
-      c.value = d.id;
-      preflightOnboardingDiscordCategory();
-    }
-  });
-}
-
-function grantOnboardingDiscordCategoryAccess() {
-  var keyID = document.getElementById('cc-key').value;
-  var catID = document.getElementById('cfg-category').value;
-  var panel = document.getElementById('cfg-preflight-result');
-  if (!keyID || !catID) { DW.toast('Choose a category first', 'error'); return; }
-  if (panel) DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Granting bot access on the category...</div>'));
-  fetch('/api/cc/discord/category-permissions', {
-    method:'POST', credentials:'same-origin',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({api_key_id:keyID, category_id:catID})
-  }).then(function(r){return r.json();}).then(function(d){
-    if (d.error) {
-      if (panel) DW.setHTML(panel, DW.html`<div class="text-sm" style="color:#ef4444">${d.error}<br>In Discord: Category Settings → Permissions → add the bot → allow Manage Channels, View Channel, Send Messages, Add Reactions, Read Message History.</div>`);
-      return;
-    }
-    DW.toast('Bot access granted', 'success');
-    preflightOnboardingDiscordCategory();
-  });
-}
-
-function preflightOnboardingDiscordCategory() {
-  var keyID = document.getElementById('cc-key').value;
-  var guildID = document.getElementById('cfg-guild').value;
-  var catID = document.getElementById('cfg-category').value;
-  var panel = document.getElementById('cfg-preflight-result');
-  if (!keyID || !guildID || !catID) { DW.toast('Choose a server and category first', 'error'); return; }
-  if (panel) DW.setHTML(panel, DW.raw('<div class="text-muted text-sm">Checking Discord permissions...</div>'));
-  fetch('/api/cc/discord/preflight', {
-    method:'POST', credentials:'same-origin',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({api_key_id:keyID, guild_id:guildID, category_id:catID})
-  }).then(function(r){return r.json();}).then(function(d){
-    if (d.error) { if (panel) DW.setHTML(panel, DW.html`<div class="text-sm" style="color:#ef4444">${d.error}</div>`); return; }
-    if (panel) DW.setHTML(panel, renderOnboardingPreflightResult(d));
-  });
-}
-
-function renderOnboardingPreflightResult(d) {
-  var rows = (d.steps || []).map(function(s) {
-    return DW.html`<tr><td style="width:1.5rem">${s.ok ? DW.raw('<span style="color:#22c55e">✓</span>') : DW.raw('<span style="color:#ef4444">✗</span>')}</td><td>${s.name}</td><td class="text-muted text-sm">${s.note || ''}</td></tr>`;
-  });
-  var color = d.ok ? '#22c55e' : '#ef4444';
-  var head = d.ok ? DW.raw('<strong style="color:#22c55e">Permissions OK</strong>') : DW.raw('<strong style="color:#ef4444">Permission check failed</strong>');
-  return DW.html`<div style="background:var(--bg-input);border-left:3px solid ${color};padding:.75rem;border-radius:var(--radius)">${head}<div class="table-wrap"><table style="width:100%;margin-top:.5rem">${rows}</table></div></div>`;
-}
-
-function createCC() {
-  var name = document.getElementById('cc-name').value.trim();
-  var serviceID = document.getElementById('cc-service').value;
-  var keyID = document.getElementById('cc-key').value;
-  var agentType = document.getElementById('cc-agent').value;
-  if (!name || !serviceID || !keyID) { DW.toast('Name, service, and bot token are required', 'error'); return; }
-
-  var cfg = {};
-  var guildEl = document.getElementById('cfg-guild');
-  var catEl = document.getElementById('cfg-category');
-  if (guildEl) cfg.guild_id = guildEl.value.trim();
-  if (catEl) cfg.category_id = catEl.value.trim();
-  cfg = applyOnboardingAgentOptions(cfg, agentType);
-
-  fetch('/api/cc', {
-    method: 'POST', credentials: 'same-origin',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      name: name, client_id: state.clientID,
-      service_id: serviceID, api_key_id: keyID,
-      agent_type: agentType, config: cfg
-    })
-  }).then(function(r) {
-    if (!r.ok) return r.json().then(function(e){ throw new Error(e.error || 'CC create failed'); });
-    return r.json();
-  }).then(function(cc) {
-    state.ccID = cc.id;
-    state.ccName = cc.name;
-    finishOnboarding();
-  }).catch(function(e){ DW.toast(e.message, 'error'); });
-}
-
-function finishOnboarding() {
-  goStep(4);
-  renderSummary();
-}
-
-function renderSummary() {
-  var suiteRow = state.suiteID
-    ? DW.html`<tr><td class="text-muted">Key Suite</td><td>${state.suiteName} assigned</td></tr>`
-    : DW.raw('<tr><td class="text-muted">Key Suite</td><td class="text-muted">Skipped</td></tr>');
-  var ccRow = state.ccID
-    ? DW.html`<tr><td class="text-muted">Control Channel</td><td>${state.ccName} created</td></tr>`
-    : DW.raw('<tr><td class="text-muted">Control Channel</td><td class="text-muted">Skipped</td></tr>');
-  DW.setHTML(document.getElementById('summary'), DW.html`<div class="table-wrap"><table class="detail-table" style="width:100%"><tr><td class="text-muted">Client</td><td><strong>${state.clientName}</strong> <code class="text-sm">${state.clientID}</code></td></tr>${suiteRow}${ccRow}</table></div>`);
-  renderSetupCommands();
-}
-
-function shellEscape(s) {
-  return String(s || '').replace(/"/g, '\\"');
-}
-
-function renderSetupCommands() {
-  var el = document.getElementById('setup-commands');
-  if (!state.clientToken) {
-    el.replaceChildren();
-    return;
-  }
-  if (!gatewayURLValid) {
-    DW.setHTML(el, DW.raw(
-      '<div style="background:var(--bg-input);border-left:3px solid var(--danger);padding:.75rem;border-radius:var(--radius)">' +
-      '<strong style="color:var(--danger)">Gateway URL is not configured.</strong><br>' +
-      '<span class="text-sm text-muted">Set Gateway URL in Settings first. In split mode the admin panel does not serve <code>/install.sh</code>.</span></div>'));
-    return;
-  }
-  var initCmd = 'printf "' + shellEscape(gatewayURL) + '\\n' + shellEscape(state.clientName) + '\\n1\\n' + shellEscape(state.clientToken) + '\\n" | duckway init';
+function shq(s) { return "'" + String(s == null ? '' : s).replace(/'/g, "'\\''") + "'"; }
+function installLines(masked) {
+  var tok = masked ? '••••••••••••••••••••' : S.token;
   var lines = [
-    '# 1. Download and install Duckway client',
-    'curl -fsSL ' + gatewayURL + '/install.sh | sh',
-    '',
-    '# 2. Register this client with the generated token',
-    initCmd,
-    '',
-    '# 3. Pull phantom tokens, OAuth files, CA/proxy config, and Control Channel state',
+    'curl -fsSL ' + S.gatewayURL + '/install.sh | sh',
+    'printf \'%s\\n\' ' + shq(S.gatewayURL) + ' ' + shq(S.name) + ' 1 ' + shq(tok) + ' | duckway init',
     'duckway sync',
-    '',
-    '# 4. Start the local HTTPS proxy for agent traffic',
     'duckway proxy -d',
     'eval "$(duckway env)"',
     'duckway status'
   ];
-  if (state.ccID) {
-    lines = lines.concat([
-      '',
-      '# 5. Start Control Channel watcher so Discord messages can drive the agent',
-      'duckway cc watch -d'
-    ]);
-  } else {
-    lines = lines.concat([
-      '',
-      '# 5. Control Channel was skipped. Run this later after creating one:',
-      '# duckway sync && duckway cc watch -d'
-    ]);
-  }
-  DW.setHTML(el, DW.html`<label class="text-sm" style="font-weight:600;display:block;margin-bottom:.35rem">Client setup commands</label><pre style="background:var(--bg-input);padding:.75rem;border-radius:var(--radius);overflow:auto;font-size:.82rem"><code>${lines.join('\n')}</code></pre>${renderAutoStartDetails()}`);
+  if (S.cc) lines.push('duckway cc watch -d');
+  return lines;
 }
-
-function renderAutoStartDetails() {
+function unitText() {
   var lines = [
-    '# Finish client state first',
-    'duckway sync',
-    '',
     'mkdir -p ~/.config/systemd/user',
     '',
     "cat > ~/.config/systemd/user/duckway-proxy.service <<'EOF'",
-    '[Unit]',
-    'Description=Duckway local API proxy',
-    'After=network-online.target',
-    'Wants=network-online.target',
-    '',
-    '[Service]',
-    'Type=simple',
-    'ExecStart=/usr/local/bin/duckway proxy',
-    'Restart=on-failure',
-    'RestartSec=5',
-    'Environment=HOME=%h',
-    '',
-    '[Install]',
-    'WantedBy=default.target',
-    'EOF',
-    '',
-    "cat > ~/.config/systemd/user/duckway-cc-watch.service <<'EOF'",
-    '[Unit]',
-    'Description=Duckway Control Channel watcher',
-    'After=network-online.target',
-    'Wants=network-online.target',
-    '',
-    '[Service]',
-    'Type=simple',
-    'ExecStart=/usr/local/bin/duckway cc watch',
-    'Restart=on-failure',
-    'RestartSec=5',
-    'Environment=HOME=%h',
-    '',
-    '[Install]',
-    'WantedBy=default.target',
-    'EOF',
-    '',
-    'systemctl --user daemon-reload',
-    'systemctl --user enable --now duckway-proxy',
-    '',
-    '# Optional: only needed for Discord/Control Channel agents.',
-    'systemctl --user enable --now duckway-cc-watch',
-    '',
-    '# Optional: keep user services running after boot before login.',
-    'sudo loginctl enable-linger "$USER"'
+    '[Unit]', 'Description=Duckway local API proxy', 'After=network-online.target', 'Wants=network-online.target', '',
+    '[Service]', 'Type=simple', 'ExecStart=/usr/local/bin/duckway proxy', 'Restart=on-failure', 'RestartSec=5', 'Environment=HOME=%h', '',
+    '[Install]', 'WantedBy=default.target', 'EOF', ''
   ];
-  return DW.html`<details class="setup-details" style="margin-top:.75rem"><summary>Auto-start Duckway on Linux with systemd</summary><div class="setup-details-body"><p class="text-sm text-muted">Run this on the client after the setup commands above. It starts the local proxy at login; enable linger if it should run after boot before you log in.</p><pre><code>${lines.join('\n')}</code></pre><p class="text-sm text-muted mt-1">If Duckway was installed somewhere other than <code>/usr/local/bin/duckway</code>, replace that path in both service files. Logs: <code>journalctl --user -u duckway-proxy -f</code> and <code>journalctl --user -u duckway-cc-watch -f</code>.</p></div></details>`;
+  if (S.cc) {
+    lines = lines.concat([
+      "cat > ~/.config/systemd/user/duckway-cc-watch.service <<'EOF'",
+      '[Unit]', 'Description=Duckway Control Channel watcher', 'After=network-online.target', 'Wants=network-online.target', '',
+      '[Service]', 'Type=simple', 'ExecStart=/usr/local/bin/duckway cc watch', 'Restart=on-failure', 'RestartSec=5', 'Environment=HOME=%h', '',
+      '[Install]', 'WantedBy=default.target', 'EOF', ''
+    ]);
+  }
+  lines.push('systemctl --user daemon-reload', 'systemctl --user enable --now duckway-proxy');
+  if (S.cc) lines.push('systemctl --user enable --now duckway-cc-watch');
+  lines.push('', '# Optional: keep user services running after boot before login.', 'sudo loginctl enable-linger "$USER"');
+  return lines.join('\n');
+}
+function step4() {
+  var gw = S.gatewayOK ? '' : DW.html`<div class="wz-warn" role="alert"><strong>Gateway URL is not configured.</strong> Set Gateway URL in Settings first. In split mode the admin panel does not serve <code>/install.sh</code>.</div>`;
+  return DW.html`${head('Install on the machine', 'Run this on ' + S.name + '. It contains a one-time client token.')}
+<div class="wz-once"><span class="ro-pill ro-pill-warn">Once</span><span>The token is shown only on this screen. If you lose it, rotate the client token from the client’s Danger zone.</span></div>${gw}
+<div class="wz-cmd"><pre class="mono wz-pre" id="wz-cmd-pre" tabindex="0" aria-label="Install command">${installLines(!S.reveal).join('\n')}</pre><div class="wz-cmd-btns"><button type="button" class="btn btn-sm" id="wz-reveal" data-action="toggleReveal" aria-pressed="${S.reveal ? 'true' : 'false'}">${S.reveal ? 'Hide token' : 'Show token'}</button><button type="button" class="btn btn-sm" id="wz-copy" data-action="copyCmd">Copy</button></div></div>
+<details class="wz-details"><summary>Run as a systemd service</summary><div class="wz-details-body"><p class="text-sm text-muted">Run this on the client after the commands above. It creates user services that start the local proxy${S.cc ? ' and the control channel watcher' : ''} at login.</p><pre class="mono wz-pre">${unitText()}</pre></div></details>
+<label class="wz-check-label"><input type="checkbox" id="wz-saved" data-on-change="onSaved"${S.saved ? DW.raw(' checked') : ''}><span>I’ve copied the command somewhere safe</span></label>${errBox()}`;
 }
 
-function resetWizard() {
-  state = { clientID: null, clientName: null, clientToken: null, suiteID: null, suiteName: null, suiteEntries: [], ccID: null };
-  obDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
-  document.getElementById('client-name').value = '';
-  document.getElementById('suite-select').value = '';
-  document.getElementById('suite-entries-preview').style.display = 'none';
-  document.getElementById('cc-name').value = '';
-  document.getElementById('setup-commands').replaceChildren();
-  goStep(1);
+function footer() {
+  var s = S.step, dis = S.busy ? DW.raw(' disabled') : '';
+  var back = s > 1 && s < 4 ? DW.html`<button type="button" class="btn" data-action="goBack"${dis}>Back</button>` : '';
+  var skip = s === 2 || s === 3 ? DW.html`<button type="button" class="btn" data-action="skipStep"${dis}>Skip this step</button>` : '';
+  var label, off = S.busy;
+  if (s === 1) label = S.draft ? 'Save and continue' : 'Create client';
+  else if (s === 2) label = S.suiteID ? 'Assign bundle' : 'Continue';
+  else if (s === 3) label = S.cc ? 'Continue' : 'Create channel';
+  else { label = 'Finish'; off = off || !S.saved; }
+  var hint = s === 4 && !S.saved ? DW.raw('<span class="text-sm text-muted wz-hint" id="wz-hint">Tick the box above to finish.</span>') : '';
+  return DW.html`${back}<span class="wz-spacer"></span>${hint}${skip}<button type="button" class="btn btn-primary" id="wz-next" data-action="nextStep"${off ? DW.raw(' disabled') : ''}>${label}</button>`;
+}
+function render(focusTitle) {
+  renderSteps(); renderDraftNote(); renderDraftList();
+  var body = $('wz-body');
+  if (S.gone) {
+    DW.setHTML(body, DW.html`${head('This draft is no longer available', 'Its install token was already issued, or the draft was discarded.')}<p class="text-sm">If the client exists, rotate its token from the client page to get a new install command.</p><p><a class="btn btn-primary" href="/admin/clients">Open Clients</a> <a class="btn" href="/admin/clients/new">Start a new client</a></p>`);
+    DW.setHTML($('wz-foot'), DW.raw(''));
+    return;
+  }
+  var fn = [step1, step2, step3, step4][S.step - 1];
+  DW.setHTML(body, fn());
+  DW.setHTML($('wz-foot'), footer());
+  if (focusTitle) { var t = $('wz-title'); if (t) t.focus(); }
+}
+function setErr(msg) { S.err = msg || ''; var e = document.querySelector('#wz-body .wz-err'); if (e) { e.textContent = S.err; e.hidden = !S.err; } }
+function setBusy(b) { S.busy = b; DW.setHTML($('wz-foot'), footer()); }
+
+/* ---------- step logic ---------- */
+function goto_(n) { S.step = n; S.err = ''; render(true); if (n === 2) ensureSuiteDetail(); if (n === 3) maybeLoadSetup(); }
+function saveStep(extra) {
+  var body = {step: S.step};
+  Object.keys(extra || {}).forEach(function (k) { body[k] = extra[k]; });
+  return api('PATCH', '/api/client-drafts/' + encodeURIComponent(S.draft.id), body).then(function (d) { S.draft = d; });
+}
+function nextStep1() {
+  var name = S.name.trim();
+  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) { setErr('Use lowercase letters, digits and dashes (start with a letter or digit).'); $('wz-name').focus(); return Promise.resolve(); }
+  setBusy(true);
+  var p;
+  if (!S.draft) p = api('POST', '/api/client-drafts', {name: name, update_policy: S.policy}).then(function (d) { S.draft = d; history.replaceState(null, '', '/admin/clients/new?draft=' + encodeURIComponent(d.id)); });
+  else p = api('PATCH', '/api/client-drafts/' + encodeURIComponent(S.draft.id), {name: name, update_policy: S.policy, step: Math.max(2, S.draft.step)}).then(function (d) { S.draft = d; });
+  return p.then(function () { S.name = name; return saveStep({step: 2}); }).then(function () { setBusy(false); goto_(2); })
+    .catch(function (e) { setBusy(false); setErr(e.message); });
+}
+function ensureSuiteDetail() {
+  var id = S.suiteID;
+  if (!id || S.suiteDetail[id]) return;
+  api('GET', '/api/key-suites/' + encodeURIComponent(id)).then(function (d) { S.suiteDetail[id] = d; if (S.step === 2 && S.suiteID === id) DW.setHTML($('wz-preview'), bundlePreview()); })
+    .catch(function (e) { setErr('Could not load the bundle: ' + e.message); });
+}
+function nextStep2(skip) {
+  var target = skip ? '' : S.suiteID;
+  var current = S.draft.suite_id || '';
+  setBusy(true);
+  var p = Promise.resolve();
+  if (target !== current) {
+    if (current) p = p.then(function () { return api('DELETE', '/api/key-suites/' + encodeURIComponent(current) + '/assignments/' + encodeURIComponent(S.draft.id)); });
+    if (target) p = p.then(function () { return api('POST', '/api/key-suites/' + encodeURIComponent(target) + '/assign', {client_id: S.draft.id}); })
+      .then(function (res) { if (res && res.skipped && res.skipped.length) DW.toast('Assigned with ' + plural(res.skipped.length, 'conflict', 'conflicts') + ' skipped'); });
+  }
+  return p.then(function () { S.suiteID = target; return saveStep({step: 3, suite_id: target}); })
+    .then(function () { setBusy(false); goto_(3); })
+    .catch(function (e) { setBusy(false); setErr(e.message); });
+}
+function maybeLoadSetup() {
+  var f = S.ccf;
+  if (!f.keyID || S.cc) return;
+  if (f.setup && f.setup.keyID === f.keyID) return;
+  loadSetup();
+}
+function loadSetup() {
+  var f = S.ccf, keyID = f.keyID;
+  f.loading = 'setup'; f.setup = null; f.categories = []; f.guildID = ''; f.categoryID = '__new__'; f.check = null;
+  keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); });
+  return api('GET', '/api/cc/discord/setup?api_key_id=' + encodeURIComponent(keyID)).then(function (d) {
+    if (f.keyID !== keyID) return;
+    f.setup = {keyID: keyID, bot: d.bot, invite_url: d.invite_url, guilds: d.guilds || [], guilds_error: d.guilds_error || ''};
+    f.loading = '';
+    if (f.setup.guilds.length) { f.guildID = f.setup.guilds[0].id; return loadCategories(); }
+    keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); });
+  }).catch(function (e) {
+    if (f.keyID !== keyID) return;
+    f.loading = ''; f.setup = {keyID: keyID, guilds: [], guilds_error: e.message};
+    keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); });
+  });
+}
+function loadCategories() {
+  var f = S.ccf, keyID = f.keyID, guildID = f.guildID;
+  return api('GET', '/api/cc/discord/categories?api_key_id=' + encodeURIComponent(keyID) + '&guild_id=' + encodeURIComponent(guildID)).then(function (d) {
+    if (f.keyID !== keyID || f.guildID !== guildID) return;
+    f.categories = d.categories || []; f.categoryID = '__new__'; f.check = null;
+  }).catch(function (e) { f.categories = []; DW.toast(e.message, 'error'); })
+    .then(function () { var el = $('wz-cc-fields'); if (el) keepFocus(function () { DW.setHTML(el, ccFields()); }); });
+}
+function runCheck() {
+  var f = S.ccf;
+  if (!f.keyID || !f.guildID || !f.categoryID || f.categoryID === '__new__') return Promise.resolve();
+  f.check = {busy: true};
+  keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); });
+  return api('POST', '/api/cc/discord/preflight', {api_key_id: f.keyID, guild_id: f.guildID, category_id: f.categoryID}).then(function (d) {
+    f.check = {ok: !!d.ok, steps: d.steps || []};
+  }).catch(function (e) { f.check = {ok: false, error: e.message}; })
+    .then(function () { keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); }); });
+}
+function nextStep3(skip) {
+  if (skip || S.cc) return issue();
+  var f = S.ccf;
+  if (!f.keyID || !f.guildID || !f.categoryID) { setErr('Choose a Discord bot, server and category, or skip this step.'); return Promise.resolve(); }
+  var svc = discordService();
+  setBusy(true);
+  var catP = f.categoryID === '__new__'
+    ? api('POST', '/api/cc/discord/categories', {api_key_id: f.keyID, guild_id: f.guildID, name: S.name}).then(function (d) {
+        if (d.permission_warning) DW.toast(d.permission_warning, 'error');
+        return d.id;
+      })
+    : Promise.resolve(f.categoryID);
+  return catP.then(function (catID) {
+    var cfg = {guild_id: f.guildID, category_id: catID};
+    if (f.agent === 'codex') cfg.agent_options = {sandbox: f.sandbox};
+    return api('POST', '/api/cc', {name: S.name + ' CC', client_id: S.draft.id, service_id: svc.id, api_key_id: f.keyID, agent_type: f.agent, config: cfg});
+  }).then(function (cc) { S.cc = cc; return issue(true); })
+    .catch(function (e) { setBusy(false); setErr(e.message); });
+}
+function issue(alreadyBusy) {
+  if (!alreadyBusy) setBusy(true);
+  return api('POST', '/api/client-drafts/' + encodeURIComponent(S.draft.id) + '/issue-token').then(function (d) {
+    S.token = d.token; S.name = d.name; S.saved = false; S.reveal = false;
+    S.busy = false; S.step = 4; S.err = '';
+    history.replaceState(null, '', '/admin/clients/new');
+    render(true);
+  }).catch(function (e) { setBusy(false); setErr(e.message); });
+}
+function finish() { window.location.href = '/admin/clients'; }
+
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) return navigator.clipboard.writeText(text);
+  return new Promise(function (resolve, reject) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', ''); ta.className = 'wz-offscreen';
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    if (ok) resolve(); else reject(new Error('copy blocked'));
+  });
 }
 
+/* ---------- discard ---------- */
+function askDiscard(id, name) {
+  discardTarget = {id: id, name: name};
+  var parts = [];
+  if (S.draft && S.draft.id === id) {
+    if (S.suiteID) parts.push('the phantom tokens created from its key bundle');
+    if (S.cc) parts.push('its control channel');
+  }
+  $('wz-discard-impact').textContent = '“' + name + '” has no token yet and cannot connect. Discarding deletes the draft client' + (parts.length ? ', ' + parts.join(' and ') : '') + '.';
+  DW.modal.open('#wz-discard-modal');
+}
+function confirmDiscard() {
+  var t = discardTarget; discardTarget = null;
+  DW.modal.close('#wz-discard-modal');
+  if (!t) return;
+  return api('DELETE', '/api/client-drafts/' + encodeURIComponent(t.id)).then(function () {
+    DW.toast('Draft discarded', 'success');
+    if (S.draft && S.draft.id === t.id) { window.location.href = '/admin/clients'; return; }
+    S.drafts = S.drafts.filter(function (d) { return d.id !== t.id; });
+    renderDraftList();
+  }).catch(function (e) { DW.toast(e.message, 'error'); });
+}
+function renderDraftList() {
+  var box = $('wz-resume');
+  if (!S.drafts.length || S.draft) { box.hidden = true; return; }
+  box.hidden = false;
+  DW.setHTML($('wz-resume-list'), DW.html`${S.drafts.map(function (d) {
+    return DW.html`<li class="wz-draft"><span class="wz-draft-name">${d.name}</span><span class="text-sm text-muted">Step ${d.step} of 4 · saved ${d.updated_at}</span><a class="btn btn-sm" href="/admin/clients/new?draft=${encodeURIComponent(d.id)}">Resume</a><button type="button" class="btn btn-sm ro-danger" data-action="askDiscard" data-id="${d.id}" data-name="${d.name}">Discard</button></li>`;
+  })}`);
+}
+
+/* ---------- actions ---------- */
+DW.actions.onName = function (el) { S.name = el.value; };
+DW.actions.onPolicy = function (el) { S.policy = el.value; };
+DW.actions.onSuite = function (el) { S.suiteID = el.value; setErr(''); DW.setHTML($('wz-preview'), bundlePreview()); DW.setHTML($('wz-foot'), footer()); ensureSuiteDetail(); };
+DW.actions.onBot = function (el) { S.ccf.keyID = el.value; S.ccf.setup = null; S.ccf.check = null; S.ccf.guildID = ''; S.ccf.categoryID = ''; S.ccf.categories = []; if (el.value) return loadSetup(); keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); }); };
+DW.actions.onGuild = function (el) { S.ccf.guildID = el.value; S.ccf.check = null; return loadCategories(); };
+DW.actions.onCCField = function (el) {
+  var f = S.ccf;
+  if (el.id === 'wz-agent') f.agent = el.value;
+  else if (el.id === 'wz-sandbox') f.sandbox = el.value;
+  else if (el.id === 'wz-category') { f.categoryID = el.value; f.check = null; }
+  keepFocus(function () { DW.setHTML($('wz-cc-fields'), ccFields()); });
+};
+DW.actions.reloadSetup = function () { S.ccf.setup = null; return loadSetup(); };
+DW.actions.checkCC = function () { return runCheck(); };
+DW.actions.grantAccess = function () {
+  var f = S.ccf;
+  return api('POST', '/api/cc/discord/category-permissions', {api_key_id: f.keyID, category_id: f.categoryID}).then(function () { DW.toast('Bot access granted', 'success'); return runCheck(); })
+    .catch(function (e) { DW.toast(e.message, 'error'); });
+};
+DW.actions.goBack = function () { if (S.step > 1 && S.step < 4) goto_(S.step - 1); };
+DW.actions.skipStep = function () { if (S.step === 2) return nextStep2(true); if (S.step === 3) return nextStep3(true); };
+DW.actions.nextStep = function () {
+  if (S.busy) return;
+  if (S.step === 1) return nextStep1();
+  if (S.step === 2) return nextStep2(false);
+  if (S.step === 3) return nextStep3(false);
+  if (S.step === 4 && S.saved) return finish();
+};
+DW.actions.toggleReveal = function () { S.reveal = !S.reveal; keepFocus(function () { DW.setHTML($('wz-body'), step4()); }); };
+DW.actions.copyCmd = function (el) {
+  return copyText(installLines(false).join('\n')).then(function () {
+    DW.toast('Install command copied', 'success');
+    el.textContent = 'Copied';
+    setTimeout(function () { if (el.isConnected) el.textContent = 'Copy'; }, 2000);
+  }).catch(function () { DW.toast('Copy was blocked. Show the token and select the command manually.', 'error'); });
+};
+DW.actions.onSaved = function (el) { S.saved = el.checked; DW.setHTML($('wz-foot'), footer()); };
+DW.actions.askDiscard = function (el) { askDiscard(el.getAttribute('data-id'), el.getAttribute('data-name') || (S.draft && S.draft.name) || 'this client'); };
+DW.actions.confirmDiscard = function () { return confirmDiscard(); };
+
+window.addEventListener('beforeunload', function (e) {
+  if (S.token && !S.saved) { e.preventDefault(); e.returnValue = ''; }
+});
+
+/* ---------- init ---------- */
+function loadGateway() {
+  return api('GET', '/api/settings').then(function (s) {
+    if (s.gateway_url) { S.gatewayURL = s.gateway_url; S.gatewayOK = true; return; }
+    return fetch('/install.sh', {method: 'HEAD'}).then(function (r) { S.gatewayOK = !!r.ok; }).catch(function () { S.gatewayOK = false; });
+  }).catch(function () { S.gatewayOK = false; });
+}
+function applyDraft(d) {
+  S.draft = d; S.name = d.name; S.policy = d.update_policy || 'managed'; S.suiteID = d.suite_id || '';
+  S.step = Math.min(3, Math.max(1, d.step || 1));
+  S.cc = S.ccs.filter(function (c) { return c.client_id === d.id; })[0] || null;
+}
+function init() {
+  var want = new URLSearchParams(window.location.search).get('draft');
+  Promise.all([
+    api('GET', '/api/key-suites').then(function (d) { S.suites = d || []; }).catch(function () {}),
+    api('GET', '/api/services').then(function (d) { S.services = d || []; }).catch(function () {}),
+    api('GET', '/api/keys').then(function (d) { S.keys = d || []; }).catch(function () {}),
+    api('GET', '/api/cc').then(function (d) { S.ccs = d || []; }).catch(function () {}),
+    api('GET', '/api/client-drafts').then(function (d) { S.drafts = d || []; }).catch(function () {}),
+    loadGateway()
+  ]).then(function () {
+    if (want) {
+      var d = S.drafts.filter(function (x) { return x.id === want; })[0];
+      if (d) applyDraft(d); else S.gone = true;
+    }
+    S.ready = true;
+    renderDraftList();
+    render(false);
+    if (S.step === 2) ensureSuiteDetail();
+    if (S.step === 3) maybeLoadSetup();
+  });
+}
+document.addEventListener('DOMContentLoaded', init);
+})();
 </script>
 {{end}}

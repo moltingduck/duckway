@@ -1,51 +1,49 @@
 {{define "content"}}
 <div class="page-header">
-  <h1>Clients</h1>
-  <button class="btn btn-primary" id="new-rollout-btn" data-action="openRollout">New rollout</button>
+  <div>
+    <h1>Clients</h1>
+    <p class="text-muted text-sm">Roll a new Duckway client version out to the fleet, a few machines at a time.</p>
+  </div>
+  <button type="button" class="btn btn-primary" id="new-rollout-btn" data-action="openRollout">New rollout</button>
 </div>
 
-<nav class="client-tabs" aria-label="Client views">
-  <a class="client-tab" href="/admin/clients">Details</a>
-  <a class="client-tab active" href="/admin/client-updates" aria-current="page">Updates</a>
+<nav class="cl-subtabs" aria-label="Clients sections">
+  <a href="/admin/clients">All clients</a>
+  <a href="/admin/clients/rollouts" aria-current="page">Rollouts</a>
 </nav>
 
-<div class="grid-4 mb-1" id="fleet-summary">
-  <div><span class="text-muted text-sm">Eligible</span><div id="sum-eligible" style="font-size:1.35rem;font-weight:700">-</div></div>
-  <div><span class="text-muted text-sm">Manual</span><div id="sum-manual" style="font-size:1.35rem;font-weight:700">-</div></div>
-  <div><span class="text-muted text-sm">Offline / legacy</span><div id="sum-legacy" style="font-size:1.35rem;font-weight:700">-</div></div>
-  <div><span class="text-muted text-sm">Not writable</span><div id="sum-unwritable" style="font-size:1.35rem;font-weight:700">-</div></div>
-</div>
-
-<section class="mb-1">
-  <div class="flex-between mb-1">
-    <h2 style="margin:0;font-size:1rem">Current rollout</h2>
-    <span id="rollout-refresh" class="text-sm text-muted"></span>
-  </div>
-  <div id="active-rollout" class="text-muted">Loading...</div>
+<section class="ro-fleet" aria-label="Fleet update readiness" id="fleet-summary">
+  <a class="ro-stat" id="ro-s-eligible" href="/admin/clients?updates=managed&amp;status=online"><span class="ro-stat-label">Eligible</span><span class="ro-stat-value" id="sum-eligible">&mdash;</span><span class="ro-stat-link">Show clients</span></a>
+  <a class="ro-stat" id="ro-s-manual" href="/admin/clients?updates=manual"><span class="ro-stat-label">Manual updates</span><span class="ro-stat-value" id="sum-manual">&mdash;</span><span class="ro-stat-link">Show clients</span></a>
+  <a class="ro-stat" id="ro-s-legacy" href="/admin/clients?status=offline"><span class="ro-stat-label">Offline / legacy</span><span class="ro-stat-value" id="sum-legacy">&mdash;</span><span class="ro-stat-link">Show clients</span></a>
+  <div class="ro-stat ro-stat-static" id="ro-s-unwritable"><span class="ro-stat-label">Not writable</span><span class="ro-stat-value" id="sum-unwritable">&mdash;</span><span class="ro-stat-note">Install path needs a manual update</span></div>
 </section>
 
-<section>
-  <h2 style="font-size:1rem">Rollout history</h2>
-  <div style="overflow:auto">
-    <div class="table-wrap">
-    <table>
-      <thead><tr><th>Created</th><th>Target</th><th>Status</th><th>Progress</th><th>Concurrency</th><th>Interval</th><th></th></tr></thead>
-      <tbody id="rollout-history"><tr><td colspan="7" class="text-muted">Loading...</td></tr></tbody>
-    </table>
-    </div>
-  </div>
+<section class="card ro-active" aria-labelledby="ro-active-h" id="ro-active-card">
+  <div id="active-rollout" aria-live="polite"><p class="text-muted">Loading&hellip;</p></div>
 </section>
 
-<div id="rollout-modal" class="modal-backdrop" style="display:none">
-  <div class="modal" style="max-width:520px">
+<p class="ro-historyline"><button type="button" class="ro-linkbtn" id="ro-history-open" data-action="openHistory" aria-haspopup="dialog">Rollout history <span id="ro-history-count"></span></button> <span id="rollout-refresh" class="text-sm text-muted"></span></p>
+
+<div class="ro-scrim" id="ro-scrim" data-action="closeHistory" hidden></div>
+<aside class="card ro-drawer" id="ro-drawer" role="dialog" aria-modal="true" aria-labelledby="ro-drawer-h" tabindex="-1" hidden>
+  <div class="ro-drawer-head">
+    <h2 id="ro-drawer-h" tabindex="-1">Rollout history</h2>
+    <button type="button" class="btn btn-sm" id="ro-drawer-close" data-action="closeHistory" aria-label="Close rollout history">Close</button>
+  </div>
+  <div id="ro-drawer-body"></div>
+</aside>
+
+<div id="rollout-modal" class="modal-backdrop ro-dlg" hidden>
+  <div class="modal ro-modal">
     <h2>New client rollout</h2>
-    <form id="rollout-form">
-      <div class="form-group"><label>Target version</label><input id="rollout-target" readonly></div>
-      <div class="grid-2">
-        <div class="form-group"><label>Max concurrency</label><input type="number" id="rollout-concurrency" min="1" max="100" value="3" required></div>
-        <div class="form-group"><label>Dispatch interval (seconds)</label><input type="number" id="rollout-interval" min="0" max="3600" value="30" required></div>
+    <form id="rollout-form" data-on-submit="submitRollout">
+      <div class="form-group"><label for="rollout-target">Target version</label><input id="rollout-target" readonly></div>
+      <div class="ro-grid2">
+        <div class="form-group"><label for="rollout-concurrency">Max concurrency</label><input type="number" id="rollout-concurrency" min="1" max="100" value="3" required></div>
+        <div class="form-group"><label for="rollout-interval">Dispatch interval (seconds)</label><input type="number" id="rollout-interval" min="0" max="3600" value="30" required></div>
       </div>
-	  <div class="form-group"><label>Auto-pause failure threshold (%)</label><input type="number" id="rollout-failure-threshold" min="1" max="100" value="20" required></div>
+      <div class="form-group"><label for="rollout-failure-threshold">Auto-pause failure threshold (%)</label><input type="number" id="rollout-failure-threshold" min="1" max="100" value="20" required></div>
       <div id="rollout-preview" class="text-sm text-muted"></div>
       <div class="modal-actions">
         <button type="button" class="btn" data-action="modal-close">Cancel</button>
@@ -55,30 +53,61 @@
   </div>
 </div>
 
-<script nonce="{{$.CSPNonce}}">
-var updateData = null;
+<div id="ro-cancel-modal" class="modal-backdrop ro-dlg" hidden>
+  <div class="modal ro-modal">
+    <h2>Cancel this rollout?</h2>
+    <p id="ro-cancel-impact" class="text-sm"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="modal-close">Keep rollout</button>
+      <button type="button" class="btn btn-danger" id="ro-cancel-confirm" data-action="confirmCancel">Cancel rollout</button>
+    </div>
+  </div>
+</div>
 
-function statusBadge(status) {
-  var cls = status === 'healthy' || status === 'completed' || status === 'up_to_date' ? 'badge-green' :
-    (status === 'failed' || status === 'cancelled' ? 'badge-red' :
-    (status === 'active' || status === 'running' || status === 'leased' ? 'badge-blue' :
-    (status === 'paused' || status === 'manual_required' || status === 'skipped_manual' ? 'badge-yellow' : 'badge-gray')));
-  return DW.html`<span class="badge ${cls}">${status}</span>`;
+<script nonce="{{$.CSPNonce}}">
+(function () {
+'use strict';
+var updateData = null;
+var loadError = '';
+var pendingCancelID = '';
+var drawerView = {mode: 'list', id: ''};
+var drawerOpener = null;
+var updatesSeq = 0;
+
+var DONE = ['healthy','failed','cancelled','skipped_manual','skipped_inactive','manual_required','ineligible','up_to_date'];
+var SKIPPED = ['skipped_manual','skipped_inactive','manual_required','ineligible','up_to_date'];
+var LABELS = {
+  active: 'In progress', paused: 'Paused', completed: 'Completed', completed_with_failures: 'Completed with failures',
+  cancelled: 'Cancelled', queued: 'Queued', leased: 'Updating', running: 'Updating', healthy: 'Updated', failed: 'Failed',
+  skipped_manual: 'Manual', skipped_inactive: 'Disabled', manual_required: 'Manual install', ineligible: 'Not eligible', up_to_date: 'Up to date'
+};
+
+function $(id) { return document.getElementById(id); }
+function label(s) { return LABELS[s] || String(s || 'unknown'); }
+function tone(s) {
+  if (s === 'healthy' || s === 'completed' || s === 'up_to_date') return 'ok';
+  if (s === 'failed' || s === 'cancelled' || s === 'completed_with_failures') return 'bad';
+  if (s === 'active' || s === 'running' || s === 'leased') return 'info';
+  if (s === 'paused' || s === 'manual_required' || s === 'skipped_manual' || s === 'ineligible') return 'warn';
+  return 'mute';
 }
+function pill(status, extra) {
+  return DW.html`<span class="ro-pill ro-pill-${tone(status)}">${label(status)}${extra ? ' · ' + extra : ''}</span>`;
+}
+function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
 function runtimeFor(id) { return updateData && updateData.runtimes ? updateData.runtimes[id] : null; }
 function supportsManaged(r) {
   if (!r) return false;
-  try { return JSON.parse(r.capabilities || '[]').indexOf('managed_update_v1') >= 0; } catch(e) { return false; }
+  try { return JSON.parse(r.capabilities || '[]').indexOf('managed_update_v1') >= 0; } catch (e) { return false; }
 }
 function runtimeFresh(r) {
   if (!r || !r.last_heartbeat_at) return false;
-  var timestamp = String(r.last_heartbeat_at).replace(' ', 'T') + 'Z';
-  var age = Date.now() - Date.parse(timestamp);
+  var age = Date.now() - Date.parse(String(r.last_heartbeat_at).replace(' ', 'T') + 'Z');
   return Number.isFinite(age) && age >= 0 && age < 10 * 60 * 1000;
 }
 function fleetCounts() {
-  var counts = {eligible:0, manual:0, legacy:0, unwritable:0};
-  (updateData.clients || []).forEach(function(c) {
+  var counts = {eligible: 0, manual: 0, legacy: 0, unwritable: 0};
+  (updateData.clients || []).forEach(function (c) {
     var r = runtimeFor(c.id);
     if (c.update_policy === 'manual') counts.manual++;
     else if (!supportsManaged(r) || !runtimeFresh(r)) counts.legacy++;
@@ -89,84 +118,243 @@ function fleetCounts() {
 }
 function renderSummary() {
   var c = fleetCounts();
-  document.getElementById('sum-eligible').textContent = c.eligible;
-  document.getElementById('sum-manual').textContent = c.manual;
-  document.getElementById('sum-legacy').textContent = c.legacy;
-  document.getElementById('sum-unwritable').textContent = c.unwritable;
-  document.getElementById('rollout-preview').textContent = c.eligible+' eligible · '+c.manual+' manual excluded · '+c.legacy+' offline/legacy · '+c.unwritable+' require manual install';
+  $('sum-eligible').textContent = c.eligible;
+  $('sum-manual').textContent = c.manual;
+  $('sum-legacy').textContent = c.legacy;
+  $('sum-unwritable').textContent = c.unwritable;
+  $('rollout-preview').textContent = c.eligible + ' eligible · ' + c.manual + ' manual excluded · ' + c.legacy + ' offline/legacy · ' + c.unwritable + ' require manual install';
 }
-function progress(rollout) {
-  var done = rollout.jobs.filter(function(j){return ['healthy','failed','cancelled','skipped_manual','skipped_inactive','manual_required','ineligible','up_to_date'].indexOf(j.status)>=0;}).length;
-  return done+' / '+rollout.jobs.length;
+
+/* Structured reason for a job: a short label plus the raw detail when the agent supplied one. */
+function reasonFor(j) {
+  var err = String(j.error || '');
+  var head;
+  switch (j.status) {
+    case 'failed':
+      head = /lease expired/i.test(err) ? 'Update timed out (lease expired)' :
+        /version/i.test(err) ? 'Version check failed after update' : 'Update failed';
+      head += ' · ' + plural(j.attempts || 0, 'attempt', 'attempts');
+      break;
+    case 'manual_required': head = 'Install path is not writable. Update this client manually.'; break;
+    case 'ineligible': head = 'Offline, or an older agent that does not support managed updates.'; break;
+    case 'skipped_manual': head = 'Client uses manual updates.'; break;
+    case 'skipped_inactive': head = 'Client is disabled.'; break;
+    case 'up_to_date': head = 'Already on the target version.'; break;
+    case 'queued': head = 'Waiting for a free slot.'; break;
+    case 'leased': case 'running': head = 'Update in progress.'; break;
+    case 'healthy': head = 'Running the target version.'; break;
+    case 'cancelled': head = 'Cancelled before it started.'; break;
+    default: head = '';
+  }
+  return {head: head, detail: err};
 }
-function renderJobs(rollout) {
-  var rows = rollout.jobs.map(function(j) {
-    return DW.html`<tr><td>${j.client_name}</td><td class="mono text-sm">${j.target_version}</td><td>${statusBadge(j.status)}</td><td>${j.attempts}</td><td class="text-sm">${j.error || ''}</td></tr>`;
+function jobRow(j) {
+  var r = reasonFor(j);
+  var detail = r.detail && (j.status === 'failed') ? DW.html`<span class="ro-detail mono">${r.detail}</span>` : '';
+  return DW.html`<li class="ro-job"><span class="ro-job-client">${j.client_name || j.client_id}</span>${pill(j.status)}<span class="ro-job-why">${r.head} ${detail}</span></li>`;
+}
+function splitJobs(rollout) {
+  var jobs = rollout.jobs || [];
+  return {
+    main: jobs.filter(function (j) { return SKIPPED.indexOf(j.status) < 0; }),
+    skipped: jobs.filter(function (j) { return SKIPPED.indexOf(j.status) >= 0; })
+  };
+}
+function counts(rollout) {
+  var c = {total: 0, healthy: 0, failed: 0, running: 0, queued: 0, cancelled: 0, skipped: 0};
+  (rollout.jobs || []).forEach(function (j) {
+    if (SKIPPED.indexOf(j.status) >= 0) { c.skipped++; return; }
+    c.total++;
+    if (j.status === 'healthy') c.healthy++;
+    else if (j.status === 'failed') c.failed++;
+    else if (j.status === 'leased' || j.status === 'running') c.running++;
+    else if (j.status === 'queued') c.queued++;
+    else if (j.status === 'cancelled') c.cancelled++;
   });
-  return DW.html`<div style="overflow:auto"><table><thead><tr><th>Client</th><th>Target</th><th>Status</th><th>Attempts</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  return c;
 }
-function actionButton(id, action, label, danger) {
-  return DW.html`<button class="btn btn-sm ${danger ? 'btn-danger' : ''}" data-action="rolloutAction" data-id="${id}" data-rollout-action="${action}">${label}</button>`;
+function progressBar(c) {
+  var t = c.total || 1;
+  function w(n) { return Math.round(n * 1000 / t) / 10; }
+  return DW.html`<div class="ro-bar" role="progressbar" aria-label="Rollout progress" aria-valuemin="0" aria-valuemax="${c.total}" aria-valuenow="${c.healthy + c.failed}" aria-valuetext="${c.healthy} updated, ${c.failed} failed, ${c.running} updating, ${c.queued} queued of ${c.total}"><span class="ro-seg ro-seg-ok" data-w="${w(c.healthy)}"></span><span class="ro-seg ro-seg-bad" data-w="${w(c.failed)}"></span><span class="ro-seg ro-seg-info" data-w="${w(c.running)}"></span></div>`;
+}
+function applyWidths(root) {
+  root.querySelectorAll('[data-w]').forEach(function (el) { el.style.setProperty('--w', el.getAttribute('data-w') + '%'); });
+}
+function summaryLine(r, c) {
+  return c.healthy + ' updated · ' + c.failed + ' failed · ' + c.running + ' updating · ' + c.queued + ' queued · concurrency ' + r.max_concurrency + ' · every ' + r.start_interval_seconds + 's · auto-pause at ' + r.failure_threshold_percent + '% failures';
+}
+function skippedBlock(rollout) {
+  var s = splitJobs(rollout).skipped;
+  if (!s.length) return '';
+  return DW.html`<details class="ro-skipped"><summary>Not part of this rollout (${s.length})</summary><ul class="ro-jobs">${s.map(jobRow)}</ul></details>`;
+}
+function jobsBlock(rollout) {
+  var m = splitJobs(rollout).main;
+  if (!m.length) return DW.raw('<p class="text-muted text-sm">No clients were eligible for this rollout.</p>');
+  return DW.html`<ul class="ro-jobs">${m.map(jobRow)}</ul>`;
+}
+function actionButton(id, action, text, danger) {
+  return DW.html`<button type="button" class="btn ${danger ? 'ro-danger' : ''}" data-action="rolloutAction" data-id="${id}" data-rollout-action="${action}">${text}</button>`;
+}
+function activeRollout() {
+  return (updateData.rollouts || []).filter(function (r) { return r.status === 'active' || r.status === 'paused'; })[0];
 }
 function renderActive() {
-  var rollout = (updateData.rollouts || []).filter(function(r){return r.status === 'active' || r.status === 'paused';})[0];
-  var box = document.getElementById('active-rollout');
-  if (!rollout) { DW.setHTML(box, DW.raw('<span class="text-muted">No active rollout.</span>')); return; }
+  var box = $('active-rollout');
+  if (loadError) {
+    DW.setHTML(box, DW.html`<h2 id="ro-active-h" class="ro-h" tabindex="-1">Current rollout</h2><div class="ro-error" role="alert"><p>Could not load rollouts: ${loadError}</p><button type="button" class="btn" data-action="retryLoad">Try again</button></div>`);
+    return;
+  }
+  if (!updateData) return;
+  var r = activeRollout();
+  if (!r) {
+    DW.setHTML(box, DW.raw('<h2 id="ro-active-h" class="ro-h" tabindex="-1">Current rollout</h2><p class="text-muted">No rollout is running. Start one to update eligible clients to the recommended version.</p>'));
+    return;
+  }
+  var c = counts(r);
+  var extra = r.status === 'paused' && c.failed ? plural(c.failed, 'failure', 'failures') : (r.status === 'active' && c.failed ? plural(c.failed, 'failure', 'failures') : '');
   var actions = [];
-  actions.push(rollout.status === 'active' ? actionButton(rollout.id,'pause','Pause',false) : actionButton(rollout.id,'resume','Resume',false));
-  actions.push(' ', actionButton(rollout.id,'cancel','Cancel',true));
-  if (rollout.jobs.some(function(j){return j.status === 'failed';})) actions.push(' ', actionButton(rollout.id,'retry-failed','Retry failed',false));
-  DW.setHTML(box, DW.html`<div class="flex-between"><div><strong>${rollout.target_version}</strong> ${statusBadge(rollout.status)} <span class="text-muted text-sm">${progress(rollout)}</span></div><div>${actions}</div></div>${renderJobs(rollout)}`);
+  actions.push(r.status === 'active' ? actionButton(r.id, 'pause', 'Pause', false) : actionButton(r.id, 'resume', 'Resume', false));
+  if (c.failed) actions.push(actionButton(r.id, 'retry-failed', 'Retry failed', false));
+  actions.push(DW.html`<button type="button" class="btn ro-danger" data-action="askCancel" data-id="${r.id}">Cancel&hellip;</button>`);
+  DW.setHTML(box, DW.html`<div class="ro-head"><h2 id="ro-active-h" class="ro-h" tabindex="-1">Rollout to <span class="mono">${r.target_version}</span></h2>${pill(r.status, extra)}<span class="ro-actions">${actions}</span></div>${progressBar(c)}<p class="ro-summary text-sm">${summaryLine(r, c)}</p>${jobsBlock(r)}${skippedBlock(r)}`);
+  applyWidths(box);
 }
-function renderHistory() {
-  var body = document.getElementById('rollout-history');
-  var list = updateData.rollouts || [];
-  if (!list.length) { DW.setHTML(body, DW.raw('<tr><td colspan="7" class="text-muted">No rollouts yet.</td></tr>')); return; }
-  DW.setHTML(body, DW.html`${list.map(function(r) {
-    return DW.html`<tr><td class="text-sm">${r.created_at}</td><td class="mono text-sm">${r.target_version}</td><td>${statusBadge(r.status)}</td><td>${progress(r)}</td><td>${r.max_concurrency}</td><td>${r.start_interval_seconds}s</td><td><button class="btn btn-sm" data-action="showRollout" data-id="${r.id}">Detail</button></td></tr>`;
-  })}`);
+function renderHistoryCount() {
+  var n = updateData ? (updateData.rollouts || []).length : 0;
+  $('ro-history-count').textContent = '(' + n + ')';
 }
-var updatesSeq = 0;
+
+/* ---- history drawer ---- */
+function rolloutById(id) { return ((updateData && updateData.rollouts) || []).filter(function (x) { return x.id === id; })[0]; }
+function renderDrawer() {
+  var body = $('ro-drawer-body');
+  var list = (updateData && updateData.rollouts) || [];
+  if (drawerView.mode === 'detail') {
+    var r = rolloutById(drawerView.id);
+    if (!r) { drawerView = {mode: 'list', id: ''}; renderDrawer(); return; }
+    var c = counts(r);
+    DW.setHTML(body, DW.html`<button type="button" class="btn btn-sm ro-back" data-action="historyBack">Back to all rollouts</button><div class="ro-head"><h3 class="ro-h3">Rollout to <span class="mono">${r.target_version}</span></h3>${pill(r.status)}</div><p class="text-sm text-muted">Started ${r.created_at}</p>${progressBar(c)}<p class="ro-summary text-sm">${summaryLine(r, c)}</p>${jobsBlock(r)}${skippedBlock(r)}`);
+    applyWidths(body);
+    return;
+  }
+  if (!list.length) { DW.setHTML(body, DW.raw('<p class="text-muted">No rollouts yet.</p>')); return; }
+  DW.setHTML(body, DW.html`<ul class="ro-hist">${list.map(function (r) {
+    var c = counts(r);
+    return DW.html`<li><button type="button" class="ro-hist-row" data-action="showRollout" data-id="${r.id}"><span class="mono ro-hist-ver">${r.target_version}</span>${pill(r.status)}<span class="text-sm text-muted ro-hist-meta">${c.healthy}/${c.total} updated${c.failed ? ' · ' + c.failed + ' failed' : ''} · ${r.created_at}</span></button></li>`;
+  })}</ul>`);
+}
+function isDrawerOpen() { return !$('ro-drawer').hidden; }
+function openHistory(opener) {
+  drawerOpener = opener || document.activeElement;
+  drawerView = {mode: 'list', id: ''};
+  renderDrawer();
+  $('ro-scrim').hidden = false;
+  $('ro-drawer').hidden = false;
+  $('ro-drawer-h').focus();
+}
+function closeHistory(restore) {
+  if (!isDrawerOpen()) return;
+  $('ro-drawer').hidden = true;
+  $('ro-scrim').hidden = true;
+  var o = drawerOpener; drawerOpener = null;
+  if (restore !== false && o && o.isConnected && o.focus) o.focus();
+}
+document.addEventListener('keydown', function (e) {
+  if (!isDrawerOpen()) return;
+  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeHistory(true); return; }
+  if (e.key !== 'Tab') return;
+  var panel = $('ro-drawer');
+  var f = Array.prototype.filter.call(panel.querySelectorAll('a[href],button:not([disabled]),summary,[tabindex]:not([tabindex="-1"])'), function (x) { return x.offsetParent !== null; });
+  if (!f.length) { e.preventDefault(); return; }
+  var first = f[0], last = f[f.length - 1];
+  if (!panel.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+  else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+
+/* ---- data ---- */
 function loadUpdates() {
   var seq = ++updatesSeq;
-  fetch('/api/client-updates', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d) {
+  return fetch('/api/client-updates', {credentials: 'same-origin'}).then(function (r) { return r.json(); }).then(function (d) {
     if (seq !== updatesSeq) return; // out-of-order response
-    if (d.error) { showToast(d.error,'error'); return; }
-    updateData = d; renderSummary(); renderActive(); renderHistory();
-    document.getElementById('rollout-refresh').textContent = 'Updated '+new Date().toLocaleTimeString();
-    document.getElementById('new-rollout-btn').disabled = (d.rollouts || []).some(function(r){return r.status==='active'||r.status==='paused';});
+    if (d.error) throw new Error(d.error);
+    loadError = '';
+    updateData = d;
+    renderSummary(); renderActive(); renderHistoryCount();
+    if (isDrawerOpen()) renderDrawer();
+    $('rollout-refresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    var busy = !!activeRollout();
+    var b = $('new-rollout-btn');
+    b.disabled = busy;
+    if (busy) b.setAttribute('title', 'Finish or cancel the current rollout first'); else b.removeAttribute('title');
+  }).catch(function (err) {
+    if (seq !== updatesSeq) return;
+    loadError = err && err.message ? err.message : 'request failed';
+    renderActive();
   });
 }
 function openRollout() {
   if (!updateData) return;
-  document.getElementById('rollout-target').value = updateData.recommended_version || '';
-  renderSummary(); DW.modal.open('#rollout-modal');
+  $('rollout-target').value = updateData.recommended_version || '';
+  renderSummary();
+  DW.modal.open('#rollout-modal');
 }
-document.getElementById('rollout-form').addEventListener('submit', function(e) {
-  e.preventDefault();
-  var btn=document.getElementById('start-rollout-btn'); btn.disabled=true;
-  fetch('/api/client-updates',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({target_version:document.getElementById('rollout-target').value,max_concurrency:Number(document.getElementById('rollout-concurrency').value),start_interval_seconds:Number(document.getElementById('rollout-interval').value),failure_threshold_percent:Number(document.getElementById('rollout-failure-threshold').value)})})
-    .then(function(r){return r.json();}).then(function(d){btn.disabled=false;if(d.error){showToast(d.error,'error');return;}DW.modal.close('#rollout-modal');showToast('Rollout started','success');loadUpdates();})
-    .catch(function(err){btn.disabled=false;showToast(err.message,'error');});
-});
-function rolloutAction(id, action) {
-  if (action==='cancel' && !confirm('Cancel queued updates? Clients already updating will continue.')) return;
-  fetch('/api/client-updates/'+encodeURIComponent(id)+'/'+action,{method:'POST',credentials:'same-origin'})
-    .then(function(r){return r.json();}).then(function(d){if(d.error){showToast(d.error,'error');return;}showToast('Rollout '+d.status,'success');loadUpdates();});
+function submitRollout() {
+  var btn = $('start-rollout-btn'); btn.disabled = true;
+  fetch('/api/client-updates', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+    target_version: $('rollout-target').value,
+    max_concurrency: Number($('rollout-concurrency').value),
+    start_interval_seconds: Number($('rollout-interval').value),
+    failure_threshold_percent: Number($('rollout-failure-threshold').value)
+  })}).then(function (r) { return r.json(); }).then(function (d) {
+    btn.disabled = false;
+    if (d.error) { DW.toast(d.error, 'error'); return; }
+    DW.modal.close('#rollout-modal');
+    DW.toast('Rollout started', 'success');
+    return loadUpdates().then(focusActive);
+  }).catch(function (err) { btn.disabled = false; DW.toast(err.message, 'error'); });
 }
-function showRollout(id) {
-  var r=(updateData.rollouts||[]).filter(function(x){return x.id===id;})[0];
+function focusActive() { var h = $('ro-active-h'); if (h) h.focus(); }
+function postAction(id, action, btn) {
+  if (btn) btn.disabled = true;
+  return fetch('/api/client-updates/' + encodeURIComponent(id) + '/' + action, {method: 'POST', credentials: 'same-origin'})
+    .then(function (r) { return r.json(); }).then(function (d) {
+      if (d.error) { DW.toast(d.error, 'error'); if (btn) btn.disabled = false; return; }
+      DW.toast(action === 'retry-failed' ? 'Retrying ' + plural(d.retried || 0, 'client', 'clients') : 'Rollout ' + action + ' requested', 'success');
+      return loadUpdates().then(focusActive);
+    }).catch(function (err) { DW.toast(err.message, 'error'); if (btn) btn.disabled = false; });
+}
+function askCancel(id) {
+  var r = rolloutById(id);
   if (!r) return;
-  DW.setHTML(document.getElementById('active-rollout'), DW.html`<div class="flex-between"><strong>${r.target_version} history</strong><button class="btn btn-sm" data-action="closeRollout">Close</button></div>${renderJobs(r)}`);
+  var c = counts(r);
+  pendingCancelID = id;
+  $('ro-cancel-impact').textContent = plural(c.queued, 'queued update', 'queued updates') + ' will be cancelled. ' + plural(c.running, 'client is', 'clients are') + ' already updating and will finish. Updated clients are not rolled back.';
+  DW.modal.open('#ro-cancel-modal');
 }
-DW.actions.openRollout = function() { openRollout(); };
-DW.actions.rolloutAction = function(el) { rolloutAction(el.dataset.id, el.dataset.rolloutAction); };
-DW.actions.showRollout = function(el) { showRollout(el.dataset.id); };
-DW.actions.closeRollout = function() { renderActive(); };
+
+DW.actions.openRollout = function () { openRollout(); };
+DW.actions.submitRollout = function () { submitRollout(); };
+DW.actions.rolloutAction = function (el) { return postAction(el.dataset.id, el.dataset.rolloutAction, el); };
+DW.actions.askCancel = function (el) { askCancel(el.dataset.id); };
+DW.actions.confirmCancel = function (el) {
+  var id = pendingCancelID; pendingCancelID = '';
+  DW.modal.close('#ro-cancel-modal');
+  if (id) return postAction(id, 'cancel', null);
+};
+DW.actions.retryLoad = function () { return loadUpdates(); };
+DW.actions.openHistory = function (el) { openHistory(el); };
+DW.actions.closeHistory = function () { closeHistory(true); };
+DW.actions.showRollout = function (el) { drawerView = {mode: 'detail', id: el.dataset.id}; renderDrawer(); $('ro-drawer-h').focus(); };
+DW.actions.historyBack = function () { drawerView = {mode: 'list', id: ''}; renderDrawer(); $('ro-drawer-h').focus(); };
+
 // Live: refetch on rollout changes (SSE) or every 15s in polling fallback.
 // Skipped while a modal is open or the tab is hidden; the next event or the
 // visibility change catches up.
-DW.live.on('rollouts', function() { loadUpdates(); }, {defer: true});
-document.addEventListener('DOMContentLoaded', function(){loadUpdates();});
+DW.live.on('rollouts', function () { loadUpdates(); }, {defer: true});
+document.addEventListener('DOMContentLoaded', function () { loadUpdates(); });
+})();
 </script>
 {{end}}

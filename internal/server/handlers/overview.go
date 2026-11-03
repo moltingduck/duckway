@@ -229,7 +229,7 @@ func (h *OverviewHandler) build() (OverviewResponse, error) {
 		}
 		items = append(items, OverviewItem{Kind: "rollout", Label: "Rollout", Severity: sev, Count: 1,
 			Title: "Client rollout to " + ro.TargetVersion + " needs attention",
-			Meta:  strings.Join(parts, " · "), Names: []string{ro.TargetVersion}, Href: "/admin/client-updates", CTA: "Open rollout"})
+			Meta:  strings.Join(parts, " · "), Names: []string{ro.TargetVersion}, Href: "/admin/clients/rollouts", CTA: "Open rollout"})
 	}
 
 	stats, err := h.q.Stats(now, overviewOnlineWindow)
