@@ -306,3 +306,32 @@ func TestPricingWildcardReferencedByOtherModel(t *testing.T) {
 		t.Fatalf("delete: %d", rec.Code)
 	}
 }
+
+func TestServiceAllowEncodedSlashFlagRoundTrips(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	body := `{"name":"gitlab-x","display_name":"GitLab","upstream_url":"https://gitlab.example","host_pattern":"gitlab.example","auth_type":"bearer","auth_header":"Authorization","auth_prefix":"Bearer "}`
+	rec := svcDo(s, shared, http.MethodPost, "/api/services", body, true)
+	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID    string `json:"id"`
+		Allow bool   `json:"allow_encoded_slash"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.Allow {
+		t.Fatalf("default must be off: %+v %v", created, err)
+	}
+	rec = svcDo(s, shared, http.MethodPut, "/api/services/"+created.ID, `{"allow_encoded_slash":true}`, true)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"allow_encoded_slash":true`) {
+		t.Fatalf("enable: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = svcDo(s, shared, http.MethodGet, "/api/services", "", true)
+	if !strings.Contains(rec.Body.String(), `"allow_encoded_slash":true`) {
+		t.Fatalf("list must expose the flag: %s", rec.Body.String())
+	}
+	// Other updates keep it.
+	rec = svcDo(s, shared, http.MethodPut, "/api/services/"+created.ID, `{"display_name":"GitLab2"}`, true)
+	if !strings.Contains(rec.Body.String(), `"allow_encoded_slash":true`) {
+		t.Fatalf("an unrelated update must not reset the flag: %s", rec.Body.String())
+	}
+}

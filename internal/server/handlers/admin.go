@@ -229,7 +229,13 @@ func (h *AdminHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cookie := h.auth.CreateSession(user.Username, r)
+	cookie, err := h.auth.IssueSession(user.Username, r)
+	if err != nil {
+		log.Printf("login: cannot issue session: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		h.loginTmpl.ExecuteTemplate(w, "login.html", pageData{Error: "Login is temporarily unavailable. Try again.", CSPNonce: middleware.CSPNonce(r.Context())})
+		return
+	}
 	http.SetCookie(w, cookie)
 	clearWhatsNewCookie(w) // a fresh login shows the dialog again unless dismissed for good
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)

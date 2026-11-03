@@ -104,7 +104,7 @@ func (g *DiscordGateway) SendApprovalMessage(notif ApprovalNotification) {
 		"description": fmt.Sprintf(
 			"**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`\n\n"+
 				"React ✅ to approve (24h) or ❌ to reject",
-			notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID),
+			notif.ClientName, notif.ServiceName, notif.Method, notif.requestTarget(), notif.ApprovalID) + bodyLine(notif.BodyHash),
 	}
 
 	body, _ := json.Marshal(map[string]interface{}{
@@ -124,7 +124,9 @@ func (g *DiscordGateway) SendApprovalMessage(notif ApprovalNotification) {
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 
-	var msg struct{ ID string `json:"id"` }
+	var msg struct {
+		ID string `json:"id"`
+	}
 	json.Unmarshal(respBody, &msg)
 
 	if msg.ID == "" {

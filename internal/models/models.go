@@ -27,8 +27,11 @@ type Service struct {
 	//   "loan_proxy" — sidecar caches the real token from gateway and forwards directly to upstream.
 	//                  Lower latency, no body buffering on gateway. Coarse-grained ACL only.
 	DeliveryMode string `json:"delivery_mode"`
-	IsActive     bool   `json:"is_active"`
-	CreatedAt    string `json:"created_at"`
+	// AllowEncodedSlash accepts %2F inside proxied paths. The ACL then sees the
+	// path with %2F kept inside its segment (never decoded into a separator).
+	AllowEncodedSlash bool   `json:"allow_encoded_slash"`
+	IsActive          bool   `json:"is_active"`
+	CreatedAt         string `json:"created_at"`
 }
 
 // ModelPricing is an immutable price version effective from a UTC timestamp.

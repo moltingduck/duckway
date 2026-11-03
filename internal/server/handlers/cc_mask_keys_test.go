@@ -8,7 +8,7 @@ import (
 
 func TestCCMaskKeepsTokenCountsVisibleButMasksRealSecrets(t *testing.T) {
 	visible := []string{"max_tokens", "maxTokens", "min_tokens", "token_limit", "tokenLimit", "token_count", "input_tokens",
-		"output_tokens", "context_tokens", "max_output_tokens", "token_budget", "tokenType", "token_type", "token_endpoint", "tokens"}
+		"output_tokens", "context_tokens", "max_output_tokens", "token_budget", "tokenType", "token_type", "tokens"}
 	secrets := []string{"token", "bot_token", "botToken", "access_token", "refresh_token", "api_token", "auth_token", "discord_bot_token",
 		"webhook_secret", "password", "api_key", "authorization"}
 	cfg := map[string]interface{}{}
@@ -83,5 +83,40 @@ func TestCCMaskMasksStringsAndArraysUnderTokenKeys(t *testing.T) {
 	restored := restoreCCMaskedConfig(`{"access_tokens":"`+ccSecretMask+`","max_tokens":10}`, stored)
 	if strings.Contains(restored, ccSecretMask) {
 		t.Errorf("mask leaked into stored config: %s", restored)
+	}
+}
+
+// A numeric or boolean value under a credential-ish key is still a credential
+// (numeric PIN/OTP/secret) and stays masked; token QUANTITIES stay visible.
+func TestCCMaskMasksNumbersUnderCredentialKeys(t *testing.T) {
+	maskedNums := []string{"password", "pin", "otp", "secret", "api_key", "key", "private_key", "webhook_secret", "webhook",
+		"bot_token", "access_token", "token", "usage_token", "endpoint_token", "auth_token", "client_secret", "passcode", "token_pin"}
+	cfg := map[string]interface{}{}
+	for _, k := range maskedNums {
+		cfg[k] = 123456
+	}
+	cfg["secret_flag"] = true
+	visible := []string{"max_tokens", "min_tokens", "input_tokens", "output_tokens", "model_token_limit", "daily_token_count", "token_budget", "tokens_used", "context_tokens"}
+	for _, k := range visible {
+		cfg[k] = 77
+	}
+	cfg["token_type"] = "Bearer"
+	raw, _ := json.Marshal(cfg)
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(maskCCConfig(string(raw))), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range append(maskedNums, "secret_flag") {
+		if got[k] != ccSecretMask {
+			t.Errorf("numeric/boolean %s must be masked, got %v", k, got[k])
+		}
+	}
+	for _, k := range visible {
+		if got[k] != float64(77) {
+			t.Errorf("%s count must stay visible, got %v", k, got[k])
+		}
+	}
+	if got["token_type"] != "Bearer" {
+		t.Errorf("token_type must stay visible: %v", got["token_type"])
 	}
 }

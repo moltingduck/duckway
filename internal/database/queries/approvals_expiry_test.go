@@ -63,3 +63,14 @@ func TestApproveStoresGoComputedUTCExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestClampApprovalMinutes(t *testing.T) {
+	for in, want := range map[int]int{-5: 1, 0: 1, 1: 1, 90: 90, MaxApprovalMinutes: MaxApprovalMinutes, MaxApprovalMinutes + 1: MaxApprovalMinutes, 1 << 40: MaxApprovalMinutes} {
+		if got := ClampApprovalMinutes(in); got != want {
+			t.Errorf("Clamp(%d)=%d want %d", in, got, want)
+		}
+	}
+	if ApprovalExpiry(time.Duration(ClampApprovalMinutes(1<<40))*time.Minute) > time.Now().UTC().AddDate(1, 0, 2).Format(ApprovalTimeLayout) {
+		t.Fatal("clamped expiry must be at most about one year out")
+	}
+}

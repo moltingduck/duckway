@@ -142,6 +142,20 @@ func (q *ApprovalQueries) CreateScoped(a *models.Approval, scope string) error {
 // SQLite's datetime('now') returns, so stored values compare correctly in SQL.
 const ApprovalTimeLayout = "2006-01-02 15:04:05"
 
+// MaxApprovalMinutes caps an approval's lifetime at one year.
+const MaxApprovalMinutes = 60 * 24 * 365
+
+// ClampApprovalMinutes limits a duration in minutes to 1..MaxApprovalMinutes.
+func ClampApprovalMinutes(n int) int {
+	if n < 1 {
+		return 1
+	}
+	if n > MaxApprovalMinutes {
+		return MaxApprovalMinutes
+	}
+	return n
+}
+
 // ApprovalExpiry returns the UTC expiry timestamp string for an approval
 // granted now that lasts d. Computed in Go so it is portable across SQLite and
 // PostgreSQL.

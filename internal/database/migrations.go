@@ -469,6 +469,9 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE services ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'proxy'",
 		"ALTER TABLE services ADD COLUMN category TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE services ADD COLUMN usage_metering TEXT NOT NULL DEFAULT ''",
+		// Per-service opt-in: accept %2F in proxied paths (for example GitLab
+		// project paths). Off by default; additive, SQLite and PostgreSQL alike.
+		"ALTER TABLE services ADD COLUMN allow_encoded_slash INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE api_keys ADD COLUMN acl TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE api_keys ADD COLUMN refresh_token TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE api_keys ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0",
@@ -562,6 +565,13 @@ func runMigrations(db *sql.DB) error {
 		// Live-update watcher fingerprints (internal/server/events). Append-only;
 		// shared by SQLite and PostgreSQL because both run runMigrations.
 		`CREATE INDEX IF NOT EXISTS idx_approvals_watch ON approvals(status, approved_at, created_at)`,
+		// Before the unique index below exists, collapse any duplicate pending
+		// scoped rows (keep the oldest) so the index cannot fail at startup.
+		// Idempotent: a no-op once no duplicate pending row remains.
+		`UPDATE approvals SET status = 'ignored' WHERE status = 'pending' AND scope <> '' AND id IN (
+			SELECT a.id FROM approvals a WHERE a.status = 'pending' AND a.scope <> '' AND EXISTS (
+				SELECT 1 FROM approvals b WHERE b.status = 'pending' AND b.placeholder_id = a.placeholder_id AND b.scope = a.scope
+				AND (b.created_at < a.created_at OR (b.created_at = a.created_at AND b.id < a.id))))`,
 		// One pending approval per (token, request signature): concurrent
 		// retries of the same gated request collapse onto it. Partial unique
 		// index syntax is shared by SQLite and PostgreSQL.

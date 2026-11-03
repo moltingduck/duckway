@@ -31,22 +31,40 @@ import (
 
 type ProxyHandler struct {
 	remoteControl *queries.CodexRemoteQueries
-	services     *queries.ServiceQueries
-	apiKeys      *queries.APIKeyQueries
-	resolver     *services.KeyResolver
-	requestLog   *queries.RequestLogQueries
-	approvals    *queries.ApprovalQueries
-	settings     *queries.SettingsQueries
-	convUsage    *queries.ConversationUsageQueries
-	permissions  *services.PermissionChecker
-	notifier     *services.Notifier
-	crypto       *services.Crypto
-	httpClient   *http.Client
-	proxyClients *services.UpstreamProxyClientCache
+	services      *queries.ServiceQueries
+	apiKeys       *queries.APIKeyQueries
+	resolver      *services.KeyResolver
+	requestLog    *queries.RequestLogQueries
+	approvals     *queries.ApprovalQueries
+	settings      *queries.SettingsQueries
+	convUsage     *queries.ConversationUsageQueries
+	permissions   *services.PermissionChecker
+	notifier      ApprovalNotifier
+	crypto        *services.Crypto
+	httpClient    *http.Client
+	proxyClients  *services.UpstreamProxyClientCache
 
 	githubAppMu     sync.Mutex
 	githubAppTokens map[string]githubAppTokenCache
 	githubAppMints  map[string]*githubAppMintCall
+}
+
+// ApprovalNotifier sends the "approval needed" alert to the admin channels.
+type ApprovalNotifier interface {
+	NotifyApprovalNeeded(services.ApprovalNotification)
+}
+
+func nilSafeNotifier(n *services.Notifier) ApprovalNotifier {
+	if n == nil {
+		return nil
+	}
+	return n
+}
+
+// WithApprovalNotifier replaces the notifier (tests inject a counting fake).
+func (h *ProxyHandler) WithApprovalNotifier(n ApprovalNotifier) *ProxyHandler {
+	h.notifier = n
+	return h
 }
 
 func NewProxyHandler(svcQueries *queries.ServiceQueries, apiKeys *queries.APIKeyQueries, resolver *services.KeyResolver, requestLog *queries.RequestLogQueries, approvals *queries.ApprovalQueries, settings *queries.SettingsQueries, notifier *services.Notifier) *ProxyHandler {
@@ -58,7 +76,7 @@ func NewProxyHandler(svcQueries *queries.ServiceQueries, apiKeys *queries.APIKey
 		approvals:   approvals,
 		settings:    settings,
 		permissions: services.NewPermissionChecker(),
-		notifier:    notifier,
+		notifier:    nilSafeNotifier(notifier),
 		// No full Timeout: LLM streaming responses can run for many minutes.
 		// ResponseHeaderTimeout caps the time to first byte from upstream;
 		// once headers arrive the body streams until the client disconnects.
@@ -291,22 +309,58 @@ func isSensitiveBodyKey(key string) bool {
 // validateProxiedPath rejects decoded proxy paths that cannot be forwarded
 // byte-for-byte: a decoded '?' or '#' (from %3F / %23) would turn path text into
 // a query or fragment upstream, control characters (including NUL) are never
-// legitimate, and an encoded slash or backslash (%2F, %5C) is decoded by the ACL
-// as a path separator but is kept as part of one segment by many upstreams.
-// Spaces, unicode and other encoded characters are fine: the upstream URL is
-// rebuilt with escapedUpstreamPath, so upstream sees exactly the path the ACL
-// evaluated.
+// legitimate, and an encoded backslash (%5C) is read as a separator by some
+// upstreams. Spaces, unicode and other encoded characters are fine: the
+// upstream URL is rebuilt with escapedUpstreamPath, so upstream sees exactly the
+// path the ACL evaluated. An encoded slash (%2F) is decided per service, see
+// encodedSlashPath.
 func validateProxiedPath(r *http.Request) string {
 	for _, c := range r.URL.Path {
 		if c == '?' || c == '#' || c < 0x20 || c == 0x7f {
 			return "invalid character in proxied path"
 		}
 	}
-	raw := strings.ToLower(r.URL.EscapedPath())
-	if strings.Contains(raw, "%2f") || strings.Contains(raw, "%5c") {
-		return "encoded slash in proxied path is not allowed"
+	if strings.Contains(strings.ToLower(r.URL.EscapedPath()), "%5c") {
+		return "encoded backslash in proxied path is not allowed"
 	}
 	return ""
+}
+
+func hasEncodedSlash(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.URL.EscapedPath()), "%2f")
+}
+
+// encodedSlashPath handles a proxied path that contains %2F (only reached for
+// services with allow_encoded_slash). It returns
+//   - aclPath: the path the ACL evaluates, with every %2F kept inside its
+//     segment as the literal text "%2F" (never decoded into a separator), so a
+//     rule for /projects/a/b does not match /projects/a%2Fb while /projects/*
+//     does;
+//   - escaped: the same path in escaped form, which is what is sent upstream.
+//
+// A segment that contains an encoded slash and a literal '%' is ambiguous with
+// the "%2F" text above and is rejected.
+func encodedSlashPath(rawRest string) (aclPath, escaped string, err string) {
+	segs := strings.Split(rawRest, "/")
+	aclSegs := make([]string, len(segs))
+	escSegs := make([]string, len(segs))
+	for i, seg := range segs {
+		dec, e := url.PathUnescape(seg)
+		if e != nil {
+			return "", "", "invalid escape in proxied path"
+		}
+		parts := strings.Split(dec, "/")
+		if len(parts) > 1 && strings.Contains(dec, "%") {
+			return "", "", "ambiguous encoding in proxied path"
+		}
+		enc := make([]string, len(parts))
+		for j, p := range parts {
+			enc[j] = strings.TrimPrefix((&url.URL{Path: "/" + p}).EscapedPath(), "/")
+		}
+		aclSegs[i] = strings.Join(parts, "%2F")
+		escSegs[i] = strings.Join(enc, "%2F")
+	}
+	return strings.Join(aclSegs, "/"), strings.Join(escSegs, "/"), ""
 }
 
 // escapedUpstreamPath is the canonical escaped form of the decoded path the ACL
@@ -337,6 +391,10 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if len(parts) > 1 {
 		upstreamPath = "/" + parts[1]
 	}
+	if hasEncodedSlash(r) && (serviceName == "openai-auth" || serviceName == "openai-chatgpt") {
+		jsonError(w, "encoded slash in proxied path is not allowed", http.StatusBadRequest)
+		return
+	}
 	if serviceName == "openai-auth" {
 		h.handleOpenAIAuthProxy(w, r, upstreamPath, startTime)
 		return
@@ -364,6 +422,29 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		jsonError(w, "unknown service: "+serviceName, http.StatusNotFound)
 		return
+	}
+
+	// What the ACL evaluates (upstreamPath) and what is sent upstream
+	// (upstreamEscaped) are derived together so they can never disagree.
+	var upstreamEscaped string
+	if hasEncodedSlash(r) {
+		if !svc.AllowEncodedSlash {
+			jsonError(w, "encoded slash in proxied path is not allowed for this service", http.StatusBadRequest)
+			return
+		}
+		rawRest := strings.TrimPrefix(r.URL.EscapedPath(), "/proxy/")
+		rest := "/"
+		if idx := strings.Index(rawRest, "/"); idx >= 0 {
+			rest = rawRest[idx:]
+		}
+		aclPath, esc, msg := encodedSlashPath(rest)
+		if msg != "" {
+			jsonError(w, msg, http.StatusBadRequest)
+			return
+		}
+		upstreamPath, upstreamEscaped = aclPath, esc
+	} else {
+		upstreamEscaped = escapedUpstreamPath(upstreamPath)
 	}
 	if serviceName == "xai-grok" && !proxyHostPatternAllows(svc.HostPattern, "cli-chat-proxy.grok.com") {
 		jsonError(w, "xai service does not allow Grok CLI host", http.StatusForbidden)
@@ -395,7 +476,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if result.NeedApproval {
-		h.holdForApproval(w, r, client, serviceName, result.PlaceholderID, r.Method, upstreamPath, "", "")
+		h.holdForApproval(w, r, client, serviceName, result.PlaceholderID, r.Method, upstreamPath, "", "", "", "")
 		return
 	}
 
@@ -498,8 +579,14 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				jsonError(w, "failed to check approval", http.StatusInternalServerError)
 				return
 			}
-			h.holdForApproval(w, r, client, serviceName, result.PlaceholderID, aclMethod, aclPath, scope, approveRule+" ("+approveLayer+")")
-			return
+			sum := sha256.Sum256(bodyBytes)
+			query := r.URL.RawQuery
+			if len(query) > 300 {
+				query = query[:300] + "..."
+			}
+			if !h.holdForApproval(w, r, client, serviceName, result.PlaceholderID, aclMethod, aclPath, query, hex.EncodeToString(sum[:])[:12], scope, approveRule+" ("+approveLayer+")") {
+				return
+			}
 		}
 	} else if approveLayer != "" {
 		// No approval store wired: never forward an approve-gated request.
@@ -512,7 +599,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		upstreamBaseURL = svc.UpstreamURL
 	}
 	upstreamBaseURL = effectiveProxyUpstreamBaseURL(serviceName, upstreamBaseURL, upstreamPath)
-	upstreamURL := strings.TrimRight(upstreamBaseURL, "/") + escapedUpstreamPath(upstreamPath)
+	upstreamURL := strings.TrimRight(upstreamBaseURL, "/") + upstreamEscaped
 	if r.URL.RawQuery != "" {
 		upstreamURL += "?" + r.URL.RawQuery
 	}
@@ -1593,42 +1680,116 @@ func ruleApprovalScope(method, path, rawQuery string, body []byte) string {
 // holdForApproval records (or reuses) a pending approval, notifies the admin
 // channels and answers 403 duckway_approval_pending. scope is "" for the
 // token-wide flow; for an approve rule it is the request signature and rule
-// describes which rule/layer asked for approval.
-func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, client *models.Client, serviceName, placeholderID, method, path, scope, rule string) {
-	approvalID := ""
-	if scope != "" {
-		if p, err := h.approvals.GetPendingScoped(placeholderID, scope); err == nil {
-			approvalID = p.ID
+// describes which rule/layer asked for approval. query and bodyHash (short
+// SHA-256 prefix) are recorded so the admin sees exactly what is approved.
+//
+// It returns true only when, while racing a concurrent identical request, an
+// approval for this exact request turned out to be granted already: nothing was
+// written to w and the caller should forward the request.
+// errApprovalContention is returned when creating a scoped approval keeps
+// losing a race with settled rows; the caller answers 503 so the client retries.
+var errApprovalContention = errors.New("approval request contention")
+
+// scopedApprovalOps are the store operations resolveScopedApproval needs
+// (injectable so the race outcomes can be unit-tested).
+type scopedApprovalOps struct {
+	pending func() (string, error) // newest pending approval id; sql.ErrNoRows if none
+	valid   func() error           // nil if an unexpired approval exists; sql.ErrNoRows if none
+	create  func() (string, error)
+}
+
+// resolveScopedApproval finds or creates the pending approval for one request
+// signature. It returns the approval id and whether this call created it, or
+// forward=true when the identical request was approved while racing. It never
+// fails because of a lost insert race: a unique violation resolves to the
+// winner's pending approval, to a forward if that winner was approved, or to
+// another create attempt.
+func resolveScopedApproval(ops scopedApprovalOps) (id string, created, forward bool, err error) {
+	if pid, perr := ops.pending(); perr == nil {
+		return pid, false, false, nil
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		nid, cerr := ops.create()
+		if cerr == nil {
+			return nid, true, false, nil
+		}
+		if !queries.IsUniqueViolation(cerr) {
+			return "", false, false, cerr
+		}
+		pid, perr := ops.pending()
+		if perr == nil {
+			return pid, false, false, nil
+		}
+		if perr != sql.ErrNoRows {
+			return "", false, false, perr
+		}
+		// The winner is no longer pending: it may have been approved already.
+		verr := ops.valid()
+		if verr == nil {
+			return "", false, true, nil
+		}
+		if verr != sql.ErrNoRows {
+			return "", false, false, verr
 		}
 	}
-	if approvalID == "" {
-		var err error
-		approvalID, err = CreatePendingApproval(h.approvals, placeholderID, method, path, scope, rule)
-		created := err == nil
-		if err != nil && scope != "" && queries.IsUniqueViolation(err) {
-			// A concurrent identical request won the insert (partial unique
-			// index on pending scoped approvals): reuse its approval.
-			if p, perr := h.approvals.GetPendingScoped(placeholderID, scope); perr == nil {
-				approvalID, err = p.ID, nil
-			}
-		}
+	return "", false, false, errApprovalContention
+}
+
+func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, client *models.Client, serviceName, placeholderID, method, path, query, bodyHash, scope, rule string) (forward bool) {
+	var approvalID string
+	var created bool
+	if scope == "" {
+		id, err := CreatePendingApprovalFor(h.approvals, placeholderID, method, path, query, bodyHash, scope, rule)
 		if err != nil {
 			log.Printf("failed to create approval: %v", err)
 			jsonError(w, "failed to create approval request", http.StatusInternalServerError)
-			return
+			return false
 		}
-		if h.notifier != nil && created {
-			h.notifier.NotifyApprovalNeeded(services.ApprovalNotification{
-				ApprovalID:    approvalID,
-				PlaceholderID: placeholderID,
-				ClientName:    client.Name,
-				ServiceName:   serviceName,
-				Method:        method,
-				Path:          path,
-				Rule:          rule,
-				AdminURL:      "/admin/approvals",
-			})
+		approvalID, created = id, true
+	} else {
+		id, wasCreated, fwd, err := resolveScopedApproval(scopedApprovalOps{
+			pending: func() (string, error) {
+				p, err := h.approvals.GetPendingScoped(placeholderID, scope)
+				if err != nil {
+					return "", err
+				}
+				return p.ID, nil
+			},
+			valid: func() error {
+				_, err := h.approvals.GetValidScopedApproval(placeholderID, scope)
+				return err
+			},
+			create: func() (string, error) {
+				return CreatePendingApprovalFor(h.approvals, placeholderID, method, path, query, bodyHash, scope, rule)
+			},
+		})
+		switch {
+		case err == errApprovalContention:
+			w.Header().Set("Retry-After", "1")
+			jsonError(w, "approval request is being processed; retry", http.StatusServiceUnavailable)
+			return false
+		case err != nil:
+			log.Printf("failed to create approval: %v", err)
+			jsonError(w, "failed to create approval request", http.StatusInternalServerError)
+			return false
+		case fwd:
+			return true
 		}
+		approvalID, created = id, wasCreated
+	}
+	if created && h.notifier != nil {
+		h.notifier.NotifyApprovalNeeded(services.ApprovalNotification{
+			ApprovalID:    approvalID,
+			PlaceholderID: placeholderID,
+			ClientName:    client.Name,
+			ServiceName:   serviceName,
+			Method:        method,
+			Path:          path,
+			Query:         query,
+			BodyHash:      bodyHash,
+			Rule:          rule,
+			AdminURL:      "/admin/approvals",
+		})
 	}
 	msg := "This API key usage requires admin approval. Retry after approval."
 	if scope != "" {
@@ -1641,6 +1802,7 @@ func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, c
 		"message":     msg,
 		"approval_id": approvalID,
 	})
+	return false
 }
 
 func proxyACLRequest(method, upstreamPath, rawQuery string) (string, string) {

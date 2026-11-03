@@ -130,6 +130,23 @@ to the method, path, query or body asks again. Methods are matched
 case-insensitively, and the *Approve writes* preset also holds any method it
 does not list.
 
+**Upgrade notes (console redesign release)**
+
+- Approvals recorded by earlier versions with a relative expiry never ran out;
+  they were expired at upgrade, so an affected token asks for approval again.
+- A rule approval covers one exact request: method, path, query string and body.
+  The approval and its notification show the query and the first 12 hex
+  characters of the body's SHA-256.
+- A proxied path containing `%2F` is refused (400) unless the service has
+  **Allow encoded slashes** enabled (Services, Delivery section; for example
+  GitLab project paths). `%5C`, `?`, `#` and control characters are always
+  refused.
+- Behind a reverse proxy that rewrites `Host`, set `DUCKWAY_PUBLIC_ORIGIN` (see
+  the proxy section) or forward the original Host.
+- Changing the admin password signs out every other session.
+- Already-installed `duckway` clients keep working: they send no browser
+  headers, and the admin API accepts such requests.
+
 ### 5. Set up the agent machine
 
 ```bash
@@ -472,10 +489,11 @@ location /api/events {
 request (POST/PUT/PATCH/DELETE) whose `Origin` (or `Referer`) is a different
 site. A proxy that rewrites `Host` makes the browser's Origin look foreign, so
 in the `location /` block keep `proxy_set_header Host $host;` (or send
-`X-Forwarded-Host` and `X-Forwarded-Proto`). Alternatively set the **Gateway
-URL** in Settings or the `DUCKWAY_PUBLIC_ORIGIN` environment variable to the
-public origin (`https://console.example.com`, comma-separated for several);
-an Origin equal to one of them is accepted. Requests with no Origin,
+`X-Forwarded-Host` and `X-Forwarded-Proto`). Alternatively set the
+`DUCKWAY_PUBLIC_ORIGIN` environment variable to the public origin
+(`https://console.example.com`, comma-separated for several); an Origin equal
+to one of them is accepted. The Gateway URL setting is not used for this on
+purpose: it can be edited through the admin API itself. Requests with no Origin,
 Sec-Fetch-Site or Referer header at all (non-browser tools such as
 `duckway init`) are not affected.
 

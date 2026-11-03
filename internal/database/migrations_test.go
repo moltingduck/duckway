@@ -154,3 +154,73 @@ func TestMigrationExpiresLegacyApprovalExpiryStrings(t *testing.T) {
 		t.Fatalf("legacy=%q real=%q", legacy, real)
 	}
 }
+
+// allow_encoded_slash is additive: an existing services table gains it via the
+// shared safeAlters path (SQLite and PostgreSQL both run it), default off.
+func TestMigrationAddsAllowEncodedSlashDefaultOff(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`ALTER TABLE services DROP COLUMN allow_encoded_slash`); err != nil {
+		t.Fatalf("simulate an older schema: %v", err)
+	}
+	for i := 0; i < 2; i++ { // idempotent
+		if err := runMigrations(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM services WHERE allow_encoded_slash <> 0`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("column missing or not default-off: n=%d err=%v", n, err)
+	}
+}
+
+// Duplicate pending scoped approvals (possible before the unique index existed)
+// must not block startup: the oldest stays pending, the rest are ignored.
+func TestMigrationCollapsesDuplicatePendingScopedApprovals(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_approvals_pending_scope`); err != nil {
+		t.Fatal(err)
+	}
+	ins := func(id, ph, status, scope, created string) {
+		if _, err := db.Exec(`INSERT INTO approvals (id, placeholder_id, status, scope, created_at) VALUES (?,?,?,?,?)`, id, ph, status, scope, created); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ins("old", "p1", "pending", "rule:POST /x?#h", "2026-01-01 00:00:00")
+	ins("dup1", "p1", "pending", "rule:POST /x?#h", "2026-01-01 00:00:05")
+	ins("dup2", "p1", "pending", "rule:POST /x?#h", "2026-01-01 00:00:09")
+	ins("other-ph", "p2", "pending", "rule:POST /x?#h", "2026-01-01 00:00:07") // different token: kept
+	ins("other-scope", "p1", "pending", "rule:POST /y?#h", "2026-01-01 00:00:08")
+	ins("wide1", "p1", "pending", "", "2026-01-01 00:00:01") // token-wide rows are untouched
+	ins("wide2", "p1", "pending", "", "2026-01-01 00:00:02")
+	ins("done", "p1", "approved", "rule:POST /x?#h", "2026-01-01 00:00:03")
+	for i := 0; i < 2; i++ { // second run: idempotent
+		if err := runMigrations(db); err != nil {
+			t.Fatalf("migration must not fail on duplicates: %v", err)
+		}
+	}
+	status := func(id string) string {
+		var s string
+		_ = db.QueryRow(`SELECT status FROM approvals WHERE id = ?`, id).Scan(&s)
+		return s
+	}
+	for id, want := range map[string]string{"old": "pending", "dup1": "ignored", "dup2": "ignored", "other-ph": "pending", "other-scope": "pending", "wide1": "pending", "wide2": "pending", "done": "approved"} {
+		if got := status(id); got != want {
+			t.Errorf("%s: status %q, want %q", id, got, want)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO approvals (id, placeholder_id, status, scope) VALUES ('x','p1','pending','rule:POST /x?#h')`); err == nil {
+		t.Fatal("the unique index must be back")
+	}
+}

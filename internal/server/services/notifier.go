@@ -39,8 +39,26 @@ type ApprovalNotification struct {
 	ServiceName   string `json:"service_name"`
 	Method        string `json:"method"`
 	Path          string `json:"path"`
-	Rule          string `json:"rule,omitempty"` // approve rule (and layer) that held the request; empty for token-wide approval
+	Rule          string `json:"rule,omitempty"`      // approve rule (and layer) that held the request; empty for token-wide approval
+	Query         string `json:"query,omitempty"`     // raw query string of the held request
+	BodyHash      string `json:"body_hash,omitempty"` // first 12 hex characters of the body's SHA-256
 	AdminURL      string `json:"admin_url"`
+}
+
+// requestTarget is the path with its query string: what exactly is being approved.
+func (n ApprovalNotification) requestTarget() string {
+	if n.Query == "" {
+		return n.Path
+	}
+	return n.Path + "?" + n.Query
+}
+
+// bodyLine shows the short body hash an approval is bound to (markdown).
+func bodyLine(hash string) string {
+	if hash == "" {
+		return ""
+	}
+	return "\n**Body hash:** `" + strings.ReplaceAll(hash, "`", "'") + "`"
 }
 
 // NotifyApprovalNeeded sends a notification to all active channels.
@@ -86,8 +104,11 @@ func (n *Notifier) sendTelegram(configJSON string, notif ApprovalNotification) e
 
 	text := fmt.Sprintf(
 		"🔑 *Duckway Approval Required*\n\nClient: `%s`\nService: `%s`\nRequest: `%s %s`\nApproval ID: `%s`",
-		notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID,
+		notif.ClientName, notif.ServiceName, notif.Method, notif.requestTarget(), notif.ApprovalID,
 	)
+	if notif.BodyHash != "" {
+		text += fmt.Sprintf("\nBody hash: `%s`", strings.ReplaceAll(notif.BodyHash, "`", "'"))
+	}
 	if notif.Rule != "" {
 		text += fmt.Sprintf("\nRule: `%s`", strings.ReplaceAll(notif.Rule, "`", "'"))
 	}
@@ -134,7 +155,7 @@ func (n *Notifier) sendDiscord(configJSON string, notif ApprovalNotification) er
 	embed := map[string]interface{}{
 		"title":       "🔑 Duckway Approval Required",
 		"color":       16750848,
-		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`", notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID) + ruleLine(notif.Rule),
+		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`", notif.ClientName, notif.ServiceName, notif.Method, notif.requestTarget(), notif.ApprovalID) + ruleLine(notif.Rule) + bodyLine(notif.BodyHash),
 		"footer":      map[string]string{"text": "Reply: !approve " + notif.ApprovalID},
 	}
 
@@ -176,7 +197,7 @@ func (n *Notifier) sendDiscordBot(configJSON string, notif ApprovalNotification)
 	embed := map[string]interface{}{
 		"title":       "🔑 Duckway Approval Required",
 		"color":       16750848,
-		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`", notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID) + ruleLine(notif.Rule),
+		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`", notif.ClientName, notif.ServiceName, notif.Method, notif.requestTarget(), notif.ApprovalID) + ruleLine(notif.Rule) + bodyLine(notif.BodyHash),
 		"footer":      map[string]string{"text": "Reply: !approve " + notif.ApprovalID + "  or  !reject " + notif.ApprovalID},
 	}
 

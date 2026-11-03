@@ -129,12 +129,30 @@ func (a *AdminAuth) unauthorized(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"error":"authentication required"}`))
 }
 
+// CreateSession is IssueSession for callers (mostly tests) that cannot
+// handle an error: when the epoch cannot be read it returns a cookie that
+// validateSession always rejects. Login paths use IssueSession.
 func (a *AdminAuth) CreateSession(username string, r *http.Request) *http.Cookie {
-	ts := time.Now().Unix()
+	c, err := a.IssueSession(username, r)
+	if err != nil {
+		c, _ = a.issueSession(username, r, -1)
+	}
+	return c
+}
+
+// IssueSession creates a session cookie at the current epoch. It returns an
+// error when the epoch cannot be read, so login can fail with a 500 rather
+// than hand out a cookie that can never validate.
+func (a *AdminAuth) IssueSession(username string, r *http.Request) (*http.Cookie, error) {
 	epoch, err := a.Epoch()
 	if err != nil {
-		epoch = -1 // unreadable epoch: issue a cookie validateSession always rejects
+		return nil, err
 	}
+	return a.issueSession(username, r, epoch)
+}
+
+func (a *AdminAuth) issueSession(username string, r *http.Request, epoch int64) (*http.Cookie, error) {
+	ts := time.Now().Unix()
 	data := fmt.Sprintf("%s|%d|%d", username, ts, epoch)
 	sig := a.sign(data)
 	value := data + "|" + sig
@@ -152,7 +170,7 @@ func (a *AdminAuth) CreateSession(username string, r *http.Request) *http.Cookie
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400 * 7, // 7 days
-	}
+	}, nil
 }
 
 func (a *AdminAuth) sign(data string) string {

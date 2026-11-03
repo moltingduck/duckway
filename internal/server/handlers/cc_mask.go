@@ -16,12 +16,12 @@ const ccSecretMask = "********"
 var ccSecretKeyHints = []string{
 	"token", "secret", "password", "passwd", "apikey", "api_key",
 	"credential", "authorization", "bearer", "private", "signing",
-	"webhook", "cookie", "passphrase", "accesskey",
+	"webhook", "cookie", "passphrase", "accesskey", "passcode", "sessionid",
 }
 
 // ccSecretKeyWords are short hints matched only as whole word segments, so
 // "auth" masks auth/auth_header/authHeader but not "author".
-var ccSecretKeyWords = map[string]bool{"auth": true, "dsn": true, "pwd": true}
+var ccSecretKeyWords = map[string]bool{"auth": true, "dsn": true, "pwd": true, "pin": true, "otp": true, "pass": true}
 
 // ccKeySegments splits a key into lowercase words on non-alphanumerics and
 // camelCase boundaries.
@@ -67,6 +67,53 @@ func ccIsPlainTokenKey(key string) bool {
 		strings.HasSuffix(k, "tokenlimit") || strings.HasSuffix(k, "tokencount")
 }
 
+var ccCountWords = map[string]bool{
+	"max": true, "min": true, "limit": true, "limits": true, "count": true, "budget": true,
+	"ttl": true, "total": true, "remaining": true, "used": true,
+}
+
+// ccIsCountStyleKey reports whether a key that mentions "token" names a token
+// QUANTITY (input_tokens, max_tokens, token_budget, tokenLimit, tokens_used),
+// as opposed to a credential (access_token, usage_token, endpoint_token).
+func ccIsCountStyleKey(key string) bool {
+	segs := ccKeySegments(key)
+	hasToken := false
+	for _, s := range segs {
+		if s == "tokens" || s == "maxtokens" || s == "mintokens" {
+			return true
+		}
+		if s == "token" {
+			hasToken = true
+		}
+	}
+	if !hasToken {
+		return false
+	}
+	for _, s := range segs {
+		if ccCountWords[s] {
+			return true
+		}
+	}
+	return false
+}
+
+// ccSecretBesidesToken reports whether the key looks secret for a reason other
+// than the word "token" (password, secret, pin, otp, webhook, key ...).
+func ccSecretBesidesToken(key string) bool {
+	k := strings.ToLower(key)
+	for _, hint := range ccSecretKeyHints {
+		if hint != "token" && strings.Contains(k, hint) {
+			return true
+		}
+	}
+	for _, seg := range ccKeySegments(key) {
+		if ccSecretKeyWords[seg] {
+			return true
+		}
+	}
+	return strings.HasSuffix(k, "_key") || k == "key"
+}
+
 // ccShouldMask decides whether the value under key is replaced by the mask.
 // A secret-looking key (anything mentioning token, secret, password, ...) is
 // masked, except: a number or boolean (a token count, never a credential) and
@@ -79,7 +126,10 @@ func ccShouldMask(key string, val interface{}) bool {
 	}
 	switch val.(type) {
 	case float64, bool, json.Number, int, int64:
-		return false
+		// A number or boolean stays visible only for a token-QUANTITY key. Under
+		// password, secret, pin, otp, webhook, key, access_token ... a numeric
+		// value is still a credential (a numeric PIN or OTP) and stays masked.
+		return (!ccIsCountStyleKey(key) || ccSecretBesidesToken(key)) && !ccIsPlainTokenKey(key)
 	}
 	if s, ok := val.(string); ok && s == "" {
 		return false

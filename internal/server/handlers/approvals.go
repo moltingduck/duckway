@@ -100,10 +100,7 @@ func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		req.DurationMinutes = 1440
 	}
 
-	if req.DurationMinutes > 60*24*365 {
-		req.DurationMinutes = 60 * 24 * 365
-	}
-	if err := h.approvals.Approve(id, queries.ApprovalExpiry(time.Duration(req.DurationMinutes)*time.Minute)); err != nil {
+	if err := h.approvals.Approve(id, queries.ApprovalExpiry(time.Duration(queries.ClampApprovalMinutes(req.DurationMinutes))*time.Minute)); err != nil {
 		jsonError(w, "failed to approve", http.StatusInternalServerError)
 		return
 	}
@@ -137,6 +134,13 @@ func (h *ApprovalHandler) Reject(w http.ResponseWriter, r *http.Request) {
 // scope binds the approval to one request signature and rule records which
 // rule (and ACL layer) asked for it; both are shown on the approvals page.
 func CreatePendingApproval(approvals *queries.ApprovalQueries, placeholderID, method, path, scope, rule string) (string, error) {
+	return CreatePendingApprovalFor(approvals, placeholderID, method, path, "", "", scope, rule)
+}
+
+// CreatePendingApprovalFor also records the query string and a short body hash
+// (first 12 hex characters of the SHA-256) so the admin sees exactly what is
+// being approved. The body itself is never stored.
+func CreatePendingApprovalFor(approvals *queries.ApprovalQueries, placeholderID, method, path, query, bodyHash, scope, rule string) (string, error) {
 	id, err := svc.GenerateToken(16)
 	if err != nil {
 		return "", fmt.Errorf("generate approval ID: %w", err)
@@ -147,6 +151,12 @@ func CreatePendingApproval(approvals *queries.ApprovalQueries, placeholderID, me
 	}
 	if rule != "" {
 		info["rule"] = rule
+	}
+	if query != "" {
+		info["query"] = query
+	}
+	if bodyHash != "" {
+		info["body_hash"] = bodyHash
 	}
 	requestInfo, _ := json.Marshal(info)
 

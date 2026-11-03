@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -107,5 +108,31 @@ func TestGuardChannelActionComparesCanonicalJSON(t *testing.T) {
 	}
 	if err := g("a"); !errors.Is(err, ErrChannelNotAuthoritative) || calls != 1 {
 		t.Fatalf("semantic change must refuse: err=%v", err)
+	}
+}
+
+func TestApprovalNotificationShowsQueryAndBodyHash(t *testing.T) {
+	n := ApprovalNotification{Method: "POST", Path: "/v1/pay", Query: "mode=live", BodyHash: "abc123def456"}
+	if n.requestTarget() != "/v1/pay?mode=live" {
+		t.Fatalf("target=%q", n.requestTarget())
+	}
+	if (ApprovalNotification{Path: "/x"}).requestTarget() != "/x" || bodyLine("") != "" {
+		t.Fatal("no query / no hash must add nothing")
+	}
+	if !strings.Contains(bodyLine(n.BodyHash), "abc123def456") {
+		t.Fatalf("body line: %q", bodyLine(n.BodyHash))
+	}
+	// Discord and webhook payloads carry them: capture the telegram request text.
+	var sent string
+	nt := &Notifier{client: &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		sent = string(b)
+		return okJSON(`{}`), nil
+	})}}
+	if err := nt.sendTelegram(`{"bot_token":"1:x","chat_id":"2"}`, n); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sent, "/v1/pay?mode=live") || !strings.Contains(sent, "abc123def456") {
+		t.Fatalf("telegram text lacks query or hash: %s", sent)
 	}
 }

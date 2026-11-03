@@ -143,3 +143,23 @@ func TestPasswordChangeRevokesOtherCookiesOverHTTP(t *testing.T) {
 		t.Fatalf("pre-change current cookie: %d", rec.Code)
 	}
 }
+
+// Only DUCKWAY_PUBLIC_ORIGIN is trusted behind a Host-rewriting proxy; the
+// gateway_url setting (editable through this very API) is not.
+func TestTrustedOriginIsEnvOnlyNotGatewaySetting(t *testing.T) {
+	t.Setenv("DUCKWAY_PUBLIC_ORIGIN", "https://public.example")
+	s, shared := newClientDetailServer(t)
+	cookie := shared.AdminAuth.CreateSession("duckway", httptest.NewRequest("GET", "/", nil))
+	hdr := func(o string) map[string]string {
+		return map[string]string{"Content-Type": "application/json", "Origin": o}
+	}
+	if rec := csrfReq(s, "POST", "/api/clients", `{"name":"po-1"}`, hdr("https://public.example"), cookie); rec.Code == 403 {
+		t.Fatalf("DUCKWAY_PUBLIC_ORIGIN must be trusted: %s", rec.Body.String())
+	}
+	if _, err := s.db.Exec(`INSERT INTO settings (key, value) VALUES ('gateway_url','https://gw.example') ON CONFLICT(key) DO UPDATE SET value='https://gw.example'`); err != nil {
+		t.Fatal(err)
+	}
+	if rec := csrfReq(s, "POST", "/api/clients", `{"name":"po-2"}`, hdr("https://gw.example"), cookie); rec.Code != 403 {
+		t.Fatalf("the gateway_url setting must not be trusted: %d", rec.Code)
+	}
+}

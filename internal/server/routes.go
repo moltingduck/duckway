@@ -100,10 +100,12 @@ func (s *Server) initShared() *SharedServices {
 // SetupAdminRoutes adds admin panel + management API routes.
 func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	settingsQ := queries.NewSettingsQueries(s.db)
-	// Origins that count as the console's own when a proxy rewrites Host: the
-	// configured gateway URL and DUCKWAY_PUBLIC_ORIGIN (see middleware.SameOrigin).
+	// Origins that count as the console's own when a proxy rewrites Host:
+	// DUCKWAY_PUBLIC_ORIGIN only (see middleware.SameOrigin). The gateway URL
+	// setting is deliberately NOT trusted: it is editable through the very API
+	// this check protects.
 	middleware.SetTrustedOrigins(func() []string {
-		out := []string{settingsQ.Get(queries.SettingGatewayURL)}
+		var out []string
 		for _, o := range strings.Split(os.Getenv("DUCKWAY_PUBLIC_ORIGIN"), ",") {
 			out = append(out, strings.TrimSpace(o))
 		}

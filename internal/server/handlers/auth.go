@@ -1,9 +1,9 @@
 package handlers
 
 import (
-	"log"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -45,7 +45,12 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cookie := h.auth.CreateSession(user.Username, r)
+	cookie, err := h.auth.IssueSession(user.Username, r)
+	if err != nil {
+		log.Printf("login: cannot issue session: %v", err)
+		jsonError(w, "login unavailable: session store could not be read", http.StatusInternalServerError)
+		return
+	}
 	http.SetCookie(w, cookie)
 	clearWhatsNewCookie(w)
 	jsonResponse(w, map[string]string{"status": "ok", "username": user.Username})
@@ -103,21 +108,26 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to hash password", http.StatusInternalServerError)
 		return
 	}
-	// Revoke every session first, then change the password. If the password
-	// update then fails, the worst case is that everyone (including this tab,
-	// which is re-issued below) was signed out and the old password still
-	// works; the reverse order could leave a new password with old sessions
-	// still alive.
+	// The password and the session epoch live in different stores, so they
+	// cannot share one transaction. Change the password first, then revoke:
+	// if revocation fails the new password is already in force (the old one no
+	// longer works) and the error says other sessions may still be active.
+	if err := h.users.UpdatePassword(username, string(hash)); err != nil {
+		jsonError(w, "failed to update password", http.StatusInternalServerError)
+		return
+	}
 	if _, err := h.auth.BumpEpoch(); err != nil {
 		log.Printf("change-password: bump session epoch: %v", err)
-		jsonError(w, "could not revoke other sessions; password not changed", http.StatusInternalServerError)
+		jsonError(w, "password changed, but other sessions may still be active: they could not be signed out", http.StatusInternalServerError)
 		return
 	}
-	http.SetCookie(w, h.auth.CreateSession(username, r))
-	if err := h.users.UpdatePassword(username, string(hash)); err != nil {
-		jsonError(w, "failed to update password (other sessions were signed out)", http.StatusInternalServerError)
+	cookie, err := h.auth.IssueSession(username, r)
+	if err != nil {
+		log.Printf("change-password: re-issue session: %v", err)
+		jsonError(w, "password changed and other sessions were signed out, but this session could not be renewed: sign in again", http.StatusInternalServerError)
 		return
 	}
+	http.SetCookie(w, cookie)
 	w.Header().Set("Cache-Control", "no-store")
 	jsonResponse(w, map[string]string{"status": "ok"})
 }

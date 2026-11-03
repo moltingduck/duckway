@@ -39,20 +39,21 @@ func (h *ServiceHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name          string `json:"name"`
-		DisplayName   string `json:"display_name"`
-		UpstreamURL   string `json:"upstream_url"`
-		HostPattern   string `json:"host_pattern"`
-		AuthType      string `json:"auth_type"`
-		AuthHeader    string `json:"auth_header"`
-		AuthPrefix    string `json:"auth_prefix"`
-		KeyPrefix     string `json:"key_prefix"`
-		KeyLength     int    `json:"key_length"`
-		KeyDirectory  string `json:"key_directory"`
-		DefaultACL    string `json:"default_acl"`
-		Category      string `json:"category"`
-		UsageMetering string `json:"usage_metering"`
-		DeliveryMode  string `json:"delivery_mode"`
+		Name              string `json:"name"`
+		DisplayName       string `json:"display_name"`
+		UpstreamURL       string `json:"upstream_url"`
+		HostPattern       string `json:"host_pattern"`
+		AuthType          string `json:"auth_type"`
+		AuthHeader        string `json:"auth_header"`
+		AuthPrefix        string `json:"auth_prefix"`
+		KeyPrefix         string `json:"key_prefix"`
+		KeyLength         int    `json:"key_length"`
+		KeyDirectory      string `json:"key_directory"`
+		DefaultACL        string `json:"default_acl"`
+		Category          string `json:"category"`
+		UsageMetering     string `json:"usage_metering"`
+		DeliveryMode      string `json:"delivery_mode"`
+		AllowEncodedSlash bool   `json:"allow_encoded_slash"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -101,22 +102,23 @@ func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		deliveryMode = "proxy"
 	}
 	svc := &models.Service{
-		ID:            id,
-		Name:          req.Name,
-		DisplayName:   req.DisplayName,
-		UpstreamURL:   req.UpstreamURL,
-		HostPattern:   req.HostPattern,
-		AuthType:      req.AuthType,
-		AuthHeader:    req.AuthHeader,
-		AuthPrefix:    req.AuthPrefix,
-		KeyPrefix:     req.KeyPrefix,
-		KeyLength:     req.KeyLength,
-		KeyDirectory:  req.KeyDirectory,
-		DefaultACL:    req.DefaultACL,
-		Category:      strings.TrimSpace(req.Category),
-		UsageMetering: strings.TrimSpace(req.UsageMetering),
-		DeliveryMode:  deliveryMode,
-		IsActive:      true,
+		ID:                id,
+		Name:              req.Name,
+		DisplayName:       req.DisplayName,
+		UpstreamURL:       req.UpstreamURL,
+		HostPattern:       req.HostPattern,
+		AuthType:          req.AuthType,
+		AuthHeader:        req.AuthHeader,
+		AuthPrefix:        req.AuthPrefix,
+		KeyPrefix:         req.KeyPrefix,
+		KeyLength:         req.KeyLength,
+		KeyDirectory:      req.KeyDirectory,
+		DefaultACL:        req.DefaultACL,
+		Category:          strings.TrimSpace(req.Category),
+		UsageMetering:     strings.TrimSpace(req.UsageMetering),
+		DeliveryMode:      deliveryMode,
+		AllowEncodedSlash: req.AllowEncodedSlash,
+		IsActive:          true,
 	}
 
 	if err := h.services.Create(svc); err != nil {
@@ -147,21 +149,22 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name          *string `json:"name"`
-		DisplayName   *string `json:"display_name"`
-		UpstreamURL   *string `json:"upstream_url"`
-		HostPattern   *string `json:"host_pattern"`
-		AuthType      *string `json:"auth_type"`
-		AuthHeader    *string `json:"auth_header"`
-		AuthPrefix    *string `json:"auth_prefix"`
-		KeyPrefix     *string `json:"key_prefix"`
-		KeyLength     *int    `json:"key_length"`
-		KeyDirectory  *string `json:"key_directory"`
-		DefaultACL    *string `json:"default_acl"`
-		Category      *string `json:"category"`
-		UsageMetering *string `json:"usage_metering"`
-		DeliveryMode  *string `json:"delivery_mode"`
-		IsActive      *bool   `json:"is_active"`
+		Name              *string `json:"name"`
+		DisplayName       *string `json:"display_name"`
+		UpstreamURL       *string `json:"upstream_url"`
+		HostPattern       *string `json:"host_pattern"`
+		AuthType          *string `json:"auth_type"`
+		AuthHeader        *string `json:"auth_header"`
+		AuthPrefix        *string `json:"auth_prefix"`
+		KeyPrefix         *string `json:"key_prefix"`
+		KeyLength         *int    `json:"key_length"`
+		KeyDirectory      *string `json:"key_directory"`
+		DefaultACL        *string `json:"default_acl"`
+		Category          *string `json:"category"`
+		UsageMetering     *string `json:"usage_metering"`
+		DeliveryMode      *string `json:"delivery_mode"`
+		AllowEncodedSlash *bool   `json:"allow_encoded_slash"`
+		IsActive          *bool   `json:"is_active"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -221,6 +224,9 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		svc.DeliveryMode = *req.DeliveryMode
+	}
+	if req.AllowEncodedSlash != nil {
+		svc.AllowEncodedSlash = *req.AllowEncodedSlash
 	}
 	if req.IsActive != nil {
 		svc.IsActive = *req.IsActive

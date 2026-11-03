@@ -1,7 +1,10 @@
 package handlers_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"github.com/hackerduck/duckway/internal/server/services"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +19,7 @@ import (
 type pathRig struct {
 	f      *proxyFixture
 	do     func(method, rawPath string) int
+	notif  *countNotifier
 	doBody func(method, rawPath, body string) (int, map[string]string)
 	seen   func() []string
 }
@@ -42,8 +46,9 @@ func newPathRig(t *testing.T, acl string) *pathRig {
 			t.Fatal(err)
 		}
 	}
-	h := newProxyHandler(f)
-	return &pathRig{f: f,
+	notif := &countNotifier{}
+	h := newProxyHandler(f).WithApprovalNotifier(notif)
+	return &pathRig{f: f, notif: notif,
 		doBody: func(method, rawPath, body string) (int, map[string]string) {
 			r := httptest.NewRequest(method, "/proxy/anthropic"+rawPath, strings.NewReader(body))
 			r = withClient(r, f.client)
@@ -179,5 +184,136 @@ func TestConcurrentIdenticalApproveRequestsShareOnePending(t *testing.T) {
 	pending, _ := rig.f.approvalQ.ListPending()
 	if bad != 0 || len(pending) != 1 {
 		t.Fatalf("bad=%d pending=%d, want 0 and exactly 1", bad, len(pending))
+	}
+}
+
+func (rig *pathRig) enableEncodedSlash(t *testing.T) {
+	t.Helper()
+	svc, err := rig.f.svcQ.GetByID(rig.f.serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.AllowEncodedSlash = true
+	if err := rig.f.svcQ.Update(svc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// With the per-service flag on, %2F stays inside its segment for the ACL and
+// upstream receives the same escaped path; %5C, ? and # are still refused.
+func TestEncodedSlashAllowedPerServiceKeepsSegment(t *testing.T) {
+	const acl = `{"version":"1","provider":"anthropic","rules":[{"name":"deny exact a/b","endpoints":[
+		{"method":"GET","path":"/v1/projects/a/b","allow":false}]}]}`
+	rig := newPathRig(t, acl)
+	// Flag off (default): 400, nothing forwarded.
+	if code := rig.do("GET", "/v1/projects/a%2Fb"); code != http.StatusBadRequest {
+		t.Fatalf("flag off: %d, want 400", code)
+	}
+	if len(rig.seen()) != 0 {
+		t.Fatalf("flag off reached upstream: %v", rig.seen())
+	}
+	rig.enableEncodedSlash(t)
+	// The rule for /projects/a/b must NOT match /projects/a%2Fb (one segment).
+	if code := rig.do("GET", "/v1/projects/a%2Fb"); code != http.StatusOK {
+		t.Fatalf("a%%2Fb must not match the a/b deny rule: %d", code)
+	}
+	if got := rig.seen(); len(got) != 1 || got[0] != "GET /v1/projects/a%2Fb" {
+		t.Fatalf("upstream must receive the escaped path: %v", got)
+	}
+	// The real two-segment path is still denied.
+	if code := rig.do("GET", "/v1/projects/a/b"); code != http.StatusForbidden {
+		t.Fatalf("a/b must still be denied: %d", code)
+	}
+	// Still always refused with the flag on.
+	for _, p := range []string{"/v1/p%5Cq", "/v1/p%3Fq", "/v1/p%23q", "/v1/p%00q", "/v1/p%2Fq%0Ar"} {
+		if code := rig.do("GET", p); code != http.StatusBadRequest {
+			t.Errorf("%s with flag on: %d, want 400", p, code)
+		}
+	}
+	// A literal %2F text (from %252F) next to an encoded slash is ambiguous.
+	if code := rig.do("GET", "/v1/p%2Fq%252F"); code != http.StatusBadRequest {
+		t.Errorf("ambiguous segment: %d, want 400", code)
+	}
+}
+
+func TestEncodedSlashMatchesSingleSegmentWildcard(t *testing.T) {
+	const acl = `{"version":"1","provider":"anthropic","rules":[{"name":"only projects","endpoints":[
+		{"method":"GET","path":"/v1/projects/*","allow":true}],"deny_all_other":true}]}`
+	rig := newPathRig(t, acl)
+	rig.enableEncodedSlash(t)
+	if code := rig.do("GET", "/v1/projects/a%2Fb"); code != http.StatusOK {
+		t.Fatalf("/projects/* must match /projects/a%%2Fb: %d", code)
+	}
+	if code := rig.do("GET", "/v1/other/a%2Fb"); code != http.StatusForbidden {
+		t.Fatalf("outside the allowed prefix: %d", code)
+	}
+	if got := rig.seen(); len(got) != 1 || got[0] != "GET /v1/projects/a%2Fb" {
+		t.Fatalf("upstream saw %v", got)
+	}
+}
+
+type countNotifier struct {
+	mu    sync.Mutex
+	calls []services.ApprovalNotification
+}
+
+func (c *countNotifier) NotifyApprovalNeeded(n services.ApprovalNotification) {
+	c.mu.Lock()
+	c.calls = append(c.calls, n)
+	c.mu.Unlock()
+}
+
+func (c *countNotifier) all() []services.ApprovalNotification {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]services.ApprovalNotification(nil), c.calls...)
+}
+
+// Concurrent identical requests produce exactly one notification.
+func TestConcurrentIdenticalApproveRequestsNotifyOnce(t *testing.T) {
+	rig := newPathRig(t, approvePostsACL)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); rig.doBody("POST", "/v1/messages?q=1", `{"z":true}`) }()
+	}
+	wg.Wait()
+	if n := len(rig.notif.all()); n != 1 {
+		t.Fatalf("notifications=%d, want exactly 1", n)
+	}
+}
+
+// What the admin sees: the query string and a short body hash, in the stored
+// request_info and in the notification.
+func TestApprovalShowsQueryAndShortBodyHash(t *testing.T) {
+	rig := newPathRig(t, approvePostsACL)
+	_, m := rig.doBody("POST", "/v1/messages?mode=live&x=1", `{"amount":100}`)
+	a, err := rig.f.approvalQ.GetByID(m["approval_id"])
+	if err != nil || a.RequestInfo == nil {
+		t.Fatalf("approval: %v", err)
+	}
+	var info map[string]string
+	_ = json.Unmarshal([]byte(*a.RequestInfo), &info)
+	if info["query"] != "mode=live&x=1" || len(info["body_hash"]) != 12 || info["path"] != "/v1/messages" {
+		t.Fatalf("request_info=%v", info)
+	}
+	sum := sha256.Sum256([]byte(`{"amount":100}`))
+	if info["body_hash"] != hex.EncodeToString(sum[:])[:12] {
+		t.Fatalf("body hash is not the SHA-256 prefix: %s", info["body_hash"])
+	}
+	if strings.Contains(*a.RequestInfo, "amount") {
+		t.Fatal("the body itself must never be stored")
+	}
+	n := rig.notif.all()
+	if len(n) != 1 || n[0].Query != "mode=live&x=1" || n[0].BodyHash != info["body_hash"] {
+		t.Fatalf("notification=%+v", n)
+	}
+	// A different body changes the hash the admin sees.
+	_, m2 := rig.doBody("POST", "/v1/messages?mode=live&x=1", `{"amount":999}`)
+	a2, _ := rig.f.approvalQ.GetByID(m2["approval_id"])
+	var info2 map[string]string
+	_ = json.Unmarshal([]byte(*a2.RequestInfo), &info2)
+	if info2["body_hash"] == info["body_hash"] {
+		t.Fatal("different bodies must show different hashes")
 	}
 }
