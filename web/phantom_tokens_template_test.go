@@ -156,16 +156,15 @@ func TestClientDetailTemplateMakesClientTokenRotationDiscoverable(t *testing.T) 
 }
 
 func TestAPIKeysTemplateShowsMintableBadge(t *testing.T) {
-	body, err := Content.ReadFile("templates/api_keys.html")
+	body, err := Content.ReadFile("templates/credentials.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(body)
 	required := []string{
-		`{{if .IsRefreshable}}<span class="badge badge-green">Refreshable</span>{{end}}`,
-		`{{if .IsMintable}}<span class="badge badge-purple">Mintable</span>{{end}}`,
-		`id="d-mintable"`,
-		`k.is_mintable ? DW.html` + "`" + `<span class="badge badge-purple">Yes</span>` + "`" + ` : DW.html` + "`" + `No` + "`",
+		`k.is_mintable ? 'github-app'`,
+		`'github-app': 'GitHub App'`,
+		`data-tab="github-app"`,
 	}
 	for _, want := range required {
 		if !strings.Contains(html, want) {
@@ -175,14 +174,14 @@ func TestAPIKeysTemplateShowsMintableBadge(t *testing.T) {
 }
 
 func TestAPIKeysTemplateExplainsGitHubAppMinterSetup(t *testing.T) {
-	body, err := Content.ReadFile("templates/api_keys.html")
+	body, err := Content.ReadFile("templates/credentials.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(body)
 	required := []string{
-		`<details class="text-sm mt-1">`,
-		`<summary>Set up a GitHub App for minting tokens</summary>`,
+		`id="cr-guide"`,
+		`Set up a GitHub App for minting tokens`,
 		`https://github.com/settings/apps/new`,
 		`https://github.com/organizations/ORG/settings/apps/new`,
 		`Contents: read-only`,
@@ -194,20 +193,20 @@ func TestAPIKeysTemplateExplainsGitHubAppMinterSetup(t *testing.T) {
 		`END`,
 		`Setup URL</strong> is an optional redirect after installation; it is not a URL to enter in Duckway.`,
 		`Duckway stores it server-side and mints short-lived, scoped installation tokens.`,
-		`id="ak-ghapp-load-btn" data-action="loadGitHubAppTestRepos">Test load</button>`,
+		`id="cg-load" data-action="loadGitHubRepos">Test load</button>`,
 		`/api/keys/github-app/repositories`,
-		`id="ak-ghapp-test-repo" aria-label="Repository to test mint" disabled`,
-		`for="ak-ghapp-test-repo-search"`,
-		`id="ak-ghapp-test-repo-search" aria-label="Search loaded repositories" placeholder="Search by repository name" disabled data-on-input="renderGitHubAppTestRepos"`,
-		`function renderGitHubAppTestRepos()`,
-		`var filtered = githubAppTestRepos.filter(function(repo) { return repo.toLowerCase().indexOf(query) !== -1; });`,
+		`id="cg-repo" aria-label="Repository to test mint" disabled`,
+		`for="cg-repo-search"`,
+		`id="cg-repo-search" placeholder="Search by repository name" disabled data-on-input="renderGitHubRepos"`,
+		`function renderGitHubRepos()`,
+		`var filtered = gh.repos.filter(function(r) { return r.toLowerCase().indexOf(query) !== -1; });`,
 		`(selected; does not match search)`,
-		`select.value = selected && githubAppTestRepos.indexOf(selected) !== -1 ? selected : '';`,
-		`document.getElementById('ak-ghapp-test-repo-search').disabled = repos.length === 0;`,
+		`select.value = selected && gh.repos.indexOf(selected) !== -1 ? selected : '';`,
+		`el('cg-repo-search').disabled = repos.length === 0;`,
 		`Load repositories with the current credential and select one first.`,
-		`function isCurrentGitHubAppMintTest(credential, repo, stateVersion)`,
-		`if (!isCurrentGitHubAppMintTest(credential, repo, stateVersion)) return;`,
-		`if (isCurrentGitHubAppMintTest(credential, repo, stateVersion)) updateGitHubAppTestMintAvailability();`,
+		`function currentMintTest(credential, repo, version)`,
+		`if (!currentMintTest(credential, repo, version)) return;`,
+		`if (currentMintTest(credential, repo, version)) githubMintAvail();`,
 	}
 	for _, want := range required {
 		if !strings.Contains(html, want) {
@@ -227,8 +226,8 @@ func TestDocsExplainGitHubAppRepoScopeAssignment(t *testing.T) {
 	html := string(body)
 	required := []string{
 		"GitHub App Repo Scope",
-		"uploaded once under API Keys",
-		"shown as <strong>Mintable</strong>",
+		"uploaded once under Credentials",
+		"type <strong>GitHub App</strong>",
 		"Clients</strong> → <strong>Assign Key",
 		"repo selector",
 		"permission_config",

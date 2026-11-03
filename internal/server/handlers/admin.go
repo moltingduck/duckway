@@ -86,7 +86,7 @@ func NewAdminHandler(
 
 	// Parse each page template paired with the layout
 	pageNames := []string{
-		"dashboard", "services", "api_keys", "usage", "oauth", "phantom_tokens", "phantom_token_detail",
+		"dashboard", "services", "credentials", "usage", "phantom_tokens", "phantom_token_detail",
 		"clients", "client_detail", "client_updates", "plugins", "key_pools", "key_bundles", "approvals", "logs", "notifications", "canary", "supplychain", "settings", "docs", "cc", "onboarding", "moved",
 	}
 
@@ -248,15 +248,13 @@ func (h *AdminHandler) ServicesPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *AdminHandler) KeysPage(w http.ResponseWriter, r *http.Request) {
-	keys, _ := h.apiKeys.List("")
-	keys = h.markMintableKeys(keys)
-	svcs, _ := h.services.List()
-	h.render(w, r, "api_keys", pageData{
-		Title:    "API Keys",
-		Active:   "keys",
-		Keys:     keys,
-		Services: svcs,
+// CredentialsPage serves the single Credentials console page (static keys,
+// refreshable tokens and GitHub App credentials). Data loads from the admin
+// JSON APIs so no stored secret is ever rendered into the page.
+func (h *AdminHandler) CredentialsPage(w http.ResponseWriter, r *http.Request) {
+	h.render(w, r, "credentials", pageData{
+		Title:  "Credentials",
+		Active: "credentials",
 	})
 }
 
@@ -330,13 +328,6 @@ func (h *AdminHandler) UsagePage(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "usage", pageData{
 		Title:  "Usage",
 		Active: "usage",
-	})
-}
-
-func (h *AdminHandler) OAuthPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, r, "oauth", pageData{
-		Title:  "OAuth Tokens",
-		Active: "oauth",
 	})
 }
 

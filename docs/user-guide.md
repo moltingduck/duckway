@@ -103,10 +103,10 @@ Click any service name to view full details and edit.
 
 ### 2. Add a real API key
 
-1. Admin panel → **API Keys** → **Add API Key**
+1. Admin panel → **Credentials** → **Add credential** → **Static API key**
 2. Pick the service, give the key a label, paste the real key
 3. Duckway encrypts it (AES-256-GCM) and stores it; the plain key is never visible again
-4. Click the key name in the list to see a masked preview (`sk-pro...7890`) for verification
+4. Click the credential in the list to see a masked preview (`sk-pro...7890`) for verification; the stored secret is never shown
 
 ### 3. Register a client
 
@@ -150,8 +150,7 @@ The admin panel uses the **same pattern across all pages**: click a row's name t
 | Page | What's there | Detail / Edit fields |
 |---|---|---|
 | **Services** | Upstreams, key formats, default ACLs | Name, URL, host pattern, auth type/header/prefix, key format, ACL |
-| **API Keys** | Real keys (encrypted) | Name, masked key preview, ACL, refreshable flag, usage |
-| **Refreshable Tokens** | OAuth-style keys with refresh | Name, token endpoint, subscription info, agent display name |
+| **Credentials** | Real upstream secrets (encrypted): static keys, refreshable (OAuth) tokens, GitHub Apps. Filter by type (`?type=static\|refreshable\|github-app`) and service | Name, masked preview, health, expiry, rules, used-by list, usage; Refresh now / Upload new token for refreshable tokens |
 | **Clients** | Registered agent machines | Name, status, canary, last seen — plus expandable phantom + canary tables |
 | **Phantom Tokens** | Bindings between client + API key | Client, API key, service, env name, key path, approval, ACL |
 | **Key pools** | Pools of keys: per-request rotation (round-robin / least-used / failover) or quota-aware lease | Mode, service, strategy, ordered members, quota bars |
@@ -487,7 +486,7 @@ Refreshable token formats are provider-specific. Duckway stores the real access 
 ### Upload a Claude Code OAuth token
 
 1. On a machine where you've already done `claude login`, copy `~/.claude/.credentials.json`
-2. In the admin panel: **Refreshable Tokens** → **Upload Token**
+2. In the admin panel: **Credentials** → **Add credential** → **Refreshable token**
 3. Paste the JSON into the auto-fill box — fields populate automatically
 4. Set **Agent Display Name** (this is what agents see in their fake `~/.claude.json`, e.g. `"CI Agent Bot"`)
 5. **Upload**
@@ -519,7 +518,7 @@ Duckway refreshes the access token automatically before expiry (background job r
 
 ### Delete a refreshable token
 
-Use **Refreshable Tokens** → **Delete**. Duckway shows every affected Key bundle, client phantom token, and Control Channel before it deletes anything.
+Open the credential in **Credentials** and choose **Delete credential**. Duckway shows every affected key pool, Key Suite, client phantom token, and Control Channel before it deletes anything.
 
 When you confirm, Duckway removes Key bundle entries that pointed at the token and unassigns the affected client phantom tokens. Control Channels are not deleted; they are disabled and marked in red until you edit the Control Channel and assign a replacement bot token.
 
@@ -529,10 +528,10 @@ Before uploading, click **Test** in the upload modal to validate the pasted toke
 
 Codex has two different credential modes in Duckway:
 
-- **OpenAI Platform API key** — add this in **API Keys**. Duckway exposes it as `OPENAI_API_KEY` and routes Codex through the local Duckway proxy. This key must allow the Responses API, including `api.responses.write`.
-- **Codex OAuth token** — add this in **Refreshable Tokens**. Duckway writes a fake `~/.codex/auth.json` on clients, intercepts Codex refresh calls to `auth.openai.com`, and swaps fake OAuth tokens for real OAuth tokens only inside the gateway. Codex API calls still use the `duckway-openai` provider and `OPENAI_API_KEY` placeholder through the local proxy; when the assigned OpenAI key is OAuth/JWT-shaped, Duckway issues a JWT-shaped phantom so Codex sees an OAuth-style token locally.
+- **OpenAI Platform API key** — add this in **Credentials** as a **Static API key**. Duckway exposes it as `OPENAI_API_KEY` and routes Codex through the local Duckway proxy. This key must allow the Responses API, including `api.responses.write`.
+- **Codex OAuth token** — add this in **Credentials** as a **Refreshable token**. Duckway writes a fake `~/.codex/auth.json` on clients, intercepts Codex refresh calls to `auth.openai.com`, and swaps fake OAuth tokens for real OAuth tokens only inside the gateway. Codex API calls still use the `duckway-openai` provider and `OPENAI_API_KEY` placeholder through the local proxy; when the assigned OpenAI key is OAuth/JWT-shaped, Duckway issues a JWT-shaped phantom so Codex sees an OAuth-style token locally.
 
-Codex stores ChatGPT-login credentials in `~/.codex/auth.json` after `codex login`. Select the OpenAI service in **Refreshable Tokens** → **Upload Token**, then paste the whole file into the auto-fill box.
+Codex stores ChatGPT-login credentials in `~/.codex/auth.json` after `codex login`. Select the OpenAI service in **Credentials** → **Add credential** → **Refreshable token**, then paste the whole file into the auto-fill box.
 
 Commands:
 
@@ -712,7 +711,7 @@ Duckway can now discover servers and categories from the saved bot token, so you
 
 ### Admin one-time setup (in duckway)
 
-1. **API Keys** → add the bot token from step 1 above. Pick service `discord`, paste the token.
+1. **Credentials** → add the bot token from step 1 above. Pick service `discord`, paste the token.
 2. **Control Channels** → **New CC** →
    - **Name** — anything you'll recognise (e.g. "Project Alpha CC").
    - **Client** — the duckway client this CC belongs to.

@@ -171,7 +171,7 @@ func TestCSPRatchetRawPatternSamples(t *testing.T) {
 }
 
 func TestCSPRatchetFleetTemplatesStillCarryScripts(t *testing.T) {
-	for _, name := range []string{"clients.html", "client_detail.html", "client_updates.html", "onboarding.html", "cc.html", "approvals.html", "notifications.html", "key_pools.html", "key_bundles.html"} {
+	for _, name := range []string{"clients.html", "client_detail.html", "client_updates.html", "onboarding.html", "cc.html", "approvals.html", "notifications.html", "key_pools.html", "key_bundles.html", "credentials.html"} {
 		b, err := Content.ReadFile("templates/" + name)
 		if err != nil {
 			t.Fatal(err)

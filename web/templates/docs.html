@@ -88,7 +88,7 @@ duckway init</code></pre>
   <ol>
     <li>Login — credentials shown in server log on first run (dev mode: <code>duckway/duckway</code>)</li>
     <li>Default services pre-configured: OpenAI, Anthropic, xAI/Grok, GitHub, Discord, Telegram</li>
-    <li><strong>API Keys</strong> → add your real keys (encrypted at rest)</li>
+    <li><strong>Credentials</strong> → add your real keys (encrypted at rest)</li>
     <li><strong>Clients</strong> → register a machine → copy the full setup command</li>
     <li>Assign keys to the client → phantom tokens auto-generated</li>
     <li>Optionally: set ACL, configure canary tokens, add notification channels</li>
@@ -109,7 +109,7 @@ duckway init</code></pre>
     <tr><td><strong>Default ACL</strong></td><td>Service-level access control — applies to all keys unless overridden</td></tr>
   </table>
   </div>
-  <p class="mt-1"><strong>API Keys</strong> are your real credentials, stored AES-256-GCM encrypted. Each key can have its own ACL. Edit name, rotate the key value, or change ACL from the API Keys page.</p>
+  <p class="mt-1"><strong>Credentials</strong> (static API keys, refreshable tokens and GitHub Apps) are your real secrets, stored AES-256-GCM encrypted. Each key can have its own ACL. Edit name, rotate the key value, or change rules from the Credentials page.</p>
   <p class="mt-1">For Grok Build, add the real xAI API key under service <code>xai</code> and assign it to clients as <code>XAI_API_KEY</code>. <code>duckway sync</code> writes the phantom token into <code>~/.grok/config.toml</code> for <code>grok-4.5</code>; Grok traffic to <code>cli-chat-proxy.grok.com</code> then routes through Duckway and the real key stays server-side.</p>
 </div>
 
@@ -204,7 +204,7 @@ duckway init</code></pre>
   </div>
 
   <h4 class="mt-1">GitHub App Repo Scope</h4>
-  <p>GitHub App installation minter keys are uploaded once under API Keys and shown as <strong>Mintable</strong>. Repo access is assigned directly from <strong>Clients</strong> → <strong>Assign Key</strong>: choose the GitHub App minter key, select available repositories from the repo selector when Duckway can list them, or enter allowed repositories manually as <code>OWNER/REPO</code>, then pick deploy pull-only or development pull/push mode.</p>
+  <p>GitHub App installation minter keys are uploaded once under Credentials (type <strong>GitHub App</strong>). Repo access is assigned directly from <strong>Clients</strong> → <strong>Assign Key</strong>: choose the GitHub App minter key, select available repositories from the repo selector when Duckway can list them, or enter allowed repositories manually as <code>OWNER/REPO</code>, then pick deploy pull-only or development pull/push mode.</p>
   <p class="text-sm text-muted">Duckway stores this as the placeholder's <code>permission_config</code>. The proxy checks the ACL before minting and then asks GitHub for a short-lived installation token scoped only to the repository parsed from the Git/API path.</p>
 
   <h4 class="mt-1">Refreshable Token Upload Formats</h4>
@@ -371,7 +371,7 @@ curl https://api.openai.com/v1/chat/completions ...
 
   <h4 class="mt-1">Admin one-time setup (in duckway)</h4>
   <ol>
-    <li><strong>API Keys</strong> → add the bot token from above. Service <code>discord</code>.</li>
+    <li><strong>Credentials</strong> → add the bot token from above. Service <code>discord</code>.</li>
     <li><strong>Control Channels</strong> → <strong>New CC</strong> → fill name + pick client + agent type (<code>claude_code</code>, <code>codex</code>, or <code>openclaw</code>) + the bot, then use the Discord setup wizard to invite/load/select the server and category. On save, duckway provisions <code>&lt;client&gt;-control</code> under the category and issues a phantom bot token bound to that client. If a step fails, the create rolls back and tells you which one.</li>
     <li>Click into the CC → <strong>Test (create + delete channel)</strong> to verify the bot can do its job before pointing real workloads at it.</li>
     <li>Clients with a CC show a one-line summary on their detail page; the full state (channels, sessions) lives on the CC detail.</li>

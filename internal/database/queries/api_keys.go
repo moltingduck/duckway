@@ -18,6 +18,27 @@ type RefreshableDeleteImpact struct {
 	KeySuites       []RefreshableKeySuiteImpact  `json:"key_suites"`
 	Clients         []RefreshableClientImpact    `json:"clients"`
 	ControlChannels []RefreshableControlCCImpact `json:"control_channels"`
+	// Pools lists key pools (legacy per-request rotation groups and
+	// quota-aware lease groups) that include this credential as a member.
+	Pools []KeyPoolImpact `json:"pools"`
+	// Kind is "refreshable" or "static".
+	Kind string `json:"kind,omitempty"`
+}
+
+// KeyPoolImpact is one key pool membership removed when a credential is deleted.
+type KeyPoolImpact struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Mode is "rotation" (legacy api_key_groups) or "lease" (key_groups).
+	Mode string `json:"mode"`
+}
+
+// KeyUsedBy counts the resources that reference one credential.
+type KeyUsedBy struct {
+	Tokens          int `json:"tokens"`
+	Bundles         int `json:"bundles"`
+	Pools           int `json:"pools"`
+	ControlChannels int `json:"control_channels"`
 }
 
 type RefreshableKeySuiteImpact struct {
@@ -162,17 +183,31 @@ func (q *APIKeyQueries) DeleteWithControlChannelCleanup(id string) error {
 }
 
 func (q *APIKeyQueries) RefreshableDeleteImpact(id string) (*RefreshableDeleteImpact, error) {
+	return q.deleteImpact(id, true)
+}
+
+// KeyDeleteImpact previews the blast radius of deleting any credential
+// (static, refreshable or GitHub App) without changing anything.
+func (q *APIKeyQueries) KeyDeleteImpact(id string) (*RefreshableDeleteImpact, error) {
+	return q.deleteImpact(id, false)
+}
+
+func (q *APIKeyQueries) deleteImpact(id string, requireRefreshable bool) (*RefreshableDeleteImpact, error) {
 	key, err := q.GetByID(id)
 	if err != nil {
 		return nil, err
 	}
-	if !key.IsRefreshable {
+	if requireRefreshable && !key.IsRefreshable {
 		return nil, fmt.Errorf("not a refreshable key")
 	}
 	impact := &RefreshableDeleteImpact{
 		KeyID:       key.ID,
 		KeyName:     key.Name,
 		ServiceName: key.ServiceName,
+		Kind:        "static",
+	}
+	if key.IsRefreshable {
+		impact.Kind = "refreshable"
 	}
 
 	suiteRows, err := q.db.Query(`
@@ -241,11 +276,83 @@ func (q *APIKeyQueries) RefreshableDeleteImpact(id string) (*RefreshableDeleteIm
 		return nil, err
 	}
 
+	poolRows, err := q.db.Query(`
+		SELECT g.id, g.name, 'rotation' FROM api_key_group_members m JOIN api_key_groups g ON g.id = m.group_id WHERE m.api_key_id = ?
+		UNION ALL
+		SELECT g.id, g.name, 'lease' FROM key_group_members m JOIN key_groups g ON g.id = m.group_id WHERE m.api_key_id = ?
+		ORDER BY 2`, id, id)
+	if err != nil {
+		return nil, err
+	}
+	defer poolRows.Close()
+	for poolRows.Next() {
+		var row KeyPoolImpact
+		if err := poolRows.Scan(&row.ID, &row.Name, &row.Mode); err != nil {
+			return nil, err
+		}
+		impact.Pools = append(impact.Pools, row)
+	}
+	if err := poolRows.Err(); err != nil {
+		return nil, err
+	}
+
 	return impact, nil
 }
 
+// UsedByCounts returns, per credential id, how many phantom tokens, bundle
+// entries, pool memberships and control channels reference it.
+func (q *APIKeyQueries) UsedByCounts() (map[string]KeyUsedBy, error) {
+	out := map[string]KeyUsedBy{}
+	run := func(query string, set func(u *KeyUsedBy, n int)) error {
+		rows, err := q.db.Query(query)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			var n int
+			if err := rows.Scan(&id, &n); err != nil {
+				return err
+			}
+			u := out[id]
+			set(&u, n)
+			out[id] = u
+		}
+		return rows.Err()
+	}
+	if err := run(`SELECT api_key_id, COUNT(*) FROM placeholder_keys WHERE api_key_id IS NOT NULL GROUP BY api_key_id`, func(u *KeyUsedBy, n int) { u.Tokens = n }); err != nil {
+		return nil, err
+	}
+	if err := run(`SELECT api_key_id, COUNT(*) FROM key_suite_entries WHERE api_key_id IS NOT NULL GROUP BY api_key_id`, func(u *KeyUsedBy, n int) { u.Bundles = n }); err != nil {
+		return nil, err
+	}
+	if err := run(`SELECT api_key_id, CAST(SUM(n) AS INTEGER) FROM (
+		SELECT api_key_id, COUNT(*) AS n FROM api_key_group_members GROUP BY api_key_id
+		UNION ALL
+		SELECT api_key_id, COUNT(*) AS n FROM key_group_members GROUP BY api_key_id) u GROUP BY api_key_id`, func(u *KeyUsedBy, n int) { u.Pools = n }); err != nil {
+		return nil, err
+	}
+	if err := run(`SELECT api_key_id, COUNT(*) FROM control_channels WHERE api_key_id <> '' GROUP BY api_key_id`, func(u *KeyUsedBy, n int) { u.ControlChannels = n }); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (q *APIKeyQueries) DeleteRefreshableWithCleanup(id string) (*RefreshableDeleteImpact, error) {
-	impact, err := q.RefreshableDeleteImpact(id)
+	return q.deleteWithCleanup(id, true)
+}
+
+// DeleteKeyWithCleanup deletes any credential after the caller showed the
+// impact preview: bundle entries, pool memberships and phantom tokens that
+// reference it are removed and control channels are disabled with a retained
+// inactive key reference.
+func (q *APIKeyQueries) DeleteKeyWithCleanup(id string) (*RefreshableDeleteImpact, error) {
+	return q.deleteWithCleanup(id, false)
+}
+
+func (q *APIKeyQueries) deleteWithCleanup(id string, requireRefreshable bool) (*RefreshableDeleteImpact, error) {
+	impact, err := q.deleteImpact(id, requireRefreshable)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +367,7 @@ func (q *APIKeyQueries) DeleteRefreshableWithCleanup(id string) (*RefreshableDel
 	if err := tx.QueryRow(`SELECT refresh_token FROM api_keys WHERE id = ?`, id).Scan(&refreshToken); err != nil {
 		return nil, err
 	}
-	if refreshToken == "" {
+	if requireRefreshable && refreshToken == "" {
 		return nil, fmt.Errorf("not a refreshable key")
 	}
 
@@ -289,12 +396,16 @@ func (q *APIKeyQueries) DeleteRefreshableWithCleanup(id string) (*RefreshableDel
 		if _, err := tx.Exec(`UPDATE control_channels SET is_active = 0 WHERE api_key_id = ?`, id); err != nil {
 			return nil, fmt.Errorf("disable control channels: %w", err)
 		}
+		retainedName := "Deleted refreshable token: " + impact.KeyName
+		if impact.Kind != "refreshable" {
+			retainedName = "Deleted API key: " + impact.KeyName
+		}
 		if _, err := tx.Exec(`
 			UPDATE api_keys
 			SET name = ?, key_encrypted = '', refresh_token = '', expires_at = 0,
 			    token_endpoint = '', subscription_info = '', usage_snapshot = '',
 			    is_active = 0
-			WHERE id = ?`, "Deleted refreshable token: "+impact.KeyName, id); err != nil {
+			WHERE id = ?`, retainedName, id); err != nil {
 			return nil, fmt.Errorf("disable retained key reference: %w", err)
 		}
 	} else {

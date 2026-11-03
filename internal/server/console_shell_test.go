@@ -140,10 +140,10 @@ func TestEveryAdminPageRendersWithNonceAndShell(t *testing.T) {
 	}
 	exec(`INSERT INTO clients (id, short_id, name, token_hash) VALUES ('c-shell', 'shell1', 'shell client', 'h')`)
 	paths := []string{
-		"/admin/clients/c-shell", "/admin/", "/admin/services", "/admin/keys", "/admin/usage", "/admin/phantom-tokens",
+		"/admin/clients/c-shell", "/admin/", "/admin/services", "/admin/credentials", "/admin/usage", "/admin/phantom-tokens",
 		"/admin/clients", "/admin/clients/rollouts", "/admin/key-pools",
 		"/admin/key-pools?pool=lease:" + g.ID, "/admin/key-bundles", "/admin/approvals", "/admin/logs",
-		"/admin/notifications", "/admin/canary", "/admin/oauth", "/admin/cc", "/admin/clients/new",
+		"/admin/notifications", "/admin/canary", "/admin/credentials?type=refreshable", "/admin/cc", "/admin/clients/new",
 		"/admin/settings", "/admin/supply-chain", "/admin/docs", "/admin/plugins",
 	}
 	for _, p := range paths {
