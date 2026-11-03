@@ -122,13 +122,35 @@
   // the key means "undo typing".
   document.addEventListener('keydown', (e) => {
     if (!((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z'))) return;
+    if (e.repeat) return; // holding the keys must not fire Undo repeatedly
+    // Never undo "behind" an open dialog (the dialog's own context wins). A surface that
+    // is itself the place where the undoable change was made (a drawer) opts in with data-undo-ok.
+    const top = stack[stack.length - 1];
+    if (top && !top.hasAttribute('data-undo-ok')) return;
+    if (!top && document.querySelector('.modal-backdrop:not([hidden])[style*="flex"]')) return;
     const a = document.activeElement;
+    const ab = a && a.closest && a.closest('.modal-backdrop');
+    if (ab && !ab.hasAttribute('data-undo-ok')) return;
     if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return;
     const btns = document.querySelectorAll('#toast .toast-undo');
     if (!btns.length) return;
     e.preventDefault();
     btns[btns.length - 1].click();
   });
+
+  // "Skip to notifications" exists only while a toast does. It is a button that moves
+  // focus without touching the URL hash (pages such as Settings use the hash for state).
+  function syncSkipToast() {
+    const b = document.getElementById('skip-toast');
+    const box = document.getElementById('toast');
+    if (b) b.hidden = !(box && box.children.length);
+  }
+  actions.skipToToast = () => {
+    const box = document.getElementById('toast');
+    if (!box) return;
+    const f = box.querySelector('button') || box;
+    f.focus();
+  };
 
   function toast(msg, opts) {
     let box = document.getElementById('toast');
@@ -158,6 +180,7 @@
       // keep keyboard focus somewhere sensible when the focused button disappears
       const hadFocus = el.contains(document.activeElement);
       el.remove();
+      syncSkipToast();
       if (hadFocus && document.body) document.body.focus && document.body.focus();
     }
     function arm() { if (dur > 0 && !done) { if (timer) clearTimeout(timer); timer = setTimeout(dismiss, dur); } }
@@ -172,8 +195,8 @@
         dismiss();
         try {
           const r = fn();
-          if (r && typeof r.catch === 'function') r.catch((err) => console.error('DW toast undo:', err));
-        } catch (err) { console.error('DW toast undo:', err); }
+          if (r && typeof r.catch === 'function') r.catch((err) => { console.error('DW toast undo:', err); toast('Undo failed', { kind: 'error' }); });
+        } catch (err) { console.error('DW toast undo:', err); toast('Undo failed', { kind: 'error' }); }
       });
       el.appendChild(b);
     }
@@ -193,6 +216,7 @@
     el.dismiss = dismiss;
     el.setText = (s) => { text.textContent = s; };
     box.appendChild(el);
+    syncSkipToast();
     arm();
     return el;
   }
@@ -389,23 +413,8 @@
     box.style.left = left + 'px';
     box.style.top = top + 'px';
   }
-  // The popover is not focusable, so its definition is also announced through a
-  // visually hidden status region (no reliance on aria-describedby alone).
-  function termAnnounce(text) {
-    let r = document.getElementById('dw-term-status');
-    if (!r) {
-      r = document.createElement('div');
-      r.id = 'dw-term-status';
-      r.className = 'sr-only';
-      r.setAttribute('role', 'status');
-      document.body.appendChild(r);
-    }
-    r.textContent = '';
-    if (text) setTimeout(() => { r.textContent = text; }, 30);
-  }
   function closeTerm(returnFocus) {
     if (!termPop) return;
-    termAnnounce('');
     const b = termBtn;
     termPop.remove();
     termPop = null; termBtn = null;
@@ -432,7 +441,6 @@
     pop.appendChild(h); pop.appendChild(p);
     document.body.appendChild(pop);
     termPop = pop; termBtn = btn;
-    termAnnounce(t.term + ': ' + t.def);
     btn.setAttribute('aria-expanded', 'true');
     btn.setAttribute('aria-describedby', pop.id);
     placeFixed(pop, btn, 6);
@@ -488,8 +496,13 @@
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => initMenus());
   else initMenus();
+  // Rescan only when an added node is, or contains, a More menu (not on every DOM change).
   new MutationObserver((muts) => {
-    for (const m of muts) if (m.addedNodes.length) { initMenus(); break; }
+    for (const m of muts) {
+      for (const n of m.addedNodes) {
+        if (n.nodeType === 1 && ((n.matches && n.matches('details.more-menu')) || (n.querySelector && n.querySelector('details.more-menu')))) { initMenus(); return; }
+      }
+    }
   }).observe(document.documentElement, { childList: true, subtree: true });
   document.addEventListener('toggle', (e) => {
     const d = e.target;

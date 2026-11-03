@@ -810,7 +810,7 @@ pre code, pre kbd, pre samp { overflow-wrap: normal; word-break: normal; }
 .lg-dl dd { overflow-wrap: anywhere; }
 .lg-nocap { padding: 0.75rem; border: 1px dashed var(--line); border-radius: var(--radius); }
 .lg-detail h3 { margin: 0.75rem 0 0.375rem; }
-.lg-body { white-space: pre-wrap; background: var(--bg-input); padding: 0.5rem; border-radius: 4px; max-height: 18rem; overflow: auto; }
+.lg-body { white-space: pre-wrap; background: var(--track); padding: 0.5rem; border-radius: 4px; max-height: 18rem; overflow: auto; }
 .lg-scrim { display: none; }
 @media (max-width: 900px) {
   .lg-split { grid-template-columns: minmax(0, 1fr); }
@@ -1122,7 +1122,7 @@ a.ro-stat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .cd-modal-wide { max-width: 960px; width: min(96vw, 960px); }
 .cd-acl-templates { display: flex; flex-wrap: wrap; gap: 0.25rem; }
 .cd-acl-text { min-height: 100px; font-family: var(--mono); font-size: 0.75rem; }
-.cd-pre { white-space: pre-wrap; background: var(--bg-input); padding: 0.75rem; border-radius: var(--radius); font-family: var(--mono); font-size: 0.8125rem; }
+.cd-pre { white-space: pre-wrap; background: var(--track); padding: 0.75rem; border-radius: var(--radius); font-family: var(--mono); font-size: 0.8125rem; }
 .cd-detail-git { margin-top: 1rem; border-top: 1px solid var(--line); padding-top: 0.75rem; }
 .cd-detail-git[hidden], .cd-repo-scope[hidden], #assign-preview[hidden] { display: none; }
 .cd-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
@@ -1673,7 +1673,7 @@ a.pt-layer:hover { border-color: var(--accent); color: var(--ink); }
 .cr-pem { min-height: 9rem; }
 textarea.cr-masked { -webkit-text-security: disc; text-security: disc; }
 .cr-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 0.75rem; align-items: start; }
-.cr-cmdhelp { display: block; white-space: pre-wrap; padding: 0.75rem; overflow: auto; background: var(--bg-input); border-radius: var(--radius); }
+.cr-cmdhelp { display: block; white-space: pre-wrap; padding: 0.75rem; overflow: auto; background: var(--track); border-radius: var(--radius); }
 .cr-ghtest { border: 1px solid var(--line); border-radius: var(--radius); padding: 0.75rem; margin-bottom: 0.75rem; }
 .cr-guide { padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.6rem; font-size: 0.875rem; }
 input[type="date"], input[type="search"] { width: 100%; padding: 0.5rem 0.75rem; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 0.875rem; }
@@ -1962,7 +1962,7 @@ textarea.st-mono { white-space: pre; overflow-x: auto; width: 100%; }
 .dc-sec h2 { font-size: 1.25rem; margin: 0 0 0.75rem; }
 .dc-sec h3 { font-size: 1rem; margin: 0 0 0.5rem; }
 .dc-codewrap { position: relative; margin: 0.5rem 0; }
-.dc-pre { background: var(--bg-input); padding: 0.75rem 4.5rem 0.75rem 0.75rem; border-radius: var(--radius); font-size: 0.8rem; line-height: 1.5; overflow-x: auto; max-width: 100%; margin: 0; }
+.dc-pre { background: var(--track); padding: 0.75rem 4.5rem 0.75rem 0.75rem; border-radius: var(--radius); font-size: 0.8rem; line-height: 1.5; overflow-x: auto; max-width: 100%; margin: 0; }
 #architecture .dc-pre { font-size: 0.75rem; }
 .dc-pre:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .dc-copy { position: absolute; top: 0.4rem; right: 0.4rem; min-width: 4rem; min-height: 2.25rem; justify-content: center; }
@@ -2034,7 +2034,7 @@ textarea.st-mono { white-space: pre; overflow-x: auto; width: 100%; }
 }
 
 /* ---- Usage snapshot / ACL preview (formerly inline styles) ---- */
-.usage-snap { background: var(--bg-input); padding: 0.75rem; }
+.usage-snap { background: var(--track); padding: 0.75rem; }
 .usage-snap-table { width: 100%; font-size: 0.85rem; }
 .usage-bar { display: block; width: 100%; height: 6px; margin-top: 3px; border: 0; border-radius: 3px; overflow: hidden; appearance: none; -webkit-appearance: none; background: var(--line); }
 .usage-bar::-webkit-progress-bar { background: var(--line); }

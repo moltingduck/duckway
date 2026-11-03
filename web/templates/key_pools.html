@@ -77,7 +77,7 @@
 </div>
 
 <!-- Pool detail drawer -->
-<div id="kp-drawer" class="modal-backdrop kp-drawer-bd" hidden>
+<div id="kp-drawer" class="modal-backdrop kp-drawer-bd" data-undo-ok hidden>
   <div class="modal kp-drawer" aria-labelledby="kp-d-title">
     <div class="kp-drawer-head">
       <div class="kp-d-titlebox">
@@ -554,7 +554,15 @@
       else {
         announceOrder(movedName + (isUndo ? ' order restored' : ' moved to position ' + pos + ' of ' + ids.length));
         // Undo (button or Ctrl/Cmd+Z) puts the previous order back.
-        if (!isUndo) DW.toast('Order saved', {undo: function () { var cp = curPool(); if (cp) return saveOrder(cp, before, movedKey, null, true); }});
+        if (!isUndo) {
+          // Undo is bound to THIS pool (kind + id), never to whichever pool is selected later.
+          var poolKind = p.kind, poolId = p.id, poolName = p.name;
+          DW.toast('Order saved', {undo: function () {
+            var target = findPool(poolKind, poolId);
+            if (!target) { DW.toast('Could not undo: pool ' + poolName + ' no longer exists', 'error'); return; }
+            return saveOrder(target, before, movedKey, null, true);
+          }});
+        }
       }
       return loadAll();
     }).then(function () { if (onDone) onDone(); });

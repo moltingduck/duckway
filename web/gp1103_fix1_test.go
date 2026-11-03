@@ -9,7 +9,7 @@ import (
 
 func TestUndoIsUsedAndKeyboardReachable(t *testing.T) {
 	for _, f := range []struct{ file, want string }{
-		{"templates/key_pools.html", "undo: function () { var cp = curPool()"},
+		{"templates/key_pools.html", "var target = findPool(poolKind, poolId)"},
 		{"templates/notifications.html", "undo: function () { return setActive(id, prev, true)"},
 		{"templates/supplychain.html", "undo: function() { return setMitigation("},
 	} {
@@ -18,7 +18,7 @@ func TestUndoIsUsedAndKeyboardReachable(t *testing.T) {
 		}
 	}
 	dw := readWeb(t, "static/dw.js")
-	for _, want := range []string{"(e.ctrlKey || e.metaKey)", "#toast .toast-undo", "Undo (", "o.dismiss"} {
+	for _, want := range []string{"(e.ctrlKey || e.metaKey)", "#toast .toast-undo", "Undo (", "o.dismiss", "if (e.repeat) return", "data-undo-ok", "stack[stack.length - 1]", "toast('Undo failed'"} {
 		if !strings.Contains(dw, want) {
 			t.Errorf("dw.js missing %q", want)
 		}
@@ -27,8 +27,11 @@ func TestUndoIsUsedAndKeyboardReachable(t *testing.T) {
 		t.Error("the live retry toast needs a Dismiss button")
 	}
 	layout := readWeb(t, "templates/layout.html")
-	if !strings.Contains(layout, `href="#toast"`) || !strings.Contains(layout, `id="toast" tabindex="-1"`) {
-		t.Error("layout needs a skip link to the focusable toast region")
+	if !strings.Contains(layout, `data-action="skipToToast" hidden`) || !strings.Contains(layout, `id="toast" tabindex="-1"`) {
+		t.Error("layout needs a skip button (hidden until a toast exists) for the focusable toast region")
+	}
+	if !strings.Contains(dw, "syncSkipToast") || strings.Contains(layout, `href="#toast"`) {
+		t.Error("the notifications skip control must not change the URL hash")
 	}
 }
 
@@ -71,8 +74,10 @@ func TestTermHintsAreOutsideHeadingNames(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(readWeb(t, "static/dw.js"), "dw-term-status") {
-		t.Error("opening a hint must announce the definition through a status region")
+	dw := readWeb(t, "static/dw.js")
+	// Announced once: through aria-describedby only (no second status-region announcement).
+	if strings.Contains(dw, "dw-term-status") || !strings.Contains(dw, "setAttribute('aria-describedby', pop.id)") {
+		t.Error("a hint is announced once, via aria-describedby")
 	}
 }
 
@@ -92,6 +97,13 @@ func TestTrackTokenReplacesRaisedFills(t *testing.T) {
 		}
 		t.Errorf("var(--raised) used as a fill on a surface (use --track): %.100s", s)
 	}
+	for _, sel := range []string{".lg-body {", ".cd-pre {", ".cr-cmdhelp {", ".dc-pre {", ".usage-snap {"} {
+		for _, line := range strings.Split(css, "\n") {
+			if strings.HasPrefix(line, sel) && !strings.Contains(line, "var(--track)") {
+				t.Errorf("borderless panel %s must be tinted with --track: %.90s", sel, line)
+			}
+		}
+	}
 	if !strings.Contains(css, `.crumbs li + li::before { content: "/";`) {
 		t.Error("breadcrumb separator must be plain content")
 	}
@@ -109,9 +121,29 @@ func TestOverviewLiveWordingFollowsTransport(t *testing.T) {
 
 func TestSettingsHasRequestLogRetention(t *testing.T) {
 	html := readWeb(t, "templates/settings.html")
-	for _, want := range []string{`id="s-log-retention"`, "request_log_retention_days", "1 to 3650"} {
+	for _, want := range []string{`id="s-log-retention"`, "request_log_retention_days", "7 to 3650", "Keep forever (not set)", "next hourly cleanup"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("settings missing %q", want)
 		}
+	}
+}
+
+func TestRound2FrontendContracts(t *testing.T) {
+	dw := readWeb(t, "static/dw.js")
+	if !strings.Contains(dw, "n.querySelector('details.more-menu')") || strings.Contains(dw, "if (m.addedNodes.length) { initMenus(); break; }") {
+		t.Error("the More-menu observer must rescan only when a menu was added")
+	}
+	settings := readWeb(t, "templates/settings.html")
+	for _, want := range []string{"function show(sec, fromHash)", "if (fromHash) return;", "show(location.hash.slice(1), true)", "applies at the next hourly cleanup", "doneRetention"} {
+		if !strings.Contains(strings.ToLower(settings), strings.ToLower(want)) {
+			t.Errorf("settings missing %q", want)
+		}
+	}
+	if strings.Contains(settings, "retention saved. Clients") {
+		t.Error("the retention copy must not claim clients pick it up")
+	}
+	docs := readWeb(t, "templates/docs.html")
+	if !strings.Contains(docs, "Keep forever (not set)") {
+		t.Error("docs Upgrade notes must explain the unset retention")
 	}
 }

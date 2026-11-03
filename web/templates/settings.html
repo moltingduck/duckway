@@ -39,8 +39,8 @@
         </div>
         <div class="form-group">
           <label for="s-log-retention">Request log retention (days)</label>
-          <input type="number" id="s-log-retention" data-sec="gateway" data-on-input="stInput" data-on-change="stInput" placeholder="90" min="1" max="3650" inputmode="numeric" aria-describedby="s-log-retention-hint s-log-retention-err">
-          <p class="text-sm text-muted" id="s-log-retention-hint">Request log rows older than this are deleted automatically (1 to 3650 days). Default: 90.</p>
+          <input type="number" id="s-log-retention" data-sec="gateway" data-on-input="stInput" data-on-change="stInput" placeholder="Keep forever (not set)" min="7" max="3650" inputmode="numeric" aria-describedby="s-log-retention-hint s-log-retention-err">
+          <p class="text-sm text-muted" id="s-log-retention-hint">Request log rows older than this many days are deleted (7 to 3650). Empty means "Keep forever (not set)": nothing is deleted. Suggested: 90. Applies at the next hourly cleanup, not through client sync.</p>
           <p class="st-err" id="s-log-retention-err" role="status" hidden></p>
         </div>
         <div class="st-bar">
@@ -135,7 +135,7 @@
   var MAXSCRIPT = 64 * 1024;
   var SAMPLE = { workspace: { current_dir: '/home/agent/projects/api' }, model: { display_name: 'Claude' }, rate_limits: { five_hour: { used_percentage: 42, resets_at: 1767225600 }, seven_day: { used_percentage: 18, resets_at: 1767571200 } } };
   var SECS = {
-    gateway: { fields: { 's-gateway-url': 'gateway_url', 's-proxy-port': 'proxy_port', 's-log-retention': 'request_log_retention_days' }, defaults: { proxy_port: '18080', request_log_retention_days: '90' }, done: 'Gateway settings saved. Clients pick them up on their next sync.' },
+    gateway: { fields: { 's-gateway-url': 'gateway_url', 's-proxy-port': 'proxy_port', 's-log-retention': 'request_log_retention_days' }, defaults: { proxy_port: '18080' }, done: 'Gateway settings saved. Clients pick them up on their next sync.', doneRetention: 'Log retention saved. It applies at the next hourly cleanup.', doneBoth: 'Gateway settings saved. Clients pick up the gateway URL and port on their next sync; log retention applies at the next hourly cleanup.' },
     approvals: { fields: { 's-approval-ttl': 'approval_request_ttl_minutes' }, defaults: { approval_request_ttl_minutes: '60' }, done: 'Approval timeout saved.' },
     statusline: { fields: { 's-statusline-script': 'agent_statusline_script' }, defaults: {}, done: 'Statusline saved. Agents pick it up on their next `duckway sync`.' },
     password: { fields: { 'cp-current': null, 'cp-new': null, 'cp-new2': null }, defaults: {} }
@@ -167,8 +167,8 @@
       return '';
     },
     's-log-retention': function (v) {
-      v = v.trim(); if (!v) return 'Enter a number of days, for example 90.';
-      if (!/^\d+$/.test(v) || +v < 1 || +v > 3650) return 'Use a whole number of days from 1 to 3650.';
+      v = v.trim(); if (!v) return ''; // empty = keep everything
+      if (!/^\d+$/.test(v) || +v < 7 || +v > 3650) return 'Use a whole number of days from 7 to 3650, or leave it empty to keep everything.';
       return '';
     },
     's-approval-ttl': function (v) {
@@ -305,6 +305,9 @@
           refresh(sec); say(sec, 'Not saved: ' + (res.j.error || 'request failed'));
           return;
         }
+        var changed = Object.keys(SECS[sec].fields).filter(function (id) { return (sent[id] || '') !== (base[id] || ''); });
+        var onlyRetention = changed.length > 0 && changed.every(function (id) { return id === 's-log-retention'; });
+        var withRetention = changed.indexOf('s-log-retention') >= 0;
         Object.keys(SECS[sec].fields).forEach(function (id) {
           // Baseline is what was submitted. Text typed while the request was in flight stays and counts as unsaved.
           var submitted = sec === 'password' ? '' : sent[id];
@@ -315,7 +318,7 @@
         });
         refresh(sec);
         // Keep the "Unsaved changes" marker when text typed during the save is still pending.
-        if (!isDirty(sec)) say(sec, sec === 'password' ? 'Password changed. Every other signed-in session was signed out; this one stays signed in.' : SECS[sec].done);
+        if (!isDirty(sec)) say(sec, sec === 'password' ? 'Password changed. Every other signed-in session was signed out; this one stays signed in.' : (sec === 'gateway' && onlyRetention ? SECS.gateway.doneRetention : (sec === 'gateway' && withRetention ? SECS.gateway.doneBoth : SECS[sec].done)));
       }).catch(function (e) { busy[sec] = false; refresh(sec); say(sec, 'Not saved: ' + e.message); });
   };
 
@@ -349,8 +352,12 @@
   }
 
   /* ---------- section nav ---------- */
-  function show(sec) {
-    if (!SECS[sec]) sec = 'gateway';
+  var currentSec = 'gateway';
+  // fromHash: an unknown hash (#main from a skip link, an anchor in the page) must not
+  // reset the section the user is on; only the first load falls back to Gateway.
+  function show(sec, fromHash) {
+    if (!SECS[sec]) { if (fromHash) return; sec = 'gateway'; }
+    currentSec = sec;
     Array.prototype.forEach.call(document.querySelectorAll('.st-sec'), function (s) { s.hidden = s.dataset.sec !== sec; });
     Array.prototype.forEach.call(document.querySelectorAll('.st-navlink'), function (a) {
       if (a.dataset.sec === sec) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
@@ -361,7 +368,7 @@
     history.replaceState(null, '', '#' + el.dataset.sec);
     var h = q('#sec-' + el.dataset.sec + ' h2'); if (h) { h.setAttribute('tabindex', '-1'); h.focus(); }
   };
-  window.addEventListener('hashchange', function () { show(location.hash.slice(1)); });
+  window.addEventListener('hashchange', function () { show(location.hash.slice(1), true); });
 
   $('st-payload').textContent = JSON.stringify(SAMPLE, null, 2);
   show(location.hash.slice(1));
