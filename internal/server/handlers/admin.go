@@ -201,6 +201,11 @@ type pageData struct {
 	Logs         interface{}
 	Channels     interface{}
 	CanaryTokens interface{}
+	// Crumb optionally extends the top-bar breadcrumb with a final item
+	// (e.g. the entity name on a detail page).
+	Crumb string
+	// Shell is filled by render: breadcrumb, brand sub-line, user chip.
+	Shell ShellData
 	// Moved is set on the page-moved 404 notice (see moved.go).
 	Moved *MovedNotice
 	// What's-new dialog (see whats_new.go): version, moves list, and whether
@@ -427,6 +432,7 @@ func (h *AdminHandler) RejectAction(w http.ResponseWriter, r *http.Request) {
 func (h *AdminHandler) render(w http.ResponseWriter, r *http.Request, page string, data pageData) {
 	data.CSPNonce = middleware.CSPNonce(r.Context())
 	h.prepareWhatsNew(w, r, &data)
+	h.prepareShell(r, page, &data)
 	if h.approvals != nil {
 		if n, err := h.approvals.CountPending(); err != nil {
 			log.Printf("admin: count pending approvals for nav badge: %v", err)

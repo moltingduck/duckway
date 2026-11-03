@@ -18,7 +18,7 @@
   <a class="skip-link" href="#main">Skip to content</a>
   <div class="layout">
     <nav class="sidebar" id="sidebar" aria-label="Primary">
-      <div class="sidebar-brand">Duckway<small>API Proxy Manager</small></div>
+      <div class="sidebar-brand">Duckway<small class="brand-sub" id="brand-sub">{{.Shell.GatewayHost}} &middot; {{.Shell.Version}}</small></div>
       <button type="button" class="nav-search" id="nav-search" data-action="openPalette" aria-label="Search" aria-haspopup="dialog" aria-keyshortcuts="Control+K Meta+K"><span class="nav-search-icon" aria-hidden="true">&#9906;</span><span class="nav-search-label">Search</span><kbd class="pal-kbd nav-search-kbd" aria-hidden="true">Ctrl K</kbd></button>
       <div class="nav-group" role="group" aria-labelledby="ng0">
         <div class="nav-group-label" id="ng0">Overview</div>
@@ -64,14 +64,18 @@
           <button type="button" class="btn btn-sm" data-action="setTheme" data-theme-choice="light" aria-pressed="false">Light</button>
           <button type="button" class="btn btn-sm" data-action="setTheme" data-theme-choice="dark" aria-pressed="false">Dark</button>
         </div>
-        <button type="button" class="btn btn-sm btn-link-logout" data-action="logout">Logout</button>
+        <div class="user-chip">
+          <span class="user-avatar" aria-hidden="true">{{.Shell.Initial}}</span>
+          <span class="user-name">{{.Shell.AdminUser}}</span>
+          <button type="button" class="btn btn-sm btn-link-logout" data-action="logout">Log out</button>
+        </div>
       </div>
     </nav>
     <div class="nav-scrim" data-action="closeNav"></div>
     <div class="shell-main">
       <header class="topbar">
         <button type="button" class="btn btn-sm menu-btn" id="menu-btn" data-action="toggleNav" aria-controls="sidebar" aria-expanded="false" aria-label="Menu">&#9776; Menu</button>
-        <span class="topbar-title">{{.Title}}</span>
+        <nav class="crumbs" aria-label="Breadcrumb"><ol>{{range .Shell.Crumbs}}<li{{if .Current}} class="crumb-current" aria-current="page"{{end}}>{{if .Href}}<a href="{{.Href}}">{{.Label}}</a>{{else}}{{.Label}}{{end}}</li>{{end}}</ol></nav>
         <button type="button" class="btn btn-sm pal-trigger" id="pal-trigger" data-action="openPalette" aria-label="Search (Ctrl K)" aria-haspopup="dialog" aria-keyshortcuts="Control+K Meta+K"><span class="pal-trigger-icon" aria-hidden="true">&#9906;</span><span class="pal-trigger-label">Search</span><kbd class="pal-kbd" id="pal-kbd" aria-hidden="true">Ctrl K</kbd></button>
         <span class="sr-only" id="live-announce" role="status" aria-live="polite"></span>
         <span class="live-status" id="live-status" data-state="connecting"><span class="live-icon" aria-hidden="true">&#9676;</span><span class="live-text">Connecting&hellip;</span></span>
