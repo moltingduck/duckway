@@ -154,7 +154,7 @@
     else if (dirty && probs) note = 'Complete ' + probs + (probs === 1 ? ' rule' : ' rules') + ' to save.';
     else if (dirty && approvalProblem()) note = approvalProblem();
     Array.prototype.forEach.call(document.querySelectorAll('[data-pt-note]'), function (n) { n.textContent = note; });
-    $('pt-test-go').disabled = !!S.jsonErr;
+    $('pt-test-go').disabled = !!S.jsonErr || S.testing > 0;
     $('pt-test-blocked').hidden = !S.jsonErr;
     renderLayers();
     renderGitHub();
@@ -333,6 +333,7 @@
     var method = $('pt-test-method').value, path = $('pt-test-path').value.trim();
     if (!path || path.charAt(0) !== '/') { errEl.textContent = 'Enter a path that starts with /, for example /repos/acme/app/issues.'; errEl.hidden = false; $('pt-test-path').focus(); return; }
     var seq = ++S.testSeq, btn = $('pt-test-go');
+    S.testing = (S.testing || 0) + 1;
     btn.disabled = true;
     var body = { method: method, path: path, permission_config: draftConfig(), requires_approval: S.approval, approval_ttl_minutes: effTTL(ttlMinutes()) };
     var rb = $('pt-test-body').value;
@@ -343,7 +344,7 @@
     }).catch(function (e) {
       if (seq !== S.testSeq) return;
       errEl.textContent = e.message; errEl.hidden = false;
-    }).then(function () { btn.disabled = !!S.jsonErr; });
+    }).then(function () { S.testing = Math.max(0, S.testing - 1); btn.disabled = !!S.jsonErr || S.testing > 0; });
   };
 
   /* ---------- GitHub card ---------- */
@@ -380,6 +381,7 @@
   DW.actions.ptGhApply = function () {
     var repos = PT.parseGitRepoList($('pt-gh-repos').value), err = $('pt-gh-err');
     if (!repos.length) { err.textContent = 'Enter at least one repository as OWNER/REPO.'; err.hidden = false; return; }
+    if (S.jsonErr) { err.textContent = 'The Advanced JSON has an error. Fix it first, or applying repository grants would overwrite your edits.'; err.hidden = false; return; }
     err.hidden = true;
     var cfg = PT.gitACLForRepos(repos, $('pt-gh-mode').value || 'deploy', $('pt-gh-wf').value, $('pt-gh-refs').value, $('pt-gh-envs').value);
     var p = PTACL.parse(JSON.stringify(cfg));
@@ -407,6 +409,7 @@
   DW.actions.ptTTL = function () {
     S.ttlVal = $('pt-ttl-val').value;
     S.ttlUnit = $('pt-ttl-unit').value;
+    clearTest();
     refresh();
   };
 
@@ -432,19 +435,29 @@
   }
   DW.actions.ptSave = function () {
     if (S.saving || S.jsonErr || ruleProblems() || approvalProblem()) return;
-    S.saving = true; refresh(); showBanner('');
+    S.saving = true; lockInputs(true); refresh(); showBanner('');
     var cfg = draftConfig(), ttl = effTTL(ttlMinutes());
     var payload = { permission_config: cfg, requires_approval: S.approval };
     if (S.approval || S.orig.approval) payload.approval_ttl_minutes = S.approval ? ttl : effTTL(S.orig.ttl);
     return PT.api('PUT', '/api/placeholders/' + encodeURIComponent(ID), payload).then(function (saved) {
-      S.orig = { config: cfg, approval: S.approval, ttl: payload.approval_ttl_minutes !== undefined ? payload.approval_ttl_minutes : S.orig.ttl };
+      S.orig = { config: cfg, approval: payload.requires_approval, ttl: payload.approval_ttl_minutes !== undefined ? payload.approval_ttl_minutes : S.orig.ttl };
       D.permission_config = cfg;
       showBanner('Changes saved.', 'ok');
       DW.toast('Phantom token saved', 'success');
     }).catch(function (e) {
       showBanner('Could not save: ' + e.message, 'bad');
-    }).then(function () { S.saving = false; refresh(); });
+    }).then(function () { S.saving = false; lockInputs(false); refresh(); });
   };
+  // Editing controls are disabled while a save is in flight so the draft cannot
+  // change between the payload being built and the saved state being recorded.
+  function lockInputs(on) {
+    var root = $('pt-root') || document;
+    Array.prototype.forEach.call(root.querySelectorAll('input, select, textarea, button'), function (n) {
+      if (n.hasAttribute('data-pt-save') || n.hasAttribute('data-pt-discard')) return;
+      if (on) { if (!n.disabled) { n.disabled = true; n.setAttribute('data-pt-lock', '1'); } }
+      else if (n.getAttribute('data-pt-lock')) { n.disabled = false; n.removeAttribute('data-pt-lock'); }
+    });
+  }
   function loadFromOrig() {
     var p = PTACL.parse(S.orig.config);
     if (p.ok) { S.jsonErr = ''; applyParsed(p); S.jsonText = S.orig.config; }

@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -132,18 +133,37 @@ func summarizePermissionConfig(cfg string) (kind, text string) {
 
 // PhantomTokensPage serves GET /admin/phantom-tokens.
 func (h *AdminHandler) PhantomTokensPage(w http.ResponseWriter, r *http.Request) {
-	phs, _ := h.placeholders.List("", "")
-	svcs, _ := h.services.List()
-	clients, _ := h.clients.List()
-	keys, _ := h.apiKeys.List("")
-	groups, _ := h.groups.List("")
+	phs, err1 := h.placeholders.List("", "")
+	svcs, err2 := h.services.List()
+	clients, err3 := h.clients.List()
+	keys, err4 := h.apiKeys.List("")
+	groups, err5 := h.groups.List("")
+	for _, err := range []error{err1, err2, err3, err4, err5} {
+		if err != nil {
+			log.Printf("admin: phantom tokens page: %v", err)
+			http.Error(w, "Could not load phantom tokens. Reload the page or check the server log.", http.StatusInternalServerError)
+			return
+		}
+	}
+	memberCounts := map[string]int{}
+	if h.db != nil {
+		if rows, err := h.db.Query(`SELECT group_id, COUNT(*) FROM api_key_group_members GROUP BY group_id`); err == nil {
+			for rows.Next() {
+				var gid string
+				var n int
+				if rows.Scan(&gid, &n) == nil {
+					memberCounts[gid] = n
+				}
+			}
+			_ = rows.Close()
+		}
+	}
 
 	groupNames := make(map[string]string, len(groups))
 	data := ptListData{Rows: []ptRow{}}
 	for _, g := range groups {
 		groupNames[g.ID] = g.Name
-		members, _ := h.groups.GetMembers(g.ID)
-		data.Groups = append(data.Groups, ptGroupOption{ID: g.ID, Name: g.Name, ServiceID: g.ServiceID, ServiceName: g.ServiceName, Strategy: g.Strategy, Members: len(members)})
+		data.Groups = append(data.Groups, ptGroupOption{ID: g.ID, Name: g.Name, ServiceID: g.ServiceID, ServiceName: g.ServiceName, Strategy: g.Strategy, Members: memberCounts[g.ID]})
 	}
 	for _, k := range keys {
 		data.Keys = append(data.Keys, ptKeyOption{ID: k.ID, Name: k.Name, ServiceID: k.ServiceID, ServiceName: k.ServiceName})

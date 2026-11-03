@@ -2,6 +2,7 @@ package queries
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/hackerduck/duckway/internal/models"
@@ -192,25 +193,56 @@ func (q *APIKeyQueries) KeyDeleteImpact(id string) (*RefreshableDeleteImpact, er
 	return q.deleteImpact(id, false)
 }
 
+// ErrImpactChanged is returned by a confirmed delete when the references to
+// the credential differ from what the operator previewed.
+var ErrImpactChanged = errors.New("the credential's usage changed since the preview")
+
+// DeleteExpect carries the counts shown in the delete preview. A confirmed
+// delete aborts with ErrImpactChanged when the live counts differ.
+type DeleteExpect struct {
+	KeySuites       int `json:"key_suites"`
+	Clients         int `json:"clients"`
+	ControlChannels int `json:"control_channels"`
+	Pools           int `json:"pools"`
+}
+
+// Matches reports whether the impact has exactly the previewed counts.
+func (e DeleteExpect) Matches(i *RefreshableDeleteImpact) bool {
+	return e.KeySuites == len(i.KeySuites) && e.Clients == len(i.Clients) &&
+		e.ControlChannels == len(i.ControlChannels) && e.Pools == len(i.Pools)
+}
+
+type rowQuerier interface {
+	Query(query string, args ...interface{}) (*sql.Rows, error)
+	QueryRow(query string, args ...interface{}) *sql.Row
+}
+
 func (q *APIKeyQueries) deleteImpact(id string, requireRefreshable bool) (*RefreshableDeleteImpact, error) {
-	key, err := q.GetByID(id)
-	if err != nil {
+	return deleteImpactOn(q.db, id, requireRefreshable)
+}
+
+// deleteImpactOn computes the impact on db or on an open transaction, so a
+// confirmed delete sees exactly the rows it is about to remove.
+func deleteImpactOn(q rowQuerier, id string, requireRefreshable bool) (*RefreshableDeleteImpact, error) {
+	var keyName, serviceName, refreshToken string
+	if err := q.QueryRow(`SELECT k.name, s.name, k.refresh_token FROM api_keys k JOIN services s ON k.service_id = s.id WHERE k.id = ?`, id).
+		Scan(&keyName, &serviceName, &refreshToken); err != nil {
 		return nil, err
 	}
-	if requireRefreshable && !key.IsRefreshable {
+	if requireRefreshable && refreshToken == "" {
 		return nil, fmt.Errorf("not a refreshable key")
 	}
 	impact := &RefreshableDeleteImpact{
-		KeyID:       key.ID,
-		KeyName:     key.Name,
-		ServiceName: key.ServiceName,
+		KeyID:       id,
+		KeyName:     keyName,
+		ServiceName: serviceName,
 		Kind:        "static",
 	}
-	if key.IsRefreshable {
+	if refreshToken != "" {
 		impact.Kind = "refreshable"
 	}
 
-	suiteRows, err := q.db.Query(`
+	suiteRows, err := q.Query(`
 		SELECT e.id, ks.id, ks.name, s.name, e.env_name
 		FROM key_suite_entries e
 		JOIN key_suites ks ON ks.id = e.suite_id
@@ -232,7 +264,7 @@ func (q *APIKeyQueries) deleteImpact(id string, requireRefreshable bool) (*Refre
 		return nil, err
 	}
 
-	clientRows, err := q.db.Query(`
+	clientRows, err := q.Query(`
 		SELECT p.id, c.id, c.name, s.name, p.env_name, p.suite_id
 		FROM placeholder_keys p
 		JOIN clients c ON c.id = p.client_id
@@ -254,7 +286,7 @@ func (q *APIKeyQueries) deleteImpact(id string, requireRefreshable bool) (*Refre
 		return nil, err
 	}
 
-	ccRows, err := q.db.Query(`
+	ccRows, err := q.Query(`
 		SELECT cc.id, cc.name, cc.client_id, c.name, cc.agent_type, s.name
 		FROM control_channels cc
 		JOIN clients c ON c.id = cc.client_id
@@ -276,7 +308,7 @@ func (q *APIKeyQueries) deleteImpact(id string, requireRefreshable bool) (*Refre
 		return nil, err
 	}
 
-	poolRows, err := q.db.Query(`
+	poolRows, err := q.Query(`
 		SELECT g.id, g.name, 'rotation' FROM api_key_group_members m JOIN api_key_groups g ON g.id = m.group_id WHERE m.api_key_id = ?
 		UNION ALL
 		SELECT g.id, g.name, 'lease' FROM key_group_members m JOIN key_groups g ON g.id = m.group_id WHERE m.api_key_id = ?
@@ -340,35 +372,38 @@ func (q *APIKeyQueries) UsedByCounts() (map[string]KeyUsedBy, error) {
 }
 
 func (q *APIKeyQueries) DeleteRefreshableWithCleanup(id string) (*RefreshableDeleteImpact, error) {
-	return q.deleteWithCleanup(id, true)
+	return q.deleteWithCleanup(id, true, nil)
 }
 
 // DeleteKeyWithCleanup deletes any credential after the caller showed the
 // impact preview: bundle entries, pool memberships and phantom tokens that
 // reference it are removed and control channels are disabled with a retained
 // inactive key reference.
-func (q *APIKeyQueries) DeleteKeyWithCleanup(id string) (*RefreshableDeleteImpact, error) {
-	return q.deleteWithCleanup(id, false)
+func (q *APIKeyQueries) DeleteKeyWithCleanup(id string, expect *DeleteExpect) (*RefreshableDeleteImpact, error) {
+	return q.deleteWithCleanup(id, false, expect)
 }
 
-func (q *APIKeyQueries) deleteWithCleanup(id string, requireRefreshable bool) (*RefreshableDeleteImpact, error) {
-	impact, err := q.deleteImpact(id, requireRefreshable)
-	if err != nil {
-		return nil, err
-	}
-
+func (q *APIKeyQueries) deleteWithCleanup(id string, requireRefreshable bool, expect *DeleteExpect) (*RefreshableDeleteImpact, error) {
 	tx, err := q.db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
-	var refreshToken string
-	if err := tx.QueryRow(`SELECT refresh_token FROM api_keys WHERE id = ?`, id).Scan(&refreshToken); err != nil {
+	// The impact is computed inside the transaction so what is removed is
+	// exactly what is checked against the previewed counts.
+	impact, err := deleteImpactOn(tx, id, requireRefreshable)
+	if err != nil {
 		return nil, err
 	}
-	if requireRefreshable && refreshToken == "" {
-		return nil, fmt.Errorf("not a refreshable key")
+	if expect != nil {
+		if !expect.Matches(impact) {
+			return impact, ErrImpactChanged
+		}
+	} else if len(impact.ControlChannels) > 0 && !requireRefreshable {
+		// Without previewed counts a control channel cannot be known to be
+		// acknowledged, so refuse rather than silently disable it.
+		return impact, ErrImpactChanged
 	}
 
 	if _, err := tx.Exec(`DELETE FROM key_suite_entries WHERE api_key_id = ?`, id); err != nil {

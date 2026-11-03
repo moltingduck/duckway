@@ -351,7 +351,9 @@ type PermissionExplanation struct {
 // Explain evaluates a request against configJSON exactly like Check, but never
 // touches rate-limit counters, so it is safe for dry runs.
 func (pc *PermissionChecker) Explain(configJSON, method, path string, bodyBytes []byte) PermissionExplanation {
-	if strings.TrimSpace(configJSON) == "" {
+	// Exactly like Check: only the empty string means "no config"; a
+	// whitespace-only config is parsed (and rejected) the same way.
+	if configJSON == "" {
 		return PermissionExplanation{Allowed: true, RuleIndex: -1, Default: true}
 	}
 	config, err := ParsePermissionConfig(configJSON)

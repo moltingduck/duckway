@@ -349,3 +349,21 @@ func TestServicesAndPhantomEndpointsNeverContainStoredSecrets(t *testing.T) {
 		assertNoSecrets(t, c.method+" "+c.path, rec.Body.String())
 	}
 }
+
+func TestKeyImpactEndpointIsReadOnlyGET(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	staticID, _, _ := seedCredentials(t, s, shared)
+	rec := credAdminRequest(t, s, shared, http.MethodGet, "/api/keys/"+staticID+"/impact", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"clients"`) {
+		t.Fatalf("impact: %d %s", rec.Code, rec.Body.String())
+	}
+	assertNoSecrets(t, "impact", rec.Body.String())
+	if rec := credAdminRequest(t, s, shared, http.MethodGet, "/api/keys/missing/impact", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing: %d", rec.Code)
+	}
+	var n int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE id = ?`, staticID).Scan(&n)
+	if n != 1 {
+		t.Fatal("preview deleted the key")
+	}
+}

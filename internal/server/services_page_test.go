@@ -235,3 +235,48 @@ func TestToggleCanaryRejectsDraftAndUnknown(t *testing.T) {
 		t.Fatalf("real canary=%d", rec.Code)
 	}
 }
+
+func TestPricingReferencedVersionIsImmutable(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	if _, err := s.db.Exec(`INSERT INTO services (id, name, display_name, upstream_url, host_pattern) VALUES ('svc-pr', 'pr-svc', 'PR', 'https://p.example', 'p.example')`); err != nil {
+		t.Fatal(err)
+	}
+	rec := credAdminRequest(t, s, shared, http.MethodPost, "/api/services/svc-pr/pricing", `{"model":"m1","version":"v1","input_usd_micros_per_mtok":1,"output_usd_micros_per_mtok":2}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if rec := credAdminRequest(t, s, shared, http.MethodPost, "/api/services/svc-pr/pricing", `{"model":"m1","version":"v1","input_usd_micros_per_mtok":1,"output_usd_micros_per_mtok":2}`); rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate: %d", rec.Code)
+	}
+	path := "/api/services/svc-pr/pricing/" + created.ID
+	if rec := credAdminRequest(t, s, shared, http.MethodPut, path, `{"version":"v1b"}`); rec.Code != http.StatusOK {
+		t.Fatalf("unreferenced rename: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := credAdminRequest(t, s, shared, http.MethodPut, path, `{"version":"v1"}`); rec.Code != http.StatusOK {
+		t.Fatalf("rename back: %d", rec.Code)
+	}
+	if _, err := s.db.Exec(`INSERT INTO conversation_usage (service_name, model, pricing_version, priced) VALUES ('pr-svc','m1','v1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if rec := credAdminRequest(t, s, shared, http.MethodPut, path, `{"version":"v2"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("referenced rename must conflict: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := credAdminRequest(t, s, shared, http.MethodPut, path, `{"input_usd_micros_per_mtok":5}`); rec.Code != http.StatusOK {
+		t.Fatalf("rate edit allowed: %d", rec.Code)
+	}
+	if rec := credAdminRequest(t, s, shared, http.MethodDelete, path, ""); rec.Code != http.StatusConflict {
+		t.Fatalf("referenced delete must conflict: %d", rec.Code)
+	}
+	if _, err := s.db.Exec(`DELETE FROM conversation_usage`); err != nil {
+		t.Fatal(err)
+	}
+	if rec := credAdminRequest(t, s, shared, http.MethodDelete, path, ""); rec.Code != http.StatusOK {
+		t.Fatalf("unreferenced delete: %d", rec.Code)
+	}
+}

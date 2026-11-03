@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -640,6 +642,20 @@ func sameOriginRequest(r *http.Request) bool {
 	return strings.EqualFold(u.Host, r.Host)
 }
 
+// Impact serves GET /api/keys/{id}/impact: the read-only delete preview.
+func (h *APIKeyHandler) Impact(w http.ResponseWriter, r *http.Request) {
+	impact, err := h.apiKeys.KeyDeleteImpact(r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			jsonError(w, "key not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "impact lookup failed", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{"requires_confirmation": true, "impact": impact})
+}
+
 func (h *APIKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	key, err := h.apiKeys.GetByID(id)
@@ -648,14 +664,20 @@ func (h *APIKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A JSON body with a "confirm" field opts into the two-step impact flow
-	// (preview with confirm:false, delete with confirm:true). Refreshable keys
-	// always use it. A static key without that body keeps the legacy
-	// immediate delete used by scripts.
+	// (preview with confirm:false, delete with confirm:true plus the previewed
+	// counts in "expect"). Refreshable keys always use it. A static key without
+	// that body keeps the legacy immediate delete used by scripts. A body that
+	// is present but does not decode is rejected instead of being treated as a
+	// legacy immediate delete.
 	var req struct {
-		Confirm *bool `json:"confirm"`
+		Confirm *bool                 `json:"confirm"`
+		Expect  *queries.DeleteExpect `json:"expect"`
 	}
-	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req)
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			jsonError(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
 	}
 	twoStep := key.IsRefreshable || req.Confirm != nil
 	if twoStep {
@@ -671,7 +693,17 @@ func (h *APIKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		impact, err := h.apiKeys.DeleteKeyWithCleanup(id)
+		impact, err := h.apiKeys.DeleteKeyWithCleanup(id, req.Expect)
+		if errors.Is(err, queries.ErrImpactChanged) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":  "This credential's usage changed since the preview. Review the updated impact and confirm again.",
+				"code":   "impact_changed",
+				"impact": impact,
+			})
+			return
+		}
 		if err != nil {
 			jsonError(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
 			return

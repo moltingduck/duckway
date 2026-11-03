@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -327,7 +328,11 @@ func (h *ServiceHandler) CreatePricing(w http.ResponseWriter, r *http.Request) {
 		EffectiveFrom:                 effectiveAt.Format(time.RFC3339),
 	}
 	if err := h.pricing.Create(pricing); err != nil {
-		jsonError(w, "failed to create model pricing", http.StatusConflict)
+		if !queries.IsUniqueViolation(err) {
+			jsonError(w, "failed to create model pricing", http.StatusInternalServerError)
+			return
+		}
+		jsonError(w, "a price version with this model and version already exists", http.StatusConflict)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -418,11 +423,23 @@ func (h *ServiceHandler) UpdatePricing(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+	origModel, origVersion := cur.Model, cur.Version
 	if req.Model != nil {
 		cur.Model = strings.TrimSpace(*req.Model)
 	}
 	if req.Version != nil {
 		cur.Version = strings.TrimSpace(*req.Version)
+	}
+	if cur.Model != origModel || cur.Version != origVersion {
+		n, err := h.pricing.UsageReferences(serviceID, origModel, origVersion)
+		if err != nil {
+			jsonError(w, "failed to check pricing usage", http.StatusInternalServerError)
+			return
+		}
+		if n > 0 {
+			jsonError(w, fmt.Sprintf("model and version cannot change because %d usage records were priced with this version; add a new version instead. Rates and effective date can still be edited, and existing usage keeps the cost it was priced with.", n), http.StatusConflict)
+			return
+		}
 	}
 	if cur.Model == "" || cur.Version == "" {
 		jsonError(w, "model and version are required", http.StatusBadRequest)
@@ -456,7 +473,11 @@ func (h *ServiceHandler) UpdatePricing(w http.ResponseWriter, r *http.Request) {
 		cur.EffectiveFrom = parsed.UTC().Format(time.RFC3339)
 	}
 	if err := h.pricing.Update(cur); err != nil {
-		jsonError(w, "failed to update model pricing", http.StatusConflict)
+		if queries.IsUniqueViolation(err) {
+			jsonError(w, "a price version with this model and version already exists", http.StatusConflict)
+			return
+		}
+		jsonError(w, "failed to update model pricing", http.StatusInternalServerError)
 		return
 	}
 	jsonResponse(w, cur)
@@ -467,6 +488,17 @@ func (h *ServiceHandler) DeletePricing(w http.ResponseWriter, r *http.Request) {
 	if h.pricing == nil {
 		jsonError(w, "pricing unavailable", http.StatusInternalServerError)
 		return
+	}
+	if cur, gerr := h.pricing.GetByID(r.PathValue("id"), r.PathValue("pid")); gerr == nil {
+		n, err := h.pricing.UsageReferences(cur.ServiceID, cur.Model, cur.Version)
+		if err != nil {
+			jsonError(w, "failed to check pricing usage", http.StatusInternalServerError)
+			return
+		}
+		if n > 0 {
+			jsonError(w, fmt.Sprintf("this price version cannot be deleted because %d usage records were priced with it", n), http.StatusConflict)
+			return
+		}
 	}
 	ok, err := h.pricing.Delete(r.PathValue("id"), r.PathValue("pid"))
 	if err != nil {

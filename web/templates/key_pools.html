@@ -461,9 +461,15 @@
     S.poll = setInterval(function () {
       var p = curPool();
       if (!p || p.kind !== 'lease' || document.hidden || S.editing || S.busy) return;
+      var seq0 = S.seq;
       api('GET', '/api/key-groups/' + encodeURIComponent(p.id)).then(function (r) {
-        if (!r.ok || !S.sel || S.sel.id !== p.id) return;
+        // Drop the response if a full reload or mutation started meanwhile.
+        if (seq0 !== S.seq || S.busy || S.editing || !r.ok || !S.sel || S.sel.id !== p.id) return;
         var np = normLease(r.data);
+        var cur = curPool();
+        if (cur && JSON.stringify(cur.members) === JSON.stringify(np.members)) return;
+        var list = $('kp-d-members');
+        if (list && list.contains(document.activeElement)) return; // never re-render under the user's focus
         S.lease = S.lease.map(function (x) { return x.id === np.id ? np : x; });
         S.pools = S.rot.concat(S.lease);
         renderMembers(np); renderList();
@@ -487,7 +493,10 @@
     return p.then(function (res) { S.busy = false; return res; }, function (e) { S.busy = false; throw e; });
   }
   function reorder(p, order) {
-    // order: member key ids in the new order; rewrites positions 0..n-1 (the model has no swap call).
+    // order: member key ids in the new order; rewrites positions 0..n-1.
+    // Known limitation: the member API has no atomic "set order" call, so this
+    // sends one request per member in parallel. If one fails the order can be
+    // partially applied; the caller reloads and shows the stored order.
     var calls = order.map(function (keyId, i) {
       return p.kind === 'rotation'
         ? api('POST', '/api/groups/' + encodeURIComponent(p.id) + '/members', {api_key_id: keyId, priority: i})
@@ -536,9 +545,14 @@
     var i = ids.indexOf(el.dataset.key), j = i + parseInt(el.dataset.dir, 10);
     if (i < 0 || j < 0 || j >= ids.length) return;
     var t = ids[i]; ids[i] = ids[j]; ids[j] = t;
+    var moved = el.dataset.key, dir = el.dataset.dir;
     return mutate(reorder(p, ids)).then(function (ok) {
       if (!ok) DW.toast('Could not save the new order', 'error');
       return loadAll();
+    }).then(function () {
+      var btns = Array.prototype.slice.call(document.querySelectorAll('#kp-d-members [data-action="moveMember"]')).filter(function (b) { return b.dataset.key === moved; });
+      var want = btns.filter(function (b) { return b.dataset.dir === dir && !b.disabled; })[0] || btns.filter(function (b) { return !b.disabled; })[0];
+      if (want) want.focus();
     });
   };
   DW.actions.askRemove = function (el) {

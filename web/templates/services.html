@@ -293,9 +293,10 @@ function openDrawer(s) {
   if (dr.hidden || dr.style.display === 'none') DW.modal.open(dr);
 }
 DW.actions.svNew = function() { openDrawer(null); };
+var openSeq = 0;
 DW.actions.svOpen = function(btn) {
-  var id = btn.dataset.id;
-  fetchJSON('/api/services/' + encodeURIComponent(id)).then(openDrawer).catch(function(e) { DW.toast('Could not load service: ' + e.message, 'error'); });
+  var id = btn.dataset.id, seq = ++openSeq;
+  fetchJSON('/api/services/' + encodeURIComponent(id)).then(function(s) { if (seq === openSeq) openDrawer(s); }).catch(function(e) { if (seq === openSeq) DW.toast('Could not load service: ' + e.message, 'error'); });
 };
 
 function payload() {
@@ -322,11 +323,24 @@ function payload() {
 DW.actions.svSave = function() {
   var btn = el('sv-save'); btn.disabled = true;
   setState('sv-state', 'Saving…');
-  var creating = !SV.cur;
-  var req = creating ? send('POST', '/api/services', payload()) : send('PUT', '/api/services/' + encodeURIComponent(SV.cur.id), payload());
+  var creating = !SV.cur, was = SV.cur ? SV.cur.id : '';
+  var sent = payload(), sentKey = JSON.stringify(sent);
+  var req = creating ? send('POST', '/api/services', sent) : send('PUT', '/api/services/' + encodeURIComponent(was), sent);
   req.then(function(s) {
     DW.toast(creating ? 'Service created' : 'Service saved', 'success');
-    return loadList().then(function() { openDrawer(s); setState('sv-state', creating ? 'Created. You can now add pricing.' : 'Saved.'); });
+    var stillHere = creating ? !SV.cur : (SV.cur && SV.cur.id === was);
+    return loadList().then(function() {
+      if (!stillHere) return; // the operator opened another service meanwhile
+      if (JSON.stringify(payload()) === sentKey) {
+        openDrawer(s); setState('sv-state', creating ? 'Created. You can now add pricing.' : 'Saved.');
+      } else {
+        // The form changed while saving: keep what is being typed, only adopt the saved identity.
+        SV.cur = s; el('sv-extras').hidden = false; el('sv-active-wrap').hidden = false; el('sv-save').textContent = 'Save changes';
+        el('sv-title').textContent = s.display_name || s.name;
+        if (creating) { SV.priceEdit = ''; SV.priceDel = ''; SV.aclPending = ''; resetPriceForm(); loadAcl(); loadPricing(); }
+        setDirty(true); setState('sv-state', 'Saved. Your newer edits are still unsaved.');
+      }
+    });
   }).catch(function(e) {
     setState('sv-state', 'Not saved: ' + e.message, true);
   }).then(function() { btn.disabled = false; });
@@ -364,8 +378,14 @@ function renderAcl() {
   })}`);
 }
 DW.actions.svAclReload = function() { loadAcl(); };
-DW.actions.svAclAsk = function(b) { SV.aclPending = b.dataset.templateId; renderAcl(); };
-DW.actions.svAclCancel = function() { SV.aclPending = ''; renderAcl(); };
+DW.actions.svAclAsk = function(b) {
+  SV.aclPending = b.dataset.templateId; renderAcl();
+  var ok = el('sv-acl-list').querySelector('[data-action="svAclApply"]'); if (ok) ok.focus();
+};
+DW.actions.svAclCancel = function() {
+  var tid = SV.aclPending; SV.aclPending = ''; renderAcl();
+  var ask = Array.prototype.filter.call(el('sv-acl-list').querySelectorAll('[data-action="svAclAsk"]'), function(x) { return x.dataset.templateId === tid; })[0]; if (ask) ask.focus();
+};
 DW.actions.svAclApply = function(b) {
   var id = SV.cur.id, tid = b.dataset.templateId;
   b.disabled = true;
@@ -438,8 +458,14 @@ DW.actions.svPriceEdit = function(b) {
   el('p-model').focus();
 };
 DW.actions.svPriceCancel = function() { resetPriceForm(); renderPricing(); };
-DW.actions.svPriceDelAsk = function(b) { SV.priceDel = b.dataset.id; renderPricing(); };
-DW.actions.svPriceDelCancel = function() { SV.priceDel = ''; renderPricing(); };
+DW.actions.svPriceDelAsk = function(b) {
+  SV.priceDel = b.dataset.id; renderPricing();
+  var ok = document.querySelector('[data-action="svPriceDelConfirm"]'); if (ok) ok.focus();
+};
+DW.actions.svPriceDelCancel = function() {
+  var pid = SV.priceDel; SV.priceDel = ''; renderPricing();
+  var ask = Array.prototype.filter.call(document.querySelectorAll('[data-action="svPriceDelAsk"]'), function(x) { return x.dataset.id === pid; })[0]; if (ask) ask.focus();
+};
 DW.actions.svPriceDelConfirm = function(b) {
   var id = SV.cur.id, pid = b.dataset.id;
   b.disabled = true;
@@ -473,13 +499,15 @@ DW.actions.svPriceSave = function() {
 /* ---------- delete with impact ---------- */
 DW.actions.svDelete = function() {
   var s = SV.cur; if (!s) return;
-  SV.impact = null;
+  SV.impact = null; SV.delId = s.id;
   el('sv-del-ok').disabled = true; el('sv-del-confirm').hidden = true; el('sv-del-type').value = '';
   DW.setHTML(el('sv-del-body'), DW.raw('<p class="text-muted">Loading impact…</p>'));
   DW.modal.open('#sv-del');
   fetchJSON('/api/services/' + encodeURIComponent(s.id) + '/impact').then(function(im) {
+    if (SV.delId !== s.id) return;
     SV.impact = im; renderImpact();
   }).catch(function(e) {
+    if (SV.delId !== s.id) return;
     DW.setHTML(el('sv-del-body'), DW.html`<p>Could not load the impact of deleting this service, so it will not be deleted: ${e.message}</p>`);
   });
 };
@@ -513,7 +541,7 @@ DW.actions.svDelCheck = function() {
 };
 DW.actions.svDelCancel = function() { DW.modal.close('#sv-del'); };
 DW.actions.svDelConfirm = function() {
-  var s = SV.cur; if (!s) return;
+  var s = SV.cur; if (!s || SV.delId !== s.id || !SV.impact || SV.impact.name !== (s.name || SV.impact.name)) return;
   var b = el('sv-del-ok'); b.disabled = true;
   send('DELETE', '/api/services/' + encodeURIComponent(s.id)).then(function() {
     DW.modal.close('#sv-del'); DW.modal.close('#sv-drawer');

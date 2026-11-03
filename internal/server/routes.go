@@ -198,6 +198,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/keys", apiKeyH.Create)
 	adminAPIMux.HandleFunc("GET /api/keys/{id}", apiKeyH.Get)
 	adminAPIMux.HandleFunc("PUT /api/keys/{id}", apiKeyH.Update)
+	adminAPIMux.HandleFunc("GET /api/keys/{id}/impact", apiKeyH.Impact)
 	adminAPIMux.HandleFunc("DELETE /api/keys/{id}", apiKeyH.Delete)
 	adminAPIMux.HandleFunc("POST /api/keys/github-app/test", apiKeyH.TestGitHubAppMinter)
 	adminAPIMux.HandleFunc("POST /api/keys/github-app/repositories", apiKeyH.LoadGitHubAppRepositories)

@@ -746,9 +746,13 @@ assert_eq "Canary settings requires auth" "401" "$CANARY_NO_AUTH"
 echo ""
 echo -e "${YELLOW}[14] Admin Panel Pages${NC}"
 
-for page in "" services keys phantom-tokens clients groups approvals logs notifications canary docs oauth cc; do
+for page in "" services credentials "credentials?type=refreshable" phantom-tokens key-pools key-bundles clients approvals logs notifications canary docs cc; do
   STATUS=$(curl -s -b /tmp/dw-e2e-cookies -o /dev/null -w "%{http_code}" "$BASE/admin/$page")
   assert_eq "GET /admin/$page returns 200" "200" "$STATUS"
+done
+for page in keys oauth groups key-groups key-suites placeholders; do
+  STATUS=$(curl -s -b /tmp/dw-e2e-cookies -o /dev/null -w "%{http_code}" "$BASE/admin/$page")
+  assert_eq "Moved GET /admin/$page returns 404" "404" "$STATUS"
 done
 
 

@@ -420,6 +420,13 @@ The API body remains normalized:
 
 Deletion is two-phase through `DELETE /api/oauth/{id}`. Without `{"confirm":true}`, the handler returns an impact preview listing Key bundle entries, client placeholders, and Control Channels using the refreshable key. With confirmation, it removes suite entries, deletes direct/suite client placeholders, detaches historical request logs, removes key-group memberships, and disables affected Control Channels. If a Control Channel still references the key, the API key row is retained as inactive and non-refreshable so the CC can show "reassign key" instead of being cascaded away.
 
+`GET /api/keys/{id}/impact` is the read-only delete preview for any credential type. `DELETE /api/keys/{id}` with `{"confirm":true,"expect":{"key_suites":N,"clients":N,"control_channels":N,"pools":N}}` recomputes the impact inside the delete transaction and returns `409` (`code: impact_changed`, with the fresh impact) when the counts differ from the preview; a confirm without `expect` is also refused while control channels reference the key. A body that does not decode returns `400`.
+
+### Service pricing API
+
+`POST/PUT/DELETE /api/services/{id}/pricing[/{pid}]` manage price versions. Usage records keep the cost and `pricing_version` they were priced with, so editing rates or the effective date never reprices history. The `(model, version)` pair of a version that usage rows reference is immutable (`409` on change) and such a version cannot be deleted (`409`); add a new version instead. Only unique-constraint violations map to `409`, other storage errors return `500`.
+
+
 ### Background refresh
 
 `internal/server/services/oauth_refresh.go` (`TokenRefresher`) runs a goroutine that wakes every 5 minutes:

@@ -107,3 +107,14 @@ func (q *ModelPricingQueries) Delete(serviceID, id string) (bool, error) {
 	n, _ := res.RowsAffected()
 	return n > 0, nil
 }
+
+// UsageReferences counts conversation_usage rows that were priced with this
+// service/model/version. Those rows keep the cost they were priced with, but
+// the identity (model, version) of the version is what they point at, so it
+// must stay stable while they exist.
+func (q *ModelPricingQueries) UsageReferences(serviceID, model, version string) (int64, error) {
+	var n int64
+	err := q.db.QueryRow(`SELECT COUNT(*) FROM conversation_usage u JOIN services s ON s.name = u.service_name
+		WHERE s.id = ? AND u.model = ? AND u.pricing_version = ?`, serviceID, model, version).Scan(&n)
+	return n, err
+}

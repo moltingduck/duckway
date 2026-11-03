@@ -934,11 +934,44 @@ func TestAPIKeyDeleteRefreshablePreviewsImpact(t *testing.T) {
 	}
 }
 
+func TestAPIKeyDeleteStaleExpectOrMissingExpectConflicts(t *testing.T) {
+	db, apiKeyQ := seedAPIKeyDeleteRefreshable(t)
+	h := handlers.NewAPIKeyHandler(apiKeyQ, nil, nil)
+	for name, body := range map[string]string{
+		"stale counts":   `{"confirm":true,"expect":{"key_suites":1,"clients":1,"control_channels":0,"pools":0}}`,
+		"missing expect": `{"confirm":true}`,
+	} {
+		req := httptest.NewRequest(http.MethodDelete, "/api/keys/key-refresh-api", strings.NewReader(body))
+		req.SetPathValue("id", "key-refresh-api")
+		rec := httptest.NewRecorder()
+		h.Delete(rec, req)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s: status = %d body=%s", name, rec.Code, rec.Body.String())
+		}
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM control_channels WHERE api_key_id = 'key-refresh-api' AND is_active = 1`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("conflict must not disable control channels: n=%d err=%v", n, err)
+	}
+}
+
+func TestAPIKeyDeleteMalformedBodyIsBadRequest(t *testing.T) {
+	_, apiKeyQ := seedAPIKeyDeleteRefreshable(t)
+	h := handlers.NewAPIKeyHandler(apiKeyQ, nil, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/keys/key-refresh-api", strings.NewReader(`{"confirm":`))
+	req.SetPathValue("id", "key-refresh-api")
+	rec := httptest.NewRecorder()
+	h.Delete(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d", rec.Code)
+	}
+}
+
 func TestAPIKeyDeleteRefreshableConfirmCleansReferences(t *testing.T) {
 	db, apiKeyQ := seedAPIKeyDeleteRefreshable(t)
 	h := handlers.NewAPIKeyHandler(apiKeyQ, nil, nil)
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/keys/key-refresh-api", strings.NewReader(`{"confirm":true}`))
+	req := httptest.NewRequest(http.MethodDelete, "/api/keys/key-refresh-api", strings.NewReader(`{"confirm":true,"expect":{"key_suites":1,"clients":1,"control_channels":1,"pools":0}}`))
 	req.SetPathValue("id", "key-refresh-api")
 	rec := httptest.NewRecorder()
 
