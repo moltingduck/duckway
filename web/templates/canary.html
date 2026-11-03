@@ -414,11 +414,14 @@
     fetch('/api/canary/settings', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, credentials: 'same-origin',
       body: JSON.stringify({email: email, enabled_types: types, exclude_clients: excluded})
-    }).then(function(r) { return r.json().catch(function() { return {}; }).then(function(d) { if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status)); }); })
+    }).then(function(r) { return r.json().catch(function() { return {}; }).then(function(d) { if (!r.ok || d.error) { var er = new Error(d.error || ('HTTP ' + r.status)); er.field = d.field; throw er; } }); })
     .then(function() {
       $('cn-save-state').textContent = 'Settings saved.'; DW.toast('Canary settings saved', 'success');
       return loadFleet();
-    }).catch(function(e) { $('cn-save-state').textContent = 'Save failed: ' + e.message; })
+    }).catch(function(e) {
+      $('cn-save-state').textContent = 'Save failed: ' + e.message;
+      if (e.field === 'email') { $('cn-email-msg').textContent = e.message; $('cn-email').setAttribute('aria-invalid', 'true'); $('cn-email').focus(); }
+    })
     .then(function() { btn.disabled = false; });
   };
 

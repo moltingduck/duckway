@@ -283,3 +283,20 @@ func TestCanaryGenerateRejectsDraftClient(t *testing.T) {
 		t.Fatalf("draft client => %d, want 404", rec.Code)
 	}
 }
+
+func TestCanarySettingsEmailValidatedServerSide(t *testing.T) {
+	s, shared := newClientDetailServer(t)
+	for _, bad := range []string{"not-an-email", "a@", "Bob <a@b.co>", "Bob<a@b.co>", "<a@b.co>", "a@b.co, c@d.co"} {
+		body, _ := json.Marshal(map[string]string{"email": bad})
+		rec := svcDo(s, shared, http.MethodPost, "/api/canary/settings", string(body), true)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"field":"email"`) {
+			t.Errorf("%q => %d %s, want 400 with field=email", bad, rec.Code, rec.Body.String())
+		}
+	}
+	for _, good := range []string{"a@b.co", "you+tag@example.com", ""} {
+		body, _ := json.Marshal(map[string]string{"email": good})
+		if rec := svcDo(s, shared, http.MethodPost, "/api/canary/settings", string(body), true); rec.Code != 200 {
+			t.Errorf("%q => %d %s, want 200", good, rec.Code, rec.Body.String())
+		}
+	}
+}

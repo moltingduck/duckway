@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/mail"
+	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/server/middleware"
@@ -65,6 +67,17 @@ func (h *CanaryHandler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
+	}
+
+	req.Email = strings.TrimSpace(req.Email)
+	if req.Email != "" {
+		// A bare address only: no display name, no angle brackets.
+		if a, err := mail.ParseAddress(req.Email); err != nil || a.Name != "" || a.Address != req.Email {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "Enter a plain email address such as you@example.com (no name or angle brackets)", "field": "email"})
+			return
+		}
 	}
 
 	if req.EnabledTypes == nil {

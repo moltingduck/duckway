@@ -860,7 +860,7 @@ DW.actions.genCanary = function() {
   showToast('Generating canary tokens...', '');
   return sendJSON('POST', '/api/canary/clients/' + enc(CID) + '/generate').then(function(data) {
     var n = (data && data.created) || 0, bad = data && (data.failed_types > 0 || data.delete_failed > 0);
-    var msg = n + ' canary tokens generated' + (data && data.notice ? '. ' + data.notice : '');
+    var msg = n + (n === 1 ? ' canary token' : ' canary tokens') + ' generated' + (data && data.notice ? '. ' + data.notice : '');
     if (data && data.failed_types > 0 && !(data.notice && /could not be regenerated/.test(data.notice))) msg += '. ' + data.failed_types + ' types could not be regenerated; their existing tokens were kept';
     if (data && data.delete_failed > 0) msg += '. ' + data.delete_failed + ' old tokens could not be removed from canarytokens.org and were kept';
     showToast(msg, bad || !n ? 'error' : 'success'); return refresh();

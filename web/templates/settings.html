@@ -101,9 +101,9 @@
       <form class="st-form" data-sec="statusline" data-on-submit="stSave" novalidate>
         <div class="form-group">
           <label for="s-statusline-script">Script content</label>
-          <textarea id="s-statusline-script" class="st-mono" rows="14" data-sec="statusline" data-on-input="stInput" data-on-change="stInput" spellcheck="false" placeholder="#!/bin/sh&#10;input=$(cat)&#10;echo &quot;[duckway] $(date '+%H:%M:%S')&quot;" aria-describedby="s-statusline-meta s-statusline-err"></textarea>
+          <textarea id="s-statusline-script" class="st-mono" rows="14" data-sec="statusline" data-on-input="stInput" data-on-change="stInput" spellcheck="false" placeholder="#!/bin/sh&#10;input=$(cat)&#10;echo &quot;[duckway] $(date '+%H:%M:%S')&quot;" aria-describedby="s-statusline-meta s-statusline-script-err"></textarea>
           <p class="text-sm text-muted" id="s-statusline-meta"></p>
-          <p class="st-err" id="s-statusline-err" role="status" hidden></p>
+          <p class="st-err" id="s-statusline-script-err" role="status" hidden></p>
         </div>
         <div class="st-preview">
           <p class="st-preview-h">Preview</p>
@@ -206,6 +206,7 @@
     var e = $(el.id + '-err');
     if (e && !e.hidden) msg(el.id, RULES[el.id](el.value));
     if (el.id === 'cp-new' && !$('cp-new2-err').hidden) msg('cp-new2', RULES['cp-new2']($('cp-new2').value));
+    if (el.id === 's-statusline-script') msg(el.id, RULES[el.id](el.value)); // size errors show as you type
     if (sec === 'statusline') { immediateNote = false; preview(); }
     refresh(sec);
   };
@@ -287,7 +288,9 @@
           var target = null;
           Object.keys(SECS[sec].fields).forEach(function (id) { if (SECS[sec].fields[id] && SECS[sec].fields[id] === res.j.field) target = id; });
           if (sec === 'password') target = /current/.test(res.j.error || '') ? 'cp-current' : 'cp-new';
-          if (target) msg(target, res.j.error);
+          if (!target) target = Object.keys(SECS[sec].fields)[0]; // any server error shows inline in its section
+          msg(target, res.j.error);
+          var tf = $(target); if (tf) tf.focus();
           refresh(sec); say(sec, 'Not saved: ' + (res.j.error || 'request failed'));
           return;
         }
