@@ -14,7 +14,7 @@
   var list = document.getElementById('pal-list');
   var emptyEl = document.getElementById('pal-empty');
   var statusEl = document.getElementById('pal-status');
-  var kbd = document.getElementById('pal-kbd');
+  var kbds = document.querySelectorAll('.pal-kbd');
   if (!root || !input || !list) return;
 
   var KIND = {
@@ -23,8 +23,11 @@
   };
   var DEBOUNCE_MS = 200;
 
-  var isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
-  if (kbd) kbd.textContent = isMac ? '⌘K' : 'Ctrl K';
+  var plat = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || '';
+  var isMac = /Mac|iPhone|iPad/.test(plat);
+  kbds.forEach(function (k) { k.textContent = isMac ? '⌘K' : 'Ctrl K'; });
+  var trig = document.getElementById('pal-trigger');
+  if (trig) trig.setAttribute('aria-label', isMac ? 'Search (⌘K)' : 'Search (Ctrl K)');
 
   function pagesFromNav() {
     var out = [];
@@ -156,7 +159,16 @@
     }
   }).observe(root, { attributes: true, attributeFilter: ['style', 'hidden'] });
 
-  DW.actions.openPalette = function () { open(); };
+  DW.actions.openPalette = function (el) {
+    // Opened from the drawer: close it first and make the menu button the
+    // opener, since the drawer (and its Search row) is hidden afterwards.
+    if (el && el.closest('#sidebar') && document.body.classList.contains('nav-open') && DW.actions.closeNav) {
+      DW.actions.closeNav();
+      var mb = document.getElementById('menu-btn');
+      if (mb && mb.offsetParent !== null) mb.focus();
+    }
+    open();
+  };
 
   document.addEventListener('keydown', function (e) {
     if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {

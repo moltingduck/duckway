@@ -19,6 +19,7 @@
   <div class="layout">
     <nav class="sidebar" id="sidebar" aria-label="Primary">
       <div class="sidebar-brand">Duckway<small>API Proxy Manager</small></div>
+      <button type="button" class="nav-search" id="nav-search" data-action="openPalette" aria-label="Search" aria-haspopup="dialog" aria-keyshortcuts="Control+K Meta+K"><span class="nav-search-icon" aria-hidden="true">&#9906;</span><span class="nav-search-label">Search</span><kbd class="pal-kbd nav-search-kbd" aria-hidden="true">Ctrl K</kbd></button>
       <div class="nav-group" role="group" aria-labelledby="ng0">
         <div class="nav-group-label" id="ng0">Overview</div>
         <a href="/admin/"{{if eq .Active "dashboard"}} class="active" aria-current="page"{{end}}>Overview</a>
@@ -107,11 +108,13 @@
       <div class="wn-foot">
         <label class="wn-check"><input type="checkbox" id="wn-dismiss"> Don't show again</label>
         <a class="wn-notes" href="/admin/docs#whats-new" data-action="whatsNewNotes">Release notes</a>
+        <button type="button" class="btn" data-action="whatsNewTour">Show me around</button>
         <button type="button" class="btn btn-primary" data-action="whatsNewClose">Got it</button>
       </div>
     </div>
   </div>
   <script nonce="{{$.CSPNonce}}" src="/static/shell.js"></script>
+  <script nonce="{{$.CSPNonce}}" src="/static/tour.js"></script>
   <script nonce="{{$.CSPNonce}}" src="/static/palette.js"></script>
 </body>
 </html>
