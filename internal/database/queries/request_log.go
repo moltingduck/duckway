@@ -1,6 +1,9 @@
 package queries
 
-import "database/sql"
+import (
+	"database/sql"
+	"strings"
+)
 
 type RequestLogQueries struct {
 	db *sql.DB
@@ -172,36 +175,304 @@ type RequestLogEntry struct {
 	// HasDetail reports whether captured headers/bodies exist, so the UI can
 	// skip the detail request (a 404) for rows logged with capture off.
 	HasDetail bool `json:"has_detail"`
+	// Credential is the name of the API key behind the phantom token ("" when
+	// the token is bound to a key group or no longer exists).
+	Credential string `json:"credential"`
+	// RequiresApproval reports whether the phantom token that served the
+	// request is approval-gated (the request log itself does not record
+	// individual hold decisions).
+	RequiresApproval bool `json:"requires_approval"`
+	// DurationMs is only known when detail capture recorded this request.
+	DurationMs *int64 `json:"duration_ms"`
 }
 
-func (q *RequestLogQueries) Recent(limit int) ([]RequestLogEntry, error) {
-	rows, err := q.db.Query(
-		`SELECT r.id, r.service_name, r.method, r.path, r.status_code,
+const requestLogSelect = `SELECT r.id, r.service_name, r.method, r.path, r.status_code,
 		 r.client_id, COALESCE(c.name, ''),
 		 r.placeholder_id, COALESCE(p.env_name, ''), COALESCE(p.placeholder, ''),
 		 r.created_at,
-		 EXISTS(SELECT 1 FROM request_log_detail d WHERE d.log_id = r.id)
+		 EXISTS(SELECT 1 FROM request_log_detail d WHERE d.log_id = r.id),
+		 COALESCE(k.name, ''), COALESCE(p.requires_approval, 0),
+		 (SELECT d2.duration_ms FROM request_log_detail d2 WHERE d2.log_id = r.id)
 		 FROM request_log r
 		 LEFT JOIN clients c ON r.client_id = c.id
 		 LEFT JOIN placeholder_keys p ON r.placeholder_id = p.id
-		 ORDER BY r.created_at DESC LIMIT ?`, limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+		 LEFT JOIN api_keys k ON p.api_key_id = k.id`
 
+func scanRequestLogEntries(rows *sql.Rows) ([]RequestLogEntry, error) {
 	var result []RequestLogEntry
 	for rows.Next() {
 		var l RequestLogEntry
+		var req int
+		var dur sql.NullInt64
 		if err := rows.Scan(&l.ID, &l.ServiceName, &l.Method, &l.Path, &l.StatusCode,
 			&l.ClientID, &l.ClientName, &l.PlaceholderID, &l.EnvName, &l.Placeholder,
-			&l.CreatedAt, &l.HasDetail); err != nil {
+			&l.CreatedAt, &l.HasDetail, &l.Credential, &req, &dur); err != nil {
 			return nil, err
+		}
+		l.RequiresApproval = req != 0
+		if dur.Valid {
+			v := dur.Int64
+			l.DurationMs = &v
 		}
 		result = append(result, l)
 	}
 	return result, rows.Err()
+}
+
+func (q *RequestLogQueries) Recent(limit int) ([]RequestLogEntry, error) {
+	rows, err := q.db.Query(requestLogSelect+` ORDER BY r.created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanRequestLogEntries(rows)
+}
+
+// RequestLogCountCap bounds the COUNT work for filtered listings.
+const RequestLogCountCap = 10000
+
+// RequestLogFilter selects rows for Search. Zero values mean "no filter".
+// Since/Until are UTC "2006-01-02 15:04:05" strings (the stored format).
+type RequestLogFilter struct {
+	Since, Until  string
+	Q             string
+	ClientID      string
+	Service       string
+	Credential    string
+	StatusClasses []string // subset of 2xx,3xx,4xx,5xx
+	Held          bool     // phantom token requires approval
+	ACLDenied     bool     // status 403 (gateway denials are not logged; includes upstream 403)
+	BeforeID      int64
+	AfterID       int64
+	Limit         int
+}
+
+// RequestLogPage is one keyset page of Search results.
+type RequestLogPage struct {
+	Items        []RequestLogEntry
+	NextBeforeID int64 // 0 when there are no older rows
+	Total        int   // matching rows ignoring the cursor, capped
+	TotalCapped  bool
+	Offset       int // matching rows newer than the first item, capped
+	HasNewer     bool
+}
+
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
+// where builds the parameterized WHERE clause. cursor adds the id bounds.
+func (f RequestLogFilter) where(cursor bool) (string, []interface{}) {
+	var conds []string
+	var args []interface{}
+	if f.Since != "" {
+		conds = append(conds, "r.created_at >= ?")
+		args = append(args, f.Since)
+	}
+	if f.Until != "" {
+		conds = append(conds, "r.created_at < ?")
+		args = append(args, f.Until)
+	}
+	if f.Q != "" {
+		like := "%" + escapeLike(strings.ToLower(f.Q)) + "%"
+		conds = append(conds, `(LOWER(r.path) LIKE ? ESCAPE '\' OR LOWER(COALESCE(c.name, '')) LIKE ? ESCAPE '\' OR LOWER(r.service_name) LIKE ? ESCAPE '\')`)
+		args = append(args, like, like, like)
+	}
+	if f.ClientID != "" {
+		conds = append(conds, "r.client_id = ?")
+		args = append(args, f.ClientID)
+	}
+	if f.Service != "" {
+		conds = append(conds, "r.service_name = ?")
+		args = append(args, f.Service)
+	}
+	if f.Credential != "" {
+		conds = append(conds, "k.name = ?")
+		args = append(args, f.Credential)
+	}
+	if len(f.StatusClasses) > 0 {
+		var ors []string
+		for _, c := range f.StatusClasses {
+			if len(c) != 3 || c[1:] != "xx" || c[0] < '2' || c[0] > '5' {
+				continue
+			}
+			lo := int(c[0]-'0') * 100
+			ors = append(ors, "(r.status_code >= ? AND r.status_code < ?)")
+			args = append(args, lo, lo+100)
+		}
+		if len(ors) > 0 {
+			conds = append(conds, "("+strings.Join(ors, " OR ")+")")
+		}
+	}
+	if f.Held {
+		conds = append(conds, "COALESCE(p.requires_approval, 0) <> 0")
+	}
+	if f.ACLDenied {
+		conds = append(conds, "r.status_code = 403")
+	}
+	if cursor {
+		if f.BeforeID > 0 {
+			conds = append(conds, "r.id < ?")
+			args = append(args, f.BeforeID)
+		}
+		if f.AfterID > 0 {
+			conds = append(conds, "r.id > ?")
+			args = append(args, f.AfterID)
+		}
+	}
+	if len(conds) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(conds, " AND "), args
+}
+
+const requestLogJoins = ` FROM request_log r
+		 LEFT JOIN clients c ON r.client_id = c.id
+		 LEFT JOIN placeholder_keys p ON r.placeholder_id = p.id
+		 LEFT JOIN api_keys k ON p.api_key_id = k.id`
+
+func (q *RequestLogQueries) countCapped(where string, args []interface{}) (int, bool, error) {
+	var n int
+	err := q.db.QueryRow(`SELECT COUNT(*) FROM (SELECT 1`+requestLogJoins+where+` LIMIT ?) t`,
+		append(append([]interface{}{}, args...), RequestLogCountCap+1)...).Scan(&n)
+	if err != nil {
+		return 0, false, err
+	}
+	if n > RequestLogCountCap {
+		return RequestLogCountCap, true, nil
+	}
+	return n, false, nil
+}
+
+// Search returns one keyset page (newest first) of rows matching f. Limit must
+// already be validated (1..200). BeforeID pages toward older rows, AfterID
+// toward newer rows; they are mutually exclusive.
+func (q *RequestLogQueries) Search(f RequestLogFilter) (*RequestLogPage, error) {
+	if f.Limit <= 0 {
+		f.Limit = 50
+	}
+	cw, cargs := f.where(true)
+	order := "DESC"
+	if f.AfterID > 0 {
+		order = "ASC"
+	}
+	rows, err := q.db.Query(requestLogSelect+cw+" ORDER BY r.id "+order+" LIMIT ?",
+		append(append([]interface{}{}, cargs...), f.Limit+1)...)
+	if err != nil {
+		return nil, err
+	}
+	items, err := scanRequestLogEntries(rows)
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	hasOlder := false
+	if f.AfterID > 0 {
+		// Fetched oldest-first from the cursor; the extra row only says there
+		// are even newer rows. Reverse into newest-first.
+		if len(items) > f.Limit {
+			items = items[:f.Limit]
+		}
+		for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
+			items[i], items[j] = items[j], items[i]
+		}
+		if len(items) > 0 {
+			g := f
+			g.AfterID, g.BeforeID = 0, items[len(items)-1].ID
+			w, a := g.where(true)
+			var one int
+			err := q.db.QueryRow(`SELECT 1`+requestLogJoins+w+` LIMIT 1`, a...).Scan(&one)
+			if err == nil {
+				hasOlder = true
+			} else if err != sql.ErrNoRows {
+				return nil, err
+			}
+		}
+	} else if len(items) > f.Limit {
+		items = items[:f.Limit]
+		hasOlder = true
+	}
+	page := &RequestLogPage{Items: items}
+	if hasOlder && len(items) > 0 {
+		page.NextBeforeID = items[len(items)-1].ID
+	}
+	tw, targs := f.where(false)
+	if page.Total, page.TotalCapped, err = q.countCapped(tw, targs); err != nil {
+		return nil, err
+	}
+	if f.BeforeID > 0 || f.AfterID > 0 {
+		if len(items) > 0 {
+			g := f
+			g.BeforeID, g.AfterID = 0, 0
+			w, a := g.where(false)
+			cond := "r.id > ?"
+			if w == "" {
+				w = " WHERE " + cond
+			} else {
+				w += " AND " + cond
+			}
+			n, _, err := q.countCapped(w, append(a, items[0].ID))
+			if err != nil {
+				return nil, err
+			}
+			page.Offset = n
+			page.HasNewer = n > 0
+		} else {
+			page.HasNewer = true
+		}
+	}
+	return page, nil
+}
+
+// LogFacets lists the values offered by the request-log filter selects.
+type LogFacetClient struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+type LogFacets struct {
+	Clients     []LogFacetClient `json:"clients"`
+	Services    []string         `json:"services"`
+	Credentials []string         `json:"credentials"`
+}
+
+func (q *RequestLogQueries) Facets() (*LogFacets, error) {
+	out := &LogFacets{Clients: []LogFacetClient{}, Services: []string{}, Credentials: []string{}}
+	rows, err := q.db.Query(`SELECT id, name FROM clients ORDER BY name LIMIT 1000`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var c LogFacetClient
+		if err := rows.Scan(&c.ID, &c.Name); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out.Clients = append(out.Clients, c)
+	}
+	rows.Close()
+	for _, spec := range []struct {
+		sql string
+		dst *[]string
+	}{
+		{`SELECT DISTINCT name FROM services ORDER BY name LIMIT 1000`, &out.Services},
+		{`SELECT DISTINCT name FROM api_keys ORDER BY name LIMIT 1000`, &out.Credentials},
+	} {
+		r, err := q.db.Query(spec.sql)
+		if err != nil {
+			return nil, err
+		}
+		for r.Next() {
+			var n string
+			if err := r.Scan(&n); err != nil {
+				r.Close()
+				return nil, err
+			}
+			*spec.dst = append(*spec.dst, n)
+		}
+		r.Close()
+	}
+	return out, nil
 }
 
 func (q *RequestLogQueries) Count() (int, error) {

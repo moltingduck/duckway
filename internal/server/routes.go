@@ -328,17 +328,8 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 		log.Printf("[cc] debug inject_event endpoint enabled (DUCKWAY_CC_DEBUG_INJECT=1)")
 	}
 
-	adminAPIMux.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
-		logs, err := ss.RequestLogQ.Recent(500)
-		if err != nil {
-			handlers.JsonErrorPublic(w, "failed", 500)
-			return
-		}
-		if logs == nil {
-			logs = []queries.RequestLogEntry{}
-		}
-		handlers.JsonResponsePublic(w, logs)
-	})
+	adminAPIMux.HandleFunc("GET /api/logs", newLogsListHandler(ss.RequestLogQ))
+	adminAPIMux.HandleFunc("GET /api/logs/facets", newLogsFacetsHandler(ss.RequestLogQ))
 
 	// GET /api/logs/{id}/detail — full request/response payload (only present
 	// when detail capture was enabled at request time).
