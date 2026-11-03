@@ -27,13 +27,13 @@
       <form class="st-form" data-sec="gateway" data-on-submit="stSave" novalidate>
         <div class="form-group">
           <label for="s-gateway-url">Gateway URL</label>
-          <input type="url" id="s-gateway-url" data-sec="gateway" data-on-input="stInput" placeholder="http://duckway-gw" autocomplete="off" aria-describedby="s-gateway-url-hint s-gateway-url-err">
+          <input type="url" id="s-gateway-url" data-sec="gateway" data-on-input="stInput" data-on-change="stInput" placeholder="http://duckway-gw" autocomplete="off" aria-describedby="s-gateway-url-hint s-gateway-url-err">
           <p class="text-sm text-muted" id="s-gateway-url-hint">The URL agents use to reach the gateway. Required in split mode, where the admin panel does not serve <code>/install.sh</code>. Leave empty in combined mode to fall back to the admin panel URL.</p>
           <p class="st-err" id="s-gateway-url-err" role="status" hidden></p>
         </div>
         <div class="form-group">
           <label for="s-proxy-port">Client proxy port</label>
-          <input type="number" id="s-proxy-port" data-sec="gateway" data-on-input="stInput" placeholder="18080" min="1024" max="65535" inputmode="numeric" aria-describedby="s-proxy-port-hint s-proxy-port-err">
+          <input type="number" id="s-proxy-port" data-sec="gateway" data-on-input="stInput" data-on-change="stInput" placeholder="18080" min="1024" max="65535" inputmode="numeric" aria-describedby="s-proxy-port-hint s-proxy-port-err">
           <p class="text-sm text-muted" id="s-proxy-port-hint">Suggested port for <code>duckway proxy</code> on client machines (1024 to 65535). Default: 18080.</p>
           <p class="st-err" id="s-proxy-port-err" role="status" hidden></p>
         </div>
@@ -52,7 +52,7 @@
       <form class="st-form" data-sec="approvals" data-on-submit="stSave" novalidate>
         <div class="form-group">
           <label for="s-approval-ttl">Ignore undecided requests after (minutes)</label>
-          <input type="number" id="s-approval-ttl" data-sec="approvals" data-on-input="stInput" placeholder="60" min="1" max="10080" inputmode="numeric" aria-describedby="s-approval-ttl-hint s-approval-ttl-err">
+          <input type="number" id="s-approval-ttl" data-sec="approvals" data-on-input="stInput" data-on-change="stInput" placeholder="60" min="1" max="10080" inputmode="numeric" aria-describedby="s-approval-ttl-hint s-approval-ttl-err">
           <p class="text-sm text-muted" id="s-approval-ttl-hint">Whole minutes from 1 to 10080 (7 days). Default: 60.</p>
           <p class="st-err" id="s-approval-ttl-err" role="status" hidden></p>
         </div>
@@ -72,18 +72,18 @@
       <form class="st-form" data-sec="password" data-on-submit="stSave" novalidate autocomplete="off">
         <div class="form-group">
           <label for="cp-current">Current password</label>
-          <input type="password" id="cp-current" data-sec="password" data-on-input="stInput" autocomplete="current-password" aria-describedby="cp-current-err">
+          <input type="password" id="cp-current" data-sec="password" data-on-input="stInput" data-on-change="stInput" autocomplete="current-password" aria-describedby="cp-current-err">
           <p class="st-err" id="cp-current-err" role="status" hidden></p>
         </div>
         <div class="form-group">
           <label for="cp-new">New password</label>
-          <input type="password" id="cp-new" data-sec="password" data-on-input="stInput" autocomplete="new-password" aria-describedby="cp-new-hint cp-new-err">
+          <input type="password" id="cp-new" data-sec="password" data-on-input="stInput" data-on-change="stInput" autocomplete="new-password" aria-describedby="cp-new-hint cp-new-err">
           <p class="text-sm text-muted" id="cp-new-hint">At least 12 characters.</p>
           <p class="st-err" id="cp-new-err" role="status" hidden></p>
         </div>
         <div class="form-group">
           <label for="cp-new2">Confirm new password</label>
-          <input type="password" id="cp-new2" data-sec="password" data-on-input="stInput" autocomplete="new-password" aria-describedby="cp-new2-err">
+          <input type="password" id="cp-new2" data-sec="password" data-on-input="stInput" data-on-change="stInput" autocomplete="new-password" aria-describedby="cp-new2-err">
           <p class="st-err" id="cp-new2-err" role="status" hidden></p>
         </div>
         <div class="st-bar">
@@ -101,14 +101,14 @@
       <form class="st-form" data-sec="statusline" data-on-submit="stSave" novalidate>
         <div class="form-group">
           <label for="s-statusline-script">Script content</label>
-          <textarea id="s-statusline-script" class="st-mono" rows="14" data-sec="statusline" data-on-input="stInput" spellcheck="false" placeholder="#!/bin/sh&#10;input=$(cat)&#10;echo &quot;[duckway] $(date '+%H:%M:%S')&quot;" aria-describedby="s-statusline-meta s-statusline-err"></textarea>
+          <textarea id="s-statusline-script" class="st-mono" rows="14" data-sec="statusline" data-on-input="stInput" data-on-change="stInput" spellcheck="false" placeholder="#!/bin/sh&#10;input=$(cat)&#10;echo &quot;[duckway] $(date '+%H:%M:%S')&quot;" aria-describedby="s-statusline-meta s-statusline-err"></textarea>
           <p class="text-sm text-muted" id="s-statusline-meta"></p>
           <p class="st-err" id="s-statusline-err" role="status" hidden></p>
         </div>
         <div class="st-preview">
           <p class="st-preview-h">Preview</p>
-          <div class="st-preview-line st-mono" id="st-preview-line" aria-live="polite"></div>
-          <p class="text-sm text-muted" id="st-preview-note"></p>
+          <div class="st-preview-line st-mono" id="st-preview-line" aria-live="off"></div>
+          <p class="text-sm text-muted" id="st-preview-note" role="status" aria-live="polite"></p>
         </div>
         <details class="st-payload">
           <summary>Sample payload your script receives on stdin</summary>
@@ -146,8 +146,13 @@
   var RULES = {
     's-gateway-url': function (v) {
       v = v.trim(); if (!v) return '';
-      try { var u = new URL(v); if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'Gateway URL must start with http:// or https://.'; if (!u.hostname) return 'Gateway URL needs a host name.'; }
+      try { var u = new URL(v); if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'Gateway URL must start with http:// or https://.'; if (!u.hostname) return 'Gateway URL needs a host name.';
+        if (u.username || u.password) return 'Gateway URL must not contain a username or password.';
+        if (u.search || u.hash || v.indexOf('#') >= 0 || v.indexOf('?') >= 0) return 'Gateway URL must not contain a query string or fragment.'; }
       catch (e) { return 'Enter a full URL such as http://duckway-gw or https://gateway.example.com.'; }
+      // The URL is pasted into shell install commands: mirror the server rule.
+      if (/[\s\u0000-\u001f\u007f]/.test(v)) return 'Gateway URL must not contain spaces or control characters.';
+      if (/[$`'"\\;|&<>(){}*]/.test(v)) return 'Gateway URL must not contain shell characters such as $ ` \' " \\ ; | & < > ( ) { } *.';
       return '';
     },
     's-proxy-port': function (v) {
@@ -164,7 +169,8 @@
     'cp-current': function (v) { return v ? '' : 'Enter your current password.'; },
     'cp-new': function (v) {
       if (!v) return 'Enter a new password.';
-      if (v.length < 12) return 'Use at least 12 characters (' + v.length + ' so far).';
+      var n = Array.from(v).length;
+      if (n < 12) return 'Use at least 12 characters (' + n + ' so far).';
       if (v === $('cp-current').value) return 'The new password must differ from the current one.';
       return '';
     },
@@ -200,7 +206,7 @@
     var e = $(el.id + '-err');
     if (e && !e.hidden) msg(el.id, RULES[el.id](el.value));
     if (el.id === 'cp-new' && !$('cp-new2-err').hidden) msg('cp-new2', RULES['cp-new2']($('cp-new2').value));
-    if (sec === 'statusline') preview();
+    if (sec === 'statusline') { immediateNote = false; preview(); }
     refresh(sec);
   };
   DW.actions.stDiscard = function (el) {
@@ -263,6 +269,8 @@
       return;
     }
     busy[sec] = true; refresh(sec); say(sec, 'Saving…');
+    var sent = {};
+    Object.keys(SECS[sec].fields).forEach(function (id) { sent[id] = sec === 'statusline' ? $(id).value : $(id).value.trim(); });
     var req;
     if (sec === 'password') {
       req = fetch('/api/auth/change-password', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
@@ -283,7 +291,14 @@
           refresh(sec); say(sec, 'Not saved: ' + (res.j.error || 'request failed'));
           return;
         }
-        Object.keys(SECS[sec].fields).forEach(function (id) { base[id] = sec === 'password' ? '' : (sec === 'statusline' ? $(id).value : $(id).value.trim()); $(id).value = base[id]; msg(id, ''); });
+        Object.keys(SECS[sec].fields).forEach(function (id) {
+          // Baseline is what was submitted. Text typed while the request was in flight stays and counts as unsaved.
+          var submitted = sec === 'password' ? '' : sent[id];
+          var cur = sec === 'statusline' ? $(id).value : $(id).value.trim();
+          base[id] = submitted;
+          if (sec === 'password' || cur === submitted) $(id).value = submitted;
+          msg(id, '');
+        });
         refresh(sec);
         say(sec, sec === 'password' ? 'Password changed. Other signed-in sessions stay valid until they expire.' : SECS[sec].done);
       }).catch(function (e) { busy[sec] = false; refresh(sec); say(sec, 'Not saved: ' + e.message); });
@@ -292,6 +307,7 @@
   /* ---------- statusline preview ---------- */
   // The script is never executed. If it ends by echoing a literal line, show that
   // line (with ANSI codes stripped and $(date ...) filled in); otherwise say so.
+  var noteTimer = null, immediateNote = true;
   function preview() {
     var src = $('s-statusline-script').value;
     var bytes = new Blob([src]).size;
@@ -312,7 +328,9 @@
       note = 'Static preview of the last echo/printf line, with the clock filled in. Variables such as $input are shown as written.';
     }
     $('st-preview-line').textContent = out === null ? (src.trim() ? 'No literal output line found' : '(empty)') : out;
-    $('st-preview-note').textContent = note;
+    // The note is a polite live region: announce it only after typing pauses.
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(function () { $('st-preview-note').textContent = note; }, immediateNote ? 0 : 900);
   }
 
   /* ---------- section nav ---------- */

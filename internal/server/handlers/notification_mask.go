@@ -55,6 +55,9 @@ func maskNotificationConfig(channelType, config string) string {
 	m := parseNotificationConfig(config)
 	for k, v := range m {
 		if !notificationKeyIsSecret(channelType, k) {
+			// Nested values are masked recursively (validation also rejects
+			// them, but stored configs may predate that rule).
+			m[k] = maskCCValue(v)
 			continue
 		}
 		if s, ok := v.(string); ok && s == "" {
@@ -115,6 +118,12 @@ func validateNotificationConfig(channelType, config string) string {
 		return "config must be a JSON object"
 	}
 	m := parseNotificationConfig(config)
+	for k, v := range m {
+		switch v.(type) {
+		case map[string]interface{}, []interface{}:
+			return k + " must be a plain value, not an object or list"
+		}
+	}
 	for _, k := range notificationRequiredKeys[channelType] {
 		if configString(m, k) == "" {
 			return k + " is required"

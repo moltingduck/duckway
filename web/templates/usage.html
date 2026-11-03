@@ -38,7 +38,7 @@
       <input type="text" id="us-client-search" placeholder="Client name" autocomplete="off" data-on-input="usClientFilter">
     </div>
   </div>
-  <div class="us-state" id="us-state-clients" role="status" hidden></div>
+  <div id="us-state-clients" class="us-state us-state-idle" role="status"></div>
   <div class="us-body" id="us-body-clients">
     <div class="us-summary">
       <div class="stat-card"><div class="label">Clients</div><div class="value" id="us-sum-clients">—</div></div>
@@ -114,7 +114,7 @@
     </div>
   </div>
   <h2 class="us-overview-title">Key overview</h2>
-  <div class="us-state" id="us-state-keys" role="status" hidden></div>
+  <div id="us-state-keys" class="us-state us-state-idle" role="status"></div>
   <div class="us-body" id="us-body-keys">
     <div class="table-wrap">
       <table class="us-table">
@@ -127,7 +127,7 @@
 
 <section class="card us-panel" id="us-panel-sessions" role="tabpanel" aria-labelledby="us-tab-sessions" hidden>
   <h2>Agent sessions</h2>
-  <div class="us-state" id="us-state-sessions" role="status" hidden></div>
+  <div id="us-state-sessions" class="us-state us-state-idle" role="status"></div>
   <div class="us-body" id="us-body-sessions">
     <div class="table-wrap">
       <table class="us-table-sm">
@@ -205,9 +205,10 @@
   /* ---------- panel states ---------- */
   function setState(scope, kind, msg) {
     var box = $('us-state-' + scope), body = $('us-body-' + scope);
-    if (!kind) { box.hidden = true; box.classList.remove('us-state-error'); body.hidden = false; return; }
+    // The status regions stay mounted so screen readers announce the change; only their content toggles.
+    if (!kind) { DW.setHTML(box, DW.html``); box.classList.add('us-state-idle'); box.classList.remove('us-state-error'); body.hidden = false; return; }
     body.hidden = true;
-    box.hidden = false;
+    box.classList.remove('us-state-idle');
     box.classList.toggle('us-state-error', kind === 'error');
     var retry = (kind === 'error' || kind === 'empty') ?  DW.html`<button type="button" class="btn" data-action="usRetry" data-scope="${scope}">Retry</button>` : '';
     DW.setHTML(box, DW.html`<p class="us-state-msg">${msg}</p>${retry}`);
@@ -252,6 +253,9 @@
   DW.actions.usRange = function (el) {
     if (el.dataset.range === st.range) return;
     st.range = el.dataset.range;
+    // Every scope's data and any in-flight request belong to the old range.
+    loaded = {};
+    Object.keys(seq).forEach(function (k) { seq[k]++; });
     apply(true, false);
   };
   DW.actions.usTab = function (el) {
@@ -303,17 +307,17 @@
 
   /* ---------- Clients ---------- */
   function loadClients() {
-    var n = seq.clients = (seq.clients || 0) + 1;
+    var n = seq.clients = (seq.clients || 0) + 1, rng = st.range;
     setState('clients', 'loading', 'Loading client usage…');
-    getJSON('/api/usage/clients?days=' + RANGES[st.range].days).then(function (rows) {
-      if (n !== seq.clients) return;
+    getJSON('/api/usage/clients?days=' + RANGES[rng].days).then(function (rows) {
+      if (n !== seq.clients || rng !== st.range) return;
       clientRows = Array.isArray(rows) ? rows : [];
-      loaded.clients = st.range;
+      loaded.clients = rng;
       if (!clientRows.length) { setState('clients', 'empty', 'No captured LLM token usage in the ' + rangeLabel() + '.'); return; }
       setState('clients', null);
       renderClients();
     }).catch(function (err) {
-      if (n !== seq.clients) return;
+      if (n !== seq.clients || rng !== st.range) return;
       setState('clients', 'error', 'Could not load client usage. ' + err.message);
     });
   }
@@ -373,21 +377,21 @@
 
   /* ---------- Keys ---------- */
   function loadKeys() {
-    var n = seq.keys = (seq.keys || 0) + 1;
+    var n = seq.keys = (seq.keys || 0) + 1, rng = st.range;
     setState('keys', 'loading', 'Loading key overview…');
-    getJSON('/api/usage?hours=' + RANGES[st.range].hours).then(function (rows) {
-      if (n !== seq.keys) return;
+    getJSON('/api/usage?hours=' + RANGES[rng].hours).then(function (rows) {
+      if (n !== seq.keys || rng !== st.range) return;
       keyRows = Array.isArray(rows) ? rows : [];
-      loaded.keys = st.range;
       return loadGroups().then(function () {
-        if (n !== seq.keys) return;
+        if (n !== seq.keys || rng !== st.range) return;
+        loaded.keys = rng;
         buildTargets();
         if (!keyRows.length) setState('keys', 'empty', 'No LLM API keys found.');
         else { setState('keys', null); renderKeyRows(); }
         loadDetail();
       });
     }).catch(function (err) {
-      if (n !== seq.keys) return;
+      if (n !== seq.keys || rng !== st.range) return;
       setState('keys', 'error', 'Could not load key overview. ' + err.message);
       loadDetail();
     });
@@ -432,7 +436,7 @@
   };
 
   function loadDetail() {
-    var n = seq.detail = (seq.detail || 0) + 1;
+    var n = seq.detail = (seq.detail || 0) + 1, rng = st.range;
     if (!st.target) {
       detail = null;
       setState('detail', 'empty-plain', 'Select a key or key group to view details.');
@@ -441,12 +445,12 @@
     var i = st.target.indexOf(':');
     var param = st.target.slice(0, i) === 'group' ? 'key_group_id' : 'key_id';
     var base = '/api/usage/detail?' + param + '=' + encodeURIComponent(st.target.slice(i + 1));
-    var days = RANGES[st.range].days, span = Math.max(days, 7);
+    var days = RANGES[rng].days, span = Math.max(days, 7);
     setState('detail', 'loading', 'Loading usage details…');
     var reqs = [getJSON(base + '&days=' + days)];
     if (span !== days) reqs.push(getJSON(base + '&days=' + span));
     Promise.all(reqs).then(function (res) {
-      if (n !== seq.detail) return;
+      if (n !== seq.detail || rng !== st.range) return;
       detail = {data: norm(res[0]), heat: norm(res[1] || res[0]), span: span};
       var empty = !detail.data.clients.length && !detail.data.models.length && !Number(detail.data.summary.total_tokens || 0) && !Number(detail.data.summary.requests || 0);
       if (empty) { setState('detail', 'empty', 'No usage captured for this selection in the ' + rangeLabel() + '.'); return; }
@@ -454,7 +458,7 @@
       renderPicker();
       renderDetail();
     }).catch(function (err) {
-      if (n !== seq.detail) return;
+      if (n !== seq.detail || rng !== st.range) return;
       detail = null;
       setState('detail', 'error', 'Could not load usage details. ' + err.message);
     });
@@ -587,11 +591,11 @@
 
   /* ---------- Sessions ---------- */
   function loadSessions() {
-    var n = seq.sessions = (seq.sessions || 0) + 1;
+    var n = seq.sessions = (seq.sessions || 0) + 1, rng = st.range;
     setState('sessions', 'loading', 'Loading sessions…');
-    getJSON('/api/usage/sessions?hours=' + RANGES[st.range].hours).then(function (rows) {
-      if (n !== seq.sessions) return;
-      loaded.sessions = st.range;
+    getJSON('/api/usage/sessions?hours=' + RANGES[rng].hours).then(function (rows) {
+      if (n !== seq.sessions || rng !== st.range) return;
+      loaded.sessions = rng;
       if (!Array.isArray(rows) || !rows.length) { setState('sessions', 'empty', 'No requests in the ' + rangeLabel() + '.'); return; }
       setState('sessions', null);
       DW.setHTML($('us-session-rows'), DW.html`${rows.map(function (s) {
@@ -599,7 +603,7 @@
         return DW.html`<tr><td>${s.client_name || s.client_id || '(unknown)'}</td><td><span class="badge badge-blue">${s.service_name}</span></td><td>${fmtInt(s.requests)}</td><td>${err}</td><td class="text-sm text-muted">${fmtDate(s.last_seen)}</td></tr>`;
       })}`);
     }).catch(function (err) {
-      if (n !== seq.sessions) return;
+      if (n !== seq.sessions || rng !== st.range) return;
       setState('sessions', 'error', 'Could not load sessions. ' + err.message);
     });
   }

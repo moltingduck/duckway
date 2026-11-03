@@ -278,3 +278,57 @@ func TestNotificationsMigrationHasEnabledFlagDefaultOn(t *testing.T) {
 		t.Fatal("notification_channels.is_active missing: no migration needed only if it exists")
 	}
 }
+
+func TestNotificationRestartRequiredAndNoStore(t *testing.T) {
+	e := newNtEnv(t)
+	tg := e.create("telegram", "tg", map[string]string{"bot_token": ntTgToken, "chat_id": "42"})
+	wh := e.create("webhook", "wh", map[string]string{"url": "https://hooks.example/" + ntHookToken})
+	flag := func(rec *httptest.ResponseRecorder) bool {
+		var v struct {
+			R bool `json:"restart_required"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+			t.Fatal(err)
+		}
+		return v.R
+	}
+	for _, c := range []struct {
+		id   string
+		want bool
+	}{{tg, true}, {wh, false}} {
+		for _, active := range []bool{false, true} {
+			rec := e.do("POST", "/api/notifications/"+c.id+"/active", map[string]bool{"active": active})
+			if rec.Code != 200 || flag(rec) != c.want || rec.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("active %v id=%s: %d restart=%v cache=%q", active, c.id, rec.Code, flag(rec), rec.Header().Get("Cache-Control"))
+			}
+		}
+	}
+	rec := e.do("PUT", "/api/notifications/"+tg, map[string]string{"name": "tg", "config": `{"bot_token":"999:new","chat_id":"42"}`})
+	if rec.Code != 200 || !flag(rec) {
+		t.Fatalf("telegram token edit must report restart_required: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, path := range []string{"/api/notifications", "/api/notifications/" + tg} {
+		if rec := e.do("GET", path, nil); rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("GET %s cache=%q", path, rec.Header().Get("Cache-Control"))
+		}
+	}
+}
+
+func TestNotificationNestedConfigRejectedAndMaskedWhenStored(t *testing.T) {
+	e := newNtEnv(t)
+	rec := e.do("POST", "/api/notifications", map[string]string{"channel_type": "webhook", "name": "n",
+		"config": `{"url":"https://h.example/x","extra":{"token":"NESTEDSECRET"}}`})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("nested config must be rejected, got %d", rec.Code)
+	}
+	// A config stored before the rule existed must still never leak.
+	id := e.create("webhook", "n", map[string]string{"url": "https://h.example/x"})
+	if _, err := e.s.db.Exec(`UPDATE notification_channels SET config = ? WHERE id = ?`,
+		`{"url":"https://h.example/x","extra":{"api_token":"NESTEDSECRET","list":[{"password":"NESTEDPW"}]}}`, id); err != nil {
+		t.Fatal(err)
+	}
+	body := e.do("GET", "/api/notifications", nil).Body.String()
+	if strings.Contains(body, "NESTEDSECRET") || strings.Contains(body, "NESTEDPW") {
+		t.Fatalf("nested secret leaked: %s", body)
+	}
+}

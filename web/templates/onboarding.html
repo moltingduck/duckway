@@ -202,7 +202,7 @@ function shq(s) { return "'" + String(s == null ? '' : s).replace(/'/g, "'\\''")
 function installLines(masked) {
   var tok = masked ? '••••••••••••••••••••' : S.token;
   var lines = [
-    'curl -fsSL ' + S.gatewayURL + '/install.sh | sh',
+    'curl -fsSL ' + shq(S.gatewayURL.replace(/\/$/, '') + '/install.sh') + ' | sh',
     'printf \'%s\\n\' ' + shq(S.gatewayURL) + ' ' + shq(S.name) + ' 1 ' + shq(tok) + ' | duckway init',
     'duckway sync',
     'duckway proxy -d',

@@ -835,8 +835,27 @@ cp .env.example .dev.env
   };
 
   // TOC links close the collapsed contents; reveal a hidden target by clearing the search.
+  // If the active search hides the section an in-page link or hash points to,
+  // clear the search first so the link lands on visible content.
+  function revealFor(id) {
+    if (!id) return;
+    var t = document.getElementById(id);
+    var sec = t && t.closest('.dc-sec');
+    if (!sec || !sec.hidden) return false;
+    var i = document.getElementById('dc-q');
+    i.value = '';
+    DW.actions.dcSearch(i);
+    return true;
+  }
   document.querySelector('.dc-toc-list').addEventListener('click', function (e) {
-    if (e.target.closest('a')) setToc(false);
+    var a = e.target.closest('a');
+    if (!a) return;
+    revealFor((a.getAttribute('href') || '').replace(/^#/, ''));
+    setToc(false);
+  });
+  window.addEventListener('hashchange', function () {
+    var id = decodeURIComponent(location.hash.replace(/^#/, ''));
+    if (revealFor(id)) { var t = document.getElementById(id); if (t && t.scrollIntoView) t.scrollIntoView(); }
   });
 
   // Copy buttons on code blocks.

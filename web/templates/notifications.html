@@ -58,8 +58,15 @@
       <div id="nt-fields"></div>
       <p class="nt-err" id="nt-form-err" role="alert" hidden></p>
       <div class="modal-actions">
-        <button type="button" class="btn" data-action="modal-close">Cancel</button>
+        <button type="button" class="btn" data-action="ntCancelForm">Cancel</button>
         <button type="submit" class="btn btn-primary" id="nt-save">Add channel</button>
+      </div>
+      <div class="nt-confirm" id="nt-discard" role="group" aria-labelledby="nt-discard-t" hidden>
+        <p class="text-sm" id="nt-discard-t"><strong>Discard what you entered?</strong> The values typed in this form will be lost.</p>
+        <div class="nt-confirm-btns">
+          <button type="button" class="btn" data-action="ntKeepEditing" id="nt-keep-editing">Keep editing</button>
+          <button type="button" class="btn btn-danger" data-action="ntDiscardForm">Discard</button>
+        </div>
       </div>
     </form>
   </div>
@@ -87,6 +94,7 @@
         { key: 'secret', label: 'Shared secret (optional)', secret: true, optional: true, hint: 'Sent as the X-Duckway-Secret header.' }] }
   };
 
+  var RESTART_NOTE = ' Restart the Duckway server for the Approve / Reject reply listener to start or stop; alerts are unaffected.';
   var state = { channels: [], status: {}, editing: null, replacing: {}, pendingDelete: null, busy: {} };
 
   function $(id) { return document.getElementById(id); }
@@ -173,9 +181,10 @@
     var next = !ch.is_active;
     state.busy[id] = true;
     setStatus(id, 'Saving…');
-    return api('POST', '/api/notifications/' + encodeURIComponent(id) + '/active', { active: next }).then(function () {
+    return api('POST', '/api/notifications/' + encodeURIComponent(id) + '/active', { active: next }).then(function (res) {
       ch.is_active = next;
-      state.status[id] = next ? 'Enabled. Alerts will be sent here.' : 'Disabled. No alerts will be sent here.';
+      state.status[id] = (next ? 'Enabled. Alerts will be sent here.' : 'Disabled. No alerts will be sent here.') +
+        (res && res.restart_required ? RESTART_NOTE : '');
       render();
     }).catch(function (e) {
       setStatus(id, 'Could not change: ' + e.message);
@@ -259,7 +268,9 @@
     else $('nt-type').value = 'telegram';
     $('nt-form-err').hidden = true;
     $('nt-name-err').hidden = true;
+    $('nt-discard').hidden = true;
     renderFields();
+    snapshot = formSnapshot();
     DW.modal.open('#nt-modal');
     $('nt-name').focus();
   }
@@ -270,7 +281,31 @@
     return api('GET', '/api/notifications/' + encodeURIComponent(id)).then(openForm)
       .catch(function (e) { setStatus(id, 'Could not open: ' + e.message); });
   };
-  DW.actions.ntTypeChange = function () { renderFields(); };
+  DW.actions.ntTypeChange = function () {
+    // Keep what was typed for fields both types share (same key).
+    var cfgNow = collect(true); renderFields(); restore(cfgNow);
+  };
+
+  /* ---------- discard guard ---------- */
+  var snapshot = '';
+  function formSnapshot() {
+    var vals = {};
+    document.querySelectorAll('#nt-fields input').forEach(function (i) { vals[i.id] = i.value; });
+    return JSON.stringify([$('nt-name').value, $('nt-type').value, vals]);
+  }
+  function formDirty() { return !$('nt-modal').hidden && $('nt-modal').style.display !== 'none' && formSnapshot() !== snapshot; }
+  function closeForm() { $('nt-discard').hidden = true; DW.modal.close('#nt-modal'); }
+  function askDiscard() { $('nt-discard').hidden = false; $('nt-keep-editing').focus(); }
+  DW.actions.ntCancelForm = function () { if (formDirty()) askDiscard(); else closeForm(); };
+  DW.actions.ntKeepEditing = function () { $('nt-discard').hidden = true; $('nt-name').focus(); };
+  DW.actions.ntDiscardForm = function () { closeForm(); };
+  // Capture phase: runs before DW.modal's Escape / backdrop handlers.
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && formDirty()) { e.preventDefault(); e.stopPropagation(); askDiscard(); }
+  }, true);
+  document.addEventListener('mousedown', function (e) {
+    if (e.target === $('nt-modal') && formDirty()) { e.stopPropagation(); askDiscard(); }
+  }, true);
   DW.actions.ntReplace = function (el) {
     state.replacing[el.dataset.key] = true;
     var cfgNow = collect(true); renderFields(); restore(cfgNow);
@@ -353,11 +388,16 @@
     else { body.channel_type = type; req = api('POST', '/api/notifications', body); }
     var wasEdit = !!state.editing, editedId = state.editing && state.editing.id;
     return req.then(function (res) {
+      snapshot = formSnapshot();
       DW.modal.close('#nt-modal');
       return load().then(function () {
         var id = wasEdit ? editedId : res.id;
-        setStatus(id, wasEdit ? 'Saved. Use Test to verify the new settings.' : 'Channel added. Use Test to verify it.');
+        setStatus(id, (wasEdit ? 'Saved. Use Test to verify the new settings.' : 'Channel added. Use Test to verify it.') +
+          (((res && res.restart_required) || (!wasEdit && (type === 'telegram' || type === 'discord_bot'))) ? RESTART_NOTE : ''));
         render();
+        // The list re-rendered, so the opener (old Edit button) is gone: refocus the new one.
+        var b = wasEdit ? document.querySelector('[data-action="ntEdit"][data-id="' + CSS.escape(id) + '"]') : document.querySelector('[data-action="ntAdd"]');
+        if (b) b.focus();
       });
     }).catch(function (e) {
       $('nt-form-err').textContent = 'Could not save: ' + e.message;

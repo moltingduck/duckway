@@ -18,7 +18,17 @@ func NewNotificationHandler(channels *queries.NotificationQueries, notifier *svc
 	return &NotificationHandler{channels: channels, notifier: notifier}
 }
 
+// listenerChannel reports whether a channel type has an approval listener
+// (Telegram poller, Discord bot gateway). Those listeners are started once at
+// server boot, so changing such a channel only takes effect after a restart.
+func listenerChannel(channelType string) bool {
+	return channelType == "telegram" || channelType == "discord_bot"
+}
+
+func noStore(w http.ResponseWriter) { w.Header().Set("Cache-Control", "no-store") }
+
 func (h *NotificationHandler) List(w http.ResponseWriter, r *http.Request) {
+	noStore(w)
 	list, err := h.channels.List()
 	if err != nil {
 		jsonError(w, "failed to list channels", http.StatusInternalServerError)
@@ -80,6 +90,7 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	noStore(w)
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, notificationView(*ch))
 }
@@ -109,6 +120,7 @@ func (h *NotificationHandler) Test(w http.ResponseWriter, r *http.Request) {
 	result := h.notifier.TestChannel(*target)
 	// Transport errors can echo the request URL (bot token, webhook token).
 	result.Message = scrubSecrets(target.ChannelType, target.Config, result.Message)
+	noStore(w)
 	jsonResponse(w, result)
 }
 
@@ -142,7 +154,8 @@ func (h *NotificationHandler) Update(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to update", http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]string{"status": "ok"})
+	noStore(w)
+	jsonResponse(w, map[string]interface{}{"status": "ok", "restart_required": listenerChannel(stored.ChannelType)})
 }
 
 // SetActive enables or disables delivery to a channel without touching its config.
@@ -155,7 +168,8 @@ func (h *NotificationHandler) SetActive(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, "active (boolean) is required", http.StatusBadRequest)
 		return
 	}
-	if _, err := h.channels.GetByID(id); err != nil {
+	stored, err := h.channels.GetByID(id)
+	if err != nil {
 		jsonError(w, "channel not found", http.StatusNotFound)
 		return
 	}
@@ -163,11 +177,13 @@ func (h *NotificationHandler) SetActive(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, "failed to update", http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]interface{}{"status": "ok", "is_active": *req.Active})
+	noStore(w)
+	jsonResponse(w, map[string]interface{}{"status": "ok", "is_active": *req.Active, "restart_required": listenerChannel(stored.ChannelType)})
 }
 
 func (h *NotificationHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	noStore(w)
 	ch, err := h.channels.GetByID(id)
 	if err != nil {
 		jsonError(w, "channel not found", http.StatusNotFound)

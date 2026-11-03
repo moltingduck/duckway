@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/server/middleware"
@@ -79,7 +80,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "current_password and new_password are required", http.StatusBadRequest)
 		return
 	}
-	if len(req.NewPassword) < MinAdminPasswordLen {
+	if utf8.RuneCountInString(req.NewPassword) < MinAdminPasswordLen {
 		jsonError(w, "new password must be at least 12 characters", http.StatusBadRequest)
 		return
 	}
@@ -103,6 +104,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to update password", http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
 

@@ -1,6 +1,9 @@
 package queries
 
-import "database/sql"
+import (
+	"database/sql"
+	"sort"
+)
 
 type SettingsQueries struct {
 	db *sql.DB
@@ -24,6 +27,33 @@ func (q *SettingsQueries) Set(key, value string) error {
 	return err
 }
 
+// SetMany writes every pair in one transaction: all of them or none.
+func (q *SettingsQueries) SetMany(kv map[string]string) error {
+	if len(kv) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(kv))
+	for k := range kv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, k := range keys {
+		v := kv[k]
+		if _, err := tx.Exec(
+			"INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+			k, v, v,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (q *SettingsQueries) GetAll() map[string]string {
 	rows, err := q.db.Query("SELECT key, value FROM settings")
 	if err != nil {
@@ -41,10 +71,10 @@ func (q *SettingsQueries) GetAll() map[string]string {
 
 // Well-known setting keys
 const (
-	SettingGatewayURL               = "gateway_url"                    // e.g., http://duckway-gw.tailnet:8080
-	SettingProxyPort                = "proxy_port"                     // suggested client proxy port, default 18080
-	SettingRequestLogCaptureOn      = "request_log_capture_enabled"    // "1" / "0"
-	SettingRequestLogCaptureClients = "request_log_capture_clients"    // JSON array of client IDs; empty = all
-	SettingApprovalRequestTTL       = "approval_request_ttl_minutes"   // pending approvals auto-marked "ignored" after this; default 60
-	SettingAgentStatuslineScript    = "agent_statusline_script"        // shell script body served via GET /client/statusline; agents `duckway sync` writes it to ~/.duckway/statusline.sh
+	SettingGatewayURL               = "gateway_url"                  // e.g., http://duckway-gw.tailnet:8080
+	SettingProxyPort                = "proxy_port"                   // suggested client proxy port, default 18080
+	SettingRequestLogCaptureOn      = "request_log_capture_enabled"  // "1" / "0"
+	SettingRequestLogCaptureClients = "request_log_capture_clients"  // JSON array of client IDs; empty = all
+	SettingApprovalRequestTTL       = "approval_request_ttl_minutes" // pending approvals auto-marked "ignored" after this; default 60
+	SettingAgentStatuslineScript    = "agent_statusline_script"      // shell script body served via GET /client/statusline; agents `duckway sync` writes it to ~/.duckway/statusline.sh
 )

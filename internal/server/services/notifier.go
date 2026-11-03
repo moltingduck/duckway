@@ -3,13 +3,15 @@ package services
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"sync"
 	"net/url"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -105,7 +107,7 @@ func (n *Notifier) sendTelegram(configJSON string, notif ApprovalNotification) e
 
 	resp, err := n.client.Post(apiURL, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return scrubNetErr(err)
 	}
 	defer resp.Body.Close()
 
@@ -137,7 +139,7 @@ func (n *Notifier) sendDiscord(configJSON string, notif ApprovalNotification) er
 
 	resp, err := n.client.Post(cfg.WebhookURL, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return scrubNetErr(err)
 	}
 	defer resp.Body.Close()
 
@@ -180,14 +182,14 @@ func (n *Notifier) sendDiscordBot(configJSON string, notif ApprovalNotification)
 	apiURL := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", cfg.ChannelID)
 	req, err := http.NewRequest("POST", apiURL, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return scrubNetErr(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bot "+cfg.BotToken)
 
 	resp, err := n.client.Do(req)
 	if err != nil {
-		return err
+		return scrubNetErr(err)
 	}
 	defer resp.Body.Close()
 
@@ -248,7 +250,7 @@ func (n *Notifier) testTelegram(configJSON, testCode string) TestResult {
 		"application/json", bytes.NewReader(body),
 	)
 	if err != nil {
-		return TestResult{Message: "send failed: " + err.Error()}
+		return TestResult{Message: "send failed: " + scrubNetErr(err).Error()}
 	}
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
@@ -323,7 +325,7 @@ func (n *Notifier) testDiscordBot(configJSON, testCode string) TestResult {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := n.client.Do(req)
 	if err != nil {
-		return TestResult{Message: "send failed: " + err.Error()}
+		return TestResult{Message: "send failed: " + scrubNetErr(err).Error()}
 	}
 	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -335,7 +337,9 @@ func (n *Notifier) testDiscordBot(configJSON, testCode string) TestResult {
 	deadline := time.Now().Add(15 * time.Second)
 	var lastMsgID string
 	// Get the sent message ID to only look at messages after it
-	var sentMsg struct{ ID string `json:"id"` }
+	var sentMsg struct {
+		ID string `json:"id"`
+	}
 	json.Unmarshal(respBody, &sentMsg)
 	lastMsgID = sentMsg.ID
 
@@ -354,7 +358,9 @@ func (n *Notifier) testDiscordBot(configJSON, testCode string) TestResult {
 		var messages []struct {
 			ID      string `json:"id"`
 			Content string `json:"content"`
-			Author  struct{ Bot bool `json:"bot"` } `json:"author"`
+			Author  struct {
+				Bot bool `json:"bot"`
+			} `json:"author"`
 		}
 		json.Unmarshal(getBody, &messages)
 
@@ -389,7 +395,7 @@ func (n *Notifier) testDiscordWebhook(configJSON string) TestResult {
 	body, _ := json.Marshal(map[string]string{"content": "🧪 Duckway test notification"})
 	resp, err := n.client.Post(cfg.WebhookURL, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return TestResult{Message: "send failed: " + err.Error()}
+		return TestResult{Message: "send failed: " + scrubNetErr(err).Error()}
 	}
 	resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -408,7 +414,7 @@ func (n *Notifier) testWebhook(configJSON string) TestResult {
 	body, _ := json.Marshal(map[string]string{"test": "duckway"})
 	resp, err := n.client.Post(cfg.URL, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return TestResult{Message: "send failed: " + err.Error()}
+		return TestResult{Message: "send failed: " + scrubNetErr(err).Error()}
 	}
 	resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -436,7 +442,7 @@ func (n *Notifier) sendWebhook(configJSON string, notif ApprovalNotification) er
 
 	req, err := http.NewRequest("POST", parsedURL.String(), bytes.NewReader(body))
 	if err != nil {
-		return err
+		return scrubNetErr(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if cfg.Secret != "" {
@@ -445,7 +451,7 @@ func (n *Notifier) sendWebhook(configJSON string, notif ApprovalNotification) er
 
 	resp, err := n.client.Do(req)
 	if err != nil {
-		return err
+		return scrubNetErr(err)
 	}
 	defer resp.Body.Close()
 
@@ -453,4 +459,25 @@ func (n *Notifier) sendWebhook(configJSON string, notif ApprovalNotification) er
 		return fmt.Errorf("webhook returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+var (
+	telegramTokenInPath = regexp.MustCompile(`/bot[^/\s"?]+`)
+	urlInText           = regexp.MustCompile(`https?://[^\s"']+`)
+)
+
+// scrubNetErr strips a *url.Error down to its inner error (the wrapper echoes
+// the full request URL, which carries Telegram bot tokens and webhook
+// secrets) and redacts any URL that still appears in the message.
+func scrubNetErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.Err != nil {
+		err = fmt.Errorf("%s request failed: %w", ue.Op, ue.Err)
+	}
+	msg := telegramTokenInPath.ReplaceAllString(err.Error(), "/bot********")
+	msg = urlInText.ReplaceAllString(msg, "[url]")
+	return errors.New(msg)
 }

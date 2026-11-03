@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 )
@@ -15,6 +16,9 @@ const MaxStatuslineScriptBytes = 64 * 1024
 
 // MinAdminPasswordLen is the minimum length enforced by change-password.
 const MinAdminPasswordLen = 12
+
+// MaxSettingValueBytes bounds values of settings that have no specific rule.
+const MaxSettingValueBytes = 64 * 1024
 
 // SettingsHandler serves the key/value settings API. Known keys are validated
 // server-side (the UI mirrors these rules but this code is authoritative);
@@ -43,6 +47,22 @@ func ValidateSetting(key, value string) string {
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return "Gateway URL must start with http:// or https:// and include a host"
 		}
+		// The URL is interpolated into install commands users paste into a
+		// shell, so anything that could break out of quoting is refused.
+		if u.User != nil {
+			return "Gateway URL must not contain a username or password"
+		}
+		if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(v, "#") {
+			return "Gateway URL must not contain a query string or fragment"
+		}
+		for _, r := range v {
+			if unicode.IsSpace(r) || unicode.IsControl(r) {
+				return "Gateway URL must not contain spaces or control characters"
+			}
+			if strings.ContainsRune("$`'\"\\;|&<>(){}*", r) {
+				return "Gateway URL must not contain shell characters such as $ ` ' \" \\ ; | & < > ( ) { } *"
+			}
+		}
 	case queries.SettingProxyPort:
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || n < 1024 || n > 65535 {
@@ -56,6 +76,14 @@ func ValidateSetting(key, value string) string {
 	case queries.SettingAgentStatuslineScript:
 		if len(value) > MaxStatuslineScriptBytes {
 			return "Statusline script must be 64 KB or smaller"
+		}
+	default:
+		// Keys written by other pages pass through, but bounded.
+		if len(key) > 128 {
+			return "Setting name is too long"
+		}
+		if len(value) > MaxSettingValueBytes {
+			return "Setting value must be 64 KB or smaller"
 		}
 	}
 	return ""
@@ -76,15 +104,16 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// One transaction: a section save is all-or-nothing.
 	for k, v := range req {
 		switch k {
 		case queries.SettingGatewayURL, queries.SettingProxyPort, queries.SettingApprovalRequestTTL:
-			v = strings.TrimSpace(v)
+			req[k] = strings.TrimSpace(v)
 		}
-		if err := h.settings.Set(k, v); err != nil {
-			jsonError(w, "failed to save setting", http.StatusInternalServerError)
-			return
-		}
+	}
+	if err := h.settings.SetMany(req); err != nil {
+		jsonError(w, "failed to save settings", http.StatusInternalServerError)
+		return
 	}
 	jsonResponse(w, map[string]string{"status": "ok"})
 }

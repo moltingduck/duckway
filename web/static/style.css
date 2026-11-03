@@ -1959,3 +1959,6 @@ textarea.st-mono { white-space: pre; overflow-x: auto; width: 100%; }
   .dc-toc-link { min-height: 44px; }
   .dc-copy { min-height: 44px; min-width: 44px; }
 }
+
+/* us- fix round 1: status regions stay mounted; idle = no visible box */
+.us-state-idle { padding: 0; border: 0; margin: 0; min-height: 0; }

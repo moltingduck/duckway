@@ -2,7 +2,7 @@
  * Requires dw.js. Exposes window.DWInstall:
  *   DWInstall.gateway()           -> Promise<{url, valid}>  (configured gateway URL; valid when /install.sh is served)
  *   DWInstall.shellQuote(s)       -> POSIX single-quoted string
- *   DWInstall.installCmd(url)     -> 'curl -fsSL URL/install.sh | sh'
+ *   DWInstall.installCmd(url)     -> "curl -fsSL 'URL/install.sh' | sh"
  *   DWInstall.initCmd(url, name, token) -> printf ... | duckway init
  *   DWInstall.copy(text)          -> copies text to the clipboard (async API with textarea fallback)
  *   DWInstall.relTime(s)          -> '2 min ago' style label for a server timestamp ('' -> 'never')
@@ -38,7 +38,7 @@
   }
 
   function installCmd(url) {
-    return 'curl -fsSL ' + url.replace(/\/$/, '') + '/install.sh | sh';
+    return 'curl -fsSL ' + shellQuote(url.replace(/\/$/, '') + '/install.sh') + ' | sh';
   }
 
   function initCmd(url, name, token) {

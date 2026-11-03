@@ -58,6 +58,7 @@
 (function() {
   var $ = function(id) { return document.getElementById(id); };
   var loaded = false;
+  var ageBase = null;   // last min-age the server reported; a differing input is a pending edit
 
   function api(method, url, body) {
     var opt = {method: method, credentials: 'same-origin'};
@@ -94,14 +95,18 @@
     $('sc-status').textContent = 'Loading…';
     return api('GET', '/api/supply-chain').then(function(d) {
       loaded = true;
-      $('sc-min-age').value = d.min_age_days || 3;
-      DW.actions.scAgeInput();
+      var srv = String(d.min_age_days || 3), inp = $('sc-min-age');
+      // Never overwrite a value the user is still editing.
+      if (ageBase === null || inp.value.trim() === ageBase) { inp.value = srv; DW.actions.scAgeInput(); }
+      ageBase = srv;
       render(d.mitigations || []);
+      return true;
     }).catch(function(e) {
       $('sc-errmsg').textContent = 'Could not load supply chain settings: ' + e.message;
       $('sc-err').hidden = false;
       $('sc-status').textContent = 'Load failed';
       if (!loaded) DW.setHTML($('sc-rows'), DW.html`<tr><td colspan="5" class="text-muted text-sm">Not loaded.</td></tr>`);
+      return false;
     });
   }
   DW.actions.scRetry = function() { load(); };
@@ -113,11 +118,24 @@
     btn.disabled = true;
     $('sc-status').textContent = 'Saving ' + name + '…';
     api('POST', '/api/supply-chain/' + encodeURIComponent(id), {enabled: want}).then(function() {
-      DW.toast(name + (want ? ' on' : ' off') + '. Applies on next sync.', 'success');
-      return load().then(function() {
-        $('sc-status').textContent = name + ' is now ' + (want ? 'on' : 'off') + '. Applies on next sync.';
+      return load().then(function(ok) {
         var again = document.querySelector('.sc-switch[data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
-        if (again) again.focus();
+        if (!ok || !again) {
+          // The list did not refresh: do not claim the new state, and keep the control usable.
+          btn.disabled = false;
+          $('sc-status').textContent = name + ' was saved, but the list could not be refreshed. Retry to confirm its state.';
+          DW.toast('Saved, but the list could not be refreshed', 'error');
+          return;
+        }
+        var actual = again.getAttribute('aria-checked') === 'true';
+        if (actual !== want) {
+          $('sc-status').textContent = name + ' is still ' + (actual ? 'on' : 'off') + ' on the server. The change was not applied.';
+          DW.toast(name + ' did not change', 'error');
+        } else {
+          DW.toast(name + (want ? ' on' : ' off') + '. Applies on next sync.', 'success');
+          $('sc-status').textContent = name + ' is now ' + (want ? 'on' : 'off') + '. Applies on next sync.';
+        }
+        again.focus();
       });
     }).catch(function(e) {
       btn.disabled = false;
