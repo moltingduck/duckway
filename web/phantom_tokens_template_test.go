@@ -5,36 +5,54 @@ import (
 	"testing"
 )
 
-func TestPlaceholdersTemplateSupportsGitHubRepoScopedAssignments(t *testing.T) {
-	body, err := Content.ReadFile("templates/placeholders.html")
-	if err != nil {
-		t.Fatal(err)
+func TestPhantomTokensPagesSupportGitHubRepoScopedAssignments(t *testing.T) {
+	var all strings.Builder
+	for _, f := range []string{"templates/phantom_tokens.html", "templates/phantom_token_detail.html", "static/phantom-tokens.js", "static/phantom-common.js", "static/phantom-token-detail.js"} {
+		body, err := Content.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all.Write(body)
 	}
-	html := string(body)
+	html := all.String()
 	required := []string{
 		`data-name="{{.Name}}"`,
-		`id="add-github-repo-scope"`,
-		`id="add-github-repos"`,
-		`id="add-github-mode"`,
-		`selectedAddServiceName() === 'github'`,
-		`body.permission_config = JSON.stringify(gitACLForRepos(repos, document.getElementById('add-github-mode').value || 'deploy'`,
-		`Repository for clone example`,
-		`Granted repositories`,
+		`id="pt-add-github"`,
+		`id="pt-add-repos"`,
+		`id="pt-add-mode"`,
+		`selectedServiceName() !== 'github'`,
+		`body.permission_config = JSON.stringify(PT.gitACLForRepos(repos`,
+		`Client commands for`,
 		`function gitGrantsFromACL(configJSON)`,
-		`function applyEditGitHubRepoScope()`,
+		`DW.actions.ptGhApply`,
 		`function gitACLForRepos(repos, mode, workflows, refs, environments)`,
 		`function parseGitRepoList(value)`,
 		`.replace(/\.git$/, '')`,
 		`duckway git list`,
 		`duckway git setup`,
-		`# Pick a repo from ` + "`" + `duckway git list` + "`" + `:`,
-		`duckway git clone ' + repo`,
-		`version:'2',provider:'github',repositories:repositories`,
+		"# pick a repository from `duckway git list`:",
+		`'duckway git clone ' + repo`,
+		`version: '2', provider: 'github', repositories: repositories`,
 		`workflow_dispatch`,
 	}
 	for _, want := range required {
 		if !strings.Contains(html, want) {
-			t.Fatalf("placeholders template missing GitHub repo-scoped assignment contract: %s", want)
+			t.Fatalf("phantom token pages missing GitHub repo-scoped assignment contract: %s", want)
+		}
+	}
+}
+
+func TestPhantomTokenPagesHaveNoForbiddenDialogsOrInlineStyle(t *testing.T) {
+	for _, f := range []string{"templates/phantom_tokens.html", "templates/phantom_token_detail.html", "static/phantom-tokens.js", "static/phantom-common.js", "static/phantom-token-detail.js", "static/phantom-acl.js"} {
+		body, err := Content.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(body)
+		for _, bad := range []string{"alert(", "confirm(", "prompt(", "hx-confirm", ` style="`, ".style.display", ".innerHTML"} {
+			if strings.Contains(src, bad) {
+				t.Errorf("%s contains forbidden %q", f, bad)
+			}
 		}
 	}
 }

@@ -28,6 +28,7 @@ var movedPages = map[string]MovedPage{
 	"/admin/groups":         {NewPath: "/admin/key-pools", NewName: "Key pools"},
 	"/admin/key-groups":     {NewPath: "/admin/key-pools", NewName: "Key pools"},
 	"/admin/key-suites":     {NewPath: "/admin/key-bundles", NewName: "Key bundles"},
+	"/admin/placeholders":   {NewPath: "/admin/phantom-tokens", NewName: "Access › Phantom tokens"},
 }
 
 // movedKeyGroupPattern is the one removed path that carries an identifier:

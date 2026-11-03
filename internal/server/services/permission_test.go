@@ -369,3 +369,36 @@ func TestGitHubRepoScopeACLSeparatesPullPushAndRepo(t *testing.T) {
 		})
 	}
 }
+
+func TestPermissionExplainMatchesCheckWithoutConsumingRateLimit(t *testing.T) {
+	cfg := `{"version":"1","provider":"p","rules":[
+		{"name":"deny deletes","endpoints":[{"method":"DELETE","path":"/*","allow":false}]},
+		{"name":"limited reads","endpoints":[{"method":"GET","path":"/v1/*","allow":true}],"rate_limit":{"requests_per_minute":1}}]}`
+	pc := NewPermissionChecker()
+	for i := 0; i < 5; i++ {
+		ex := pc.Explain(cfg, "GET", "/v1/models", nil)
+		if !ex.Allowed || ex.RuleIndex != 1 || ex.RuleName != "limited reads" || !ex.RateLimited {
+			t.Fatalf("explain %d: %+v", i, ex)
+		}
+	}
+	// Explain never counted, so the first real check still has its full quota.
+	if res := pc.Check(cfg, "ph", "GET", "/v1/models", nil); !res.Allowed {
+		t.Fatalf("Explain consumed rate limit: %+v", res)
+	}
+	if res := pc.Check(cfg, "ph", "GET", "/v1/models", nil); res.Allowed {
+		t.Fatal("second real Check should hit the 1/min limit")
+	}
+	ex := pc.Explain(cfg, "DELETE", "/v1/x", nil)
+	if ex.Allowed || ex.RuleIndex != 0 || ex.RuleName != "deny deletes" || ex.Reason == "" {
+		t.Fatalf("deny: %+v", ex)
+	}
+	if ex := pc.Explain(cfg, "POST", "/zzz", nil); !ex.Allowed || !ex.Default || ex.RuleIndex != -1 {
+		t.Fatalf("default: %+v", ex)
+	}
+	if ex := pc.Explain("", "GET", "/", nil); !ex.Allowed || !ex.Default {
+		t.Fatalf("empty: %+v", ex)
+	}
+	if ex := pc.Explain("{bad", "GET", "/", nil); ex.Allowed {
+		t.Fatalf("invalid config must deny like Check: %+v", ex)
+	}
+}

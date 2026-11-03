@@ -537,7 +537,7 @@ function credRow(p) {
     <td data-label="Approval">${approvalCell(p)}</td>
     <td data-label="Rules" class="cl-muted">${rulesSummary(p.permissionConfig)}</td>
     <td class="cd-num" data-label="Requests">${p.usageCount.toLocaleString()}</td>
-    <td><div class="cd-rowactions"><button type="button" class="btn btn-sm" data-action="editPh" data-id="${p.id}" data-env="${p.envName}" data-key-path="${p.keyPath}" aria-label="${'Edit ' + p.envName}">Edit</button><button type="button" class="btn btn-sm btn-dz" data-action="unassignPh" data-id="${p.id}" aria-label="${'Unassign ' + p.envName}">Unassign</button></div></td></tr>`;
+    <td><div class="cd-rowactions"><a class="btn btn-sm" href="${'/admin/phantom-tokens/' + encodeURIComponent(p.id)}" aria-label="${'Access rules for ' + p.envName}">Rules</a><button type="button" class="btn btn-sm" data-action="editPh" data-id="${p.id}" data-env="${p.envName}" data-key-path="${p.keyPath}" aria-label="${'Edit ' + p.envName}">Edit</button><button type="button" class="btn btn-sm btn-dz" data-action="unassignPh" data-id="${p.id}" aria-label="${'Unassign ' + p.envName}">Unassign</button></div></td></tr>`;
 }
 function renderCreds() {
   var banners = assignedSuites.map(function(s) {

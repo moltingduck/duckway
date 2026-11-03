@@ -86,7 +86,7 @@ func NewAdminHandler(
 
 	// Parse each page template paired with the layout
 	pageNames := []string{
-		"dashboard", "services", "api_keys", "usage", "oauth", "placeholders",
+		"dashboard", "services", "api_keys", "usage", "oauth", "phantom_tokens", "phantom_token_detail",
 		"clients", "client_detail", "client_updates", "plugins", "key_pools", "key_bundles", "approvals", "logs", "notifications", "canary", "supplychain", "settings", "docs", "cc", "onboarding", "moved",
 	}
 
@@ -257,24 +257,6 @@ func (h *AdminHandler) KeysPage(w http.ResponseWriter, r *http.Request) {
 		Active:   "keys",
 		Keys:     keys,
 		Services: svcs,
-	})
-}
-
-func (h *AdminHandler) PlaceholdersPage(w http.ResponseWriter, r *http.Request) {
-	phs, _ := h.placeholders.List("", "")
-	svcs, _ := h.services.List()
-	clients, _ := h.clients.List()
-	keys, _ := h.apiKeys.List("")
-	keys = h.markMintableKeys(keys)
-	groups, _ := h.groups.List("")
-	h.render(w, r, "placeholders", pageData{
-		Title:        "Placeholders",
-		Active:       "placeholders",
-		Placeholders: phs,
-		Services:     svcs,
-		Clients:      clients,
-		Keys:         keys,
-		Groups:       groups,
 	})
 }
 

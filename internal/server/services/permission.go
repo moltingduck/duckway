@@ -322,13 +322,49 @@ func (pc *PermissionChecker) Check(configJSON string, placeholderID, method, pat
 	}
 
 	for _, rule := range config.Rules {
-		result := pc.checkRule(config.Provider, rule, placeholderID, method, path, bodyBytes)
+		result := pc.checkRule(config.Provider, rule, placeholderID, method, path, bodyBytes, false)
 		if result.Allowed || result.Reason != "" {
 			return result
 		}
 	}
 
 	return PermissionResult{Allowed: true} // No rules matched = allow by default
+}
+
+// PermissionExplanation is the side-effect-free outcome of evaluating one
+// permission config layer: the same decision Check would make, plus which
+// rule decided it.
+type PermissionExplanation struct {
+	Allowed bool
+	Reason  string
+	// RuleIndex is the zero-based index of the deciding rule, -1 when no rule
+	// matched (allowed by default) or the config itself was unusable.
+	RuleIndex int
+	RuleName  string
+	// Default is true when no rule decided and the request is allowed by default.
+	Default bool
+	// RateLimited is true when the deciding rule carries a rate limit that Explain
+	// deliberately does not evaluate (it would consume real quota).
+	RateLimited bool
+}
+
+// Explain evaluates a request against configJSON exactly like Check, but never
+// touches rate-limit counters, so it is safe for dry runs.
+func (pc *PermissionChecker) Explain(configJSON, method, path string, bodyBytes []byte) PermissionExplanation {
+	if strings.TrimSpace(configJSON) == "" {
+		return PermissionExplanation{Allowed: true, RuleIndex: -1, Default: true}
+	}
+	config, err := ParsePermissionConfig(configJSON)
+	if err != nil {
+		return PermissionExplanation{Allowed: false, Reason: "invalid permission config: " + err.Error(), RuleIndex: -1}
+	}
+	for i, rule := range config.Rules {
+		result := pc.checkRule(config.Provider, rule, "", method, path, bodyBytes, true)
+		if result.Allowed || result.Reason != "" {
+			return PermissionExplanation{Allowed: result.Allowed, Reason: result.Reason, RuleIndex: i, RuleName: rule.Name, RateLimited: result.Allowed && rule.RateLimit != nil}
+		}
+	}
+	return PermissionExplanation{Allowed: true, RuleIndex: -1, Default: true}
 }
 
 // RequestBodyRequiredForPermission reports whether evaluating configJSON for
@@ -356,7 +392,7 @@ func RequestBodyRequiredForPermission(configJSON, method, path string) bool {
 	return false
 }
 
-func (pc *PermissionChecker) checkRule(provider string, rule PermissionRule, placeholderID, method, path string, bodyBytes []byte) PermissionResult {
+func (pc *PermissionChecker) checkRule(provider string, rule PermissionRule, placeholderID, method, path string, bodyBytes []byte, dry bool) PermissionResult {
 	matched := false
 
 	for _, ep := range rule.Endpoints {
@@ -381,7 +417,7 @@ func (pc *PermissionChecker) checkRule(provider string, rule PermissionRule, pla
 
 	if matched {
 		// Check rate limit
-		if rule.RateLimit != nil {
+		if rule.RateLimit != nil && !dry {
 			if reason := pc.checkRateLimit(rule.RateLimit, placeholderID); reason != "" {
 				return PermissionResult{Allowed: false, Reason: reason}
 			}

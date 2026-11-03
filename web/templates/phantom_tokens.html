@@ -1,0 +1,156 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Phantom tokens</h1>
+  <button type="button" class="btn btn-primary" data-action="modal-open" data-target="#pt-add-modal">Generate phantom token</button>
+</div>
+<p class="pt-intro text-muted">A phantom token is the stand-in value a client holds instead of the real credential. Duckway swaps in the real one at request time and applies the token's access rules and approval settings.</p>
+
+<div class="cl-filters" role="search">
+  <div class="search-bar">
+    <input type="search" id="pt-search" placeholder="Search environment variable, client, credential" aria-label="Search phantom tokens" data-on-input="ptFilter">
+  </div>
+  <label class="cl-filter-label">Client
+    <select id="pt-f-client" data-on-change="ptFilter" aria-label="Filter by client">
+      <option value="">All</option>
+      {{range .Placeholders.Clients}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+    </select>
+  </label>
+  <label class="cl-filter-label">Service
+    <select id="pt-f-service" data-on-change="ptFilter" aria-label="Filter by service">
+      <option value="">All</option>
+      {{range .Placeholders.Svcs}}<option value="{{.Name}}">{{.DisplayName}}</option>{{end}}
+    </select>
+  </label>
+  <label class="cl-filter-label">Source
+    <select id="pt-f-source" data-on-change="ptFilter" aria-label="Filter by source">
+      <option value="">All</option>
+      <option value="manual">Manual</option>
+      <option value="bundle">Key bundle</option>
+    </select>
+  </label>
+  <label class="cl-filter-label">Approval
+    <select id="pt-f-approval" data-on-change="ptFilter" aria-label="Filter by approval">
+      <option value="">All</option>
+      <option value="required">Required</option>
+      <option value="auto">Not required</option>
+    </select>
+  </label>
+</div>
+<p class="cl-count" id="pt-count" role="status" aria-live="polite"></p>
+
+<div class="card cl-tablecard pt-tablecard">
+  <div class="table-wrap">
+    <table class="pt-table">
+      <thead>
+        <tr><th scope="col">Environment variable</th><th scope="col">Client</th><th scope="col">Credential</th><th scope="col">Source</th><th scope="col">Approval</th><th scope="col">Access rules</th><th scope="col">Token</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
+      </thead>
+      <tbody id="pt-list">
+        {{range .Placeholders.Rows}}
+        <tr class="pt-row" id="pt-{{.ID}}" data-id="{{.ID}}" data-client="{{.ClientID}}" data-service="{{.ServiceName}}" data-source="{{.Source}}" data-approval="{{.Approval}}" data-text="{{.EnvName}} {{.ClientName}} {{.Credential}} {{.ServiceName}} {{.BundleName}}">
+          <td class="pt-c-env" data-label="Environment variable"><a class="pt-env" href="/admin/phantom-tokens/{{.ID}}">{{.EnvName}}</a>{{if .Inactive}} <span class="cl-pill cl-pill-mute">Inactive</span>{{end}}</td>
+          <td class="pt-c-client" data-label="Client"><a href="/admin/clients/{{.ClientID}}">{{.ClientName}}</a></td>
+          <td class="pt-c-cred" data-label="Credential">{{if .Credential}}{{.Credential}}{{if eq .CredKind "pool"}} <span class="cl-pill cl-pill-info">Pool</span>{{end}}{{else}}<span class="text-muted">None</span>{{end}} <span class="text-muted pt-svc">· {{.ServiceName}}</span></td>
+          <td class="pt-c-source" data-label="Source">{{if eq .Source "bundle"}}<span class="cl-pill cl-pill-info">Bundle{{if .BundleName}}: {{.BundleName}}{{end}}</span>{{else}}<span class="cl-pill cl-pill-mute">Manual</span>{{end}}</td>
+          <td class="pt-c-approval" data-label="Approval">{{if eq .Approval "required"}}<span class="cl-pill cl-pill-warn">Required</span>{{else}}<span class="cl-pill cl-pill-ok">Not required</span>{{end}}</td>
+          <td class="pt-c-rules" data-label="Access rules">{{if eq .RulesKind "none"}}<span class="text-muted">{{.RulesText}}</span>{{else if eq .RulesKind "invalid"}}<span class="cl-pill cl-pill-bad">{{.RulesText}}</span>{{else if eq .RulesKind "custom"}}<span class="cl-pill cl-pill-warn">{{.RulesText}}</span>{{else}}<span class="cl-pill cl-pill-info">{{.RulesText}}</span>{{end}}</td>
+          <td class="pt-c-token mono" data-label="Token">{{.Masked}}</td>
+          <td class="pt-c-actions"><div class="pt-rowactions"><a class="btn btn-sm" href="/admin/phantom-tokens/{{.ID}}" aria-label="Open {{.EnvName}}">Open</a><button type="button" class="btn btn-sm btn-dz" data-action="ptAskUnassign" data-id="{{.ID}}" data-env="{{.EnvName}}" data-client="{{.ClientName}}" data-source="{{.Source}}" aria-label="Unassign {{.EnvName}}">Unassign</button></div></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  <div class="cl-empty" id="pt-empty" {{if .Placeholders.Rows}}hidden{{end}}>
+    <strong id="pt-empty-title">{{if .Placeholders.Rows}}No phantom tokens match{{else}}No phantom tokens yet{{end}}</strong>
+    <span class="text-muted text-sm" id="pt-empty-text">{{if .Placeholders.Rows}}Clear a filter to see more.{{else}}Add a service and a credential, register a client, then generate a phantom token for it.{{end}}</span>
+  </div>
+</div>
+
+<!-- Generate -->
+<div id="pt-add-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pt-add-h">
+    <h2 id="pt-add-h">Generate phantom token</h2>
+    <form id="pt-add-form" data-on-submit="ptAddSubmit">
+      <div class="form-group"><label for="pt-add-svc">Service</label>
+        <select id="pt-add-svc" name="service_id" required data-on-change="ptAddService">
+          <option value="">Select a service</option>
+          {{range .Placeholders.Svcs}}<option value="{{.ID}}" data-name="{{.Name}}">{{.DisplayName}}</option>{{end}}
+        </select>
+      </div>
+      <div class="form-group"><label for="pt-add-client">Client</label>
+        <select id="pt-add-client" name="client_id" required>
+          <option value="">Select a client</option>
+          {{range .Placeholders.Clients}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+        </select>
+      </div>
+      <fieldset class="form-group pt-fieldset">
+        <legend>Bind to</legend>
+        <div class="cd-radio-row">
+          <label><input type="radio" name="bind_type" value="key" checked data-on-change="ptBindType"> Single credential</label>
+          <label><input type="radio" name="bind_type" value="group" data-on-change="ptBindType"> Key pool</label>
+        </div>
+      </fieldset>
+      <div class="form-group" id="pt-add-key-row"><label for="pt-add-key">Credential</label>
+        <select id="pt-add-key" name="api_key_id">
+          <option value="">Select a credential</option>
+          {{range .Placeholders.Keys}}<option value="{{.ID}}" data-service="{{.ServiceID}}">{{.Name}} ({{.ServiceName}})</option>{{end}}
+        </select>
+      </div>
+      <div class="form-group" id="pt-add-group-row" hidden><label for="pt-add-group">Key pool</label>
+        <select id="pt-add-group" name="group_id">
+          <option value="">Select a key pool</option>
+          {{range .Placeholders.Groups}}<option value="{{.ID}}" data-service="{{.ServiceID}}">{{.Name}} ({{.ServiceName}}, {{.Strategy}}, {{.Members}} members)</option>{{end}}
+        </select>
+        <span class="text-muted text-sm">Manage pools in <a href="/admin/key-pools">Key pools</a>.</span>
+      </div>
+      <div class="form-group"><label for="pt-add-env">Environment variable <span class="text-muted">(generated from the service when blank)</span></label>
+        <input type="text" id="pt-add-env" name="env_name" placeholder="OPENAI_API_KEY" autocomplete="off">
+      </div>
+      <div id="pt-add-github" class="cd-repo-scope" hidden>
+        <div class="form-group">
+          <label for="pt-add-repos">Allowed repositories</label>
+          <textarea id="pt-add-repos" class="pt-textarea-sm" placeholder="ORG/REPO&#10;ORG/ANOTHER_REPO"></textarea>
+          <span class="text-muted text-sm">One repository per line, or comma separated. These become this token's repository grants.</span>
+        </div>
+        <div class="form-group"><label for="pt-add-mode">Git access mode</label>
+          <select id="pt-add-mode">
+            <option value="deploy">Pull only (deploy)</option>
+            <option value="dev">Developer</option>
+            <option value="cicd">CI/CD operator</option>
+          </select>
+        </div>
+        <div class="form-group"><label for="pt-add-wf">Workflow constraints</label>
+          <input type="text" id="pt-add-wf" placeholder="Workflows: ci.yml" aria-label="Workflows">
+          <input type="text" id="pt-add-refs" class="mt-1" placeholder="Refs: main, release/*" aria-label="Refs">
+          <input type="text" id="pt-add-envs" class="mt-1" placeholder="Environments: staging" aria-label="Environments">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="cd-check"><input type="checkbox" name="requires_approval" value="true"> Require admin approval on first use</label>
+      </div>
+      <p class="text-sm cl-warn" id="pt-add-err" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="pt-add-submit">Generate</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Unassign -->
+<div id="pt-del-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pt-del-h">
+    <h2 id="pt-del-h">Unassign phantom token</h2>
+    <p>Remove <span class="cd-confirm-name" id="pt-del-env"></span> from <strong id="pt-del-client"></strong>? The client stops receiving this credential and any pending approvals for it are removed.</p>
+    <p class="text-sm text-muted" id="pt-del-bundle" hidden>This token comes from a key bundle. It can return when the bundle is assigned to the client again.</p>
+    <p class="text-sm cl-warn" id="pt-del-err" role="alert" hidden></p>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="modal-close">Cancel</button>
+      <button type="button" class="btn btn-danger" id="pt-del-go" data-action="ptDoUnassign">Unassign</button>
+    </div>
+  </div>
+</div>
+
+<script nonce="{{$.CSPNonce}}" src="/static/phantom-common.js"></script>
+<script nonce="{{$.CSPNonce}}" src="/static/phantom-tokens.js"></script>
+{{end}}

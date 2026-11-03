@@ -134,7 +134,8 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/services", adminPageH.ServicesPage)
 	adminPageMux.HandleFunc("GET /admin/keys", adminPageH.KeysPage)
 	adminPageMux.HandleFunc("GET /admin/usage", adminPageH.UsagePage)
-	adminPageMux.HandleFunc("GET /admin/placeholders", adminPageH.PlaceholdersPage)
+	adminPageMux.HandleFunc("GET /admin/phantom-tokens", adminPageH.PhantomTokensPage)
+	adminPageMux.HandleFunc("GET /admin/phantom-tokens/{id}", adminPageH.PhantomTokenDetailPage)
 	adminPageMux.HandleFunc("GET /admin/clients", adminPageH.ClientsPage)
 	adminPageMux.HandleFunc("GET /admin/clients/{id}", adminPageH.ClientDetailPage)
 	adminPageMux.HandleFunc("GET /admin/plugins", adminPageH.Plugins)
@@ -213,6 +214,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("GET /api/placeholders/{id}", placeholderH.Get)
 	adminAPIMux.HandleFunc("POST /api/placeholders", placeholderH.Create)
 	adminAPIMux.HandleFunc("PUT /api/placeholders/{id}", placeholderH.Update)
+	adminAPIMux.HandleFunc("POST /api/placeholders/{id}/acl/test", placeholderH.TestACL)
 	adminAPIMux.HandleFunc("DELETE /api/placeholders/{id}", placeholderH.Delete)
 
 	adminAPIMux.HandleFunc("GET /api/clients", clientH.List)
