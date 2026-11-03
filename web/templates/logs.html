@@ -34,8 +34,8 @@
     <button type="button" class="lg-chip" data-action="toggleStatus" data-status="3xx" aria-pressed="true">3xx</button>
     <button type="button" class="lg-chip" data-action="toggleStatus" data-status="4xx" aria-pressed="true">4xx</button>
     <button type="button" class="lg-chip" data-action="toggleStatus" data-status="5xx" aria-pressed="true">5xx</button>
-    <button type="button" class="lg-chip" id="chip-held" data-action="toggleFlag" data-flag="held" aria-pressed="false" title="Only requests made with an approval-gated phantom token">Approval-gated only</button>
-    <button type="button" class="lg-chip" id="chip-acl" data-action="toggleFlag" data-flag="acl" aria-pressed="false" title="Only HTTP 403 responses (the gateway does not log requests it rejects before forwarding)">403 only</button>
+    <button type="button" class="lg-chip" id="chip-held" data-action="toggleDecision" data-decision="held" aria-pressed="false" title="Only requests the gateway held for an admin approval">Held / approval</button>
+    <button type="button" class="lg-chip" id="chip-acl" data-action="toggleDecision" data-decision="acl_denied" aria-pressed="false" title="Only requests the gateway refused because an ACL denied them">ACL denied only</button>
     <span class="lg-capline text-sm text-muted">Body capture: <strong id="capture-state">…</strong> · <a href="#capture-panel" data-action="openCapture">Capture settings…</a></span>
   </div>
 </div>
@@ -74,7 +74,7 @@
     <div class="table-wrap" id="log-tablewrap">
       <table class="lg-table">
         <thead>
-          <tr><th>Time</th><th>Client</th><th>Service · credential</th><th>Request</th><th>Status</th><th class="text-right">Latency</th></tr>
+          <tr><th>Time</th><th>Client</th><th>Service · credential</th><th>Request</th><th>Decision</th><th>Status</th><th class="text-right">Latency</th></tr>
         </thead>
         <tbody id="log-body"></tbody>
       </table>
@@ -119,6 +119,7 @@
 'use strict';
 var DEFAULT_RANGE = '1h';
 var STATUSES = ['2xx', '3xx', '4xx', '5xx'];
+var DECISIONS = ['allowed', 'approved_forward', 'acl_denied', 'held'];
 var RANGE_LABEL = {'15m': 'the last 15m', '1h': 'the last 1h', '24h': 'the last 24h', '7d': 'the last 7d', 'all': 'all time', 'custom': 'the selected range'};
 
 var S = newState();
@@ -133,7 +134,7 @@ var facets = {clients: [], services: [], credentials: []};
 
 function newState() {
   return {range: DEFAULT_RANGE, since: '', until: '', q: '', client: '', service: '', credential: '',
-          status: [], held: false, acl: false, before: 0, after: 0};
+          status: [], decision: '', before: 0, after: 0};
 }
 function $(id) { return document.getElementById(id); }
 
@@ -150,8 +151,10 @@ function readURL() {
   s.credential = p.get('credential') || '';
   var st = (p.get('status') || '').split(',').filter(function(c) { return STATUSES.indexOf(c) >= 0; });
   s.status = st.length && st.length < 4 ? st : [];
-  s.held = p.get('held') === '1';
-  s.acl = p.get('acl_denied') === '1';
+  var dec = p.get('decision');
+  if (DECISIONS.indexOf(dec) >= 0) s.decision = dec;
+  else if (p.get('acl_denied') === '1') s.decision = 'acl_denied';
+  else if (p.get('held') === '1') s.decision = 'held';
   var b = parseInt(p.get('before_id'), 10), a = parseInt(p.get('after_id'), 10);
   if (b > 0) s.before = b; else if (a > 0) s.after = a;
   return s;
@@ -168,8 +171,7 @@ function toParams(s, forAPI) {
   if (s.service) p.set('service', s.service);
   if (s.credential) p.set('credential', s.credential);
   if (s.status.length) p.set('status', s.status.join(','));
-  if (s.held) p.set('held', '1');
-  if (s.acl) p.set('acl_denied', '1');
+  if (s.decision) p.set('decision', s.decision);
   if (s.before) p.set('before_id', String(s.before));
   else if (s.after) p.set('after_id', String(s.after));
   if (forAPI) p.set('limit', '50');
@@ -197,8 +199,8 @@ function syncControls() {
   document.querySelectorAll('[data-action="toggleStatus"]').forEach(function(b) {
     b.setAttribute('aria-pressed', String(!S.status.length || S.status.indexOf(b.dataset.status) >= 0));
   });
-  $('chip-held').setAttribute('aria-pressed', String(S.held));
-  $('chip-acl').setAttribute('aria-pressed', String(S.acl));
+  $('chip-held').setAttribute('aria-pressed', String(S.decision === 'held'));
+  $('chip-acl').setAttribute('aria-pressed', String(S.decision === 'acl_denied'));
 }
 function toLocalInput(iso) {
   var d = new Date(iso);
@@ -278,8 +280,8 @@ DW.actions.toggleStatus = function(el) {
   S.status = (cur.length === 0 || cur.length === 4) ? [] : cur;
   resetCursor(); syncControls(); writeURL(false); load();
 };
-DW.actions.toggleFlag = function(el) {
-  if (el.dataset.flag === 'held') S.held = !S.held; else S.acl = !S.acl;
+DW.actions.toggleDecision = function(el) {
+  S.decision = S.decision === el.dataset.decision ? '' : el.dataset.decision;
   resetCursor(); syncControls(); writeURL(false); load();
 };
 DW.actions.pageOlder = function() {
@@ -371,7 +373,18 @@ function pillClass(code) {
   if (code >= 200) return 'lg-pill-ok';
   return 'lg-pill-mute';
 }
+// Decision label shown in the Decision column and the detail panel.
+var DECISION_LABEL = {held: 'Held \u00b7 waiting for approval', acl_denied: 'ACL denied', allowed: 'Allowed', approved_forward: 'Allowed \u00b7 approved'};
+function approvalHref(l) { return l.approval_id ? '/admin/approvals#approval-' + encodeURIComponent(l.approval_id) : ''; }
+function decisionCell(l) {
+  var label = DECISION_LABEL[l.decision];
+  if (!label) return DW.raw('<span class="text-muted">\u2014</span>');
+  if (l.decision === 'held' && l.approval_id) return DW.html`<a class="lg2-dec lg2-dec-held" href="${approvalHref(l)}">${label}</a>`;
+  return DW.html`<span class="lg2-dec lg2-dec-${l.decision}">${label}</span>`;
+}
 function pill(l) {
+  if (l.decision === 'held') return DW.raw('<span class="lg-pill lg-pill-info">Held</span>');
+  if (l.decision === 'acl_denied') return DW.raw('<span class="lg-pill lg-pill-bad">403 ACL</span>');
   if (!l.status_code) return DW.html`<span class="lg-pill lg-pill-mute" title="No upstream response (client disconnected)">aborted</span>`;
   return DW.html`<span class="lg-pill ${pillClass(l.status_code)}">${l.status_code}</span>`;
 }
@@ -413,7 +426,7 @@ function render() {
       var dash = DW.raw('<span class="text-muted">—</span>');
       var cred = l.credential ? DW.html` <span class="text-muted">· ${l.credential}</span>` : '';
       var sel = l.id === selectedId;
-      return DW.html`<tr class="lg-tr${sel ? ' is-selected' : ''}" data-action="openRow" data-id="${l.id}"><td class="lg-t"><button type="button" class="lg-rowbtn" data-action="openRow" data-id="${l.id}"${sel ? DW.raw(' aria-current="true"') : ''} title="${l.created_at} UTC">${fmtTime(l.created_at)}</button></td><td>${l.client_name || dash}</td><td><span class="lg-svc">${l.service_name}</span>${cred}</td><td><span class="lg-tag">${l.method}</span> <span class="mono lg-path">${l.path}</span></td><td>${pill(l)}</td><td class="text-right lg-ms">${fmtMs(l.duration_ms)}</td></tr>`;
+      return DW.html`<tr class="lg-tr${sel ? ' is-selected' : ''}" data-action="openRow" data-id="${l.id}"><td class="lg-t"><button type="button" class="lg-rowbtn" data-action="openRow" data-id="${l.id}"${sel ? DW.raw(' aria-current="true"') : ''} title="${l.created_at} UTC">${fmtTime(l.created_at)}</button></td><td>${l.client_name || dash}</td><td><span class="lg-svc">${l.service_name}</span>${cred}</td><td><span class="lg-tag">${l.method}</span> <span class="mono lg-path">${l.path}</span></td><td>${decisionCell(l)}</td><td>${pill(l)}</td><td class="text-right lg-ms">${fmtMs(l.duration_ms)}</td></tr>`;
     })}`);
   }
   if (emptyHadFocus && items.length) {
@@ -569,7 +582,7 @@ function renderDetail(l, d) {
     bodyBlock = DW.html`<h3>Request headers</h3>${fmtHeaders(d.request_headers)}<h3>Request body${trunc}</h3>${decodeNote(d.request_headers)}${fmtBody(d.request_body)}<h3>Response headers</h3>${fmtHeaders(d.response_headers)}<h3>Response body</h3>${decodeNote(d.response_headers)}${fmtBody(d.response_body)}`;
   }
   var sizes = d && d !== null ? DW.html`<dt>Sizes</dt><dd>req ${d.request_size} B · resp ${d.response_size} B</dd>` : '';
-  DW.setHTML($('det-body'), DW.html`<div class="lg-dline"><span class="lg-tag">${l.method || '?'}</span><span class="mono lg-path">${l.path || ''}</span></div><dl class="lg-dl"><dt>Client</dt><dd>${clientCell}</dd><dt>Service</dt><dd>${l.service_name || dash}</dd><dt>Credential</dt><dd>${l.credential || dash}</dd><dt>Phantom token</dt><dd>${ph || dash}</dd><dt>Approval</dt><dd>${gate}</dd><dt>Time</dt><dd>${l.created_at} UTC</dd><dt>Latency</dt><dd>${latency}</dd>${sizes}</dl>${bodyBlock}`);
+  DW.setHTML($('det-body'), DW.html`<div class="lg-dline"><span class="lg-tag">${l.method || '?'}</span><span class="mono lg-path">${l.path || ''}</span></div><dl class="lg-dl"><dt>Client</dt><dd>${clientCell}</dd><dt>Service</dt><dd>${l.service_name || dash}</dd><dt>Credential</dt><dd>${l.credential || dash}</dd><dt>Phantom token</dt><dd>${ph || dash}</dd><dt>Decision</dt><dd>${decisionCell(l)}</dd><dt>Approval</dt><dd>${gate}</dd><dt>Time</dt><dd>${l.created_at} UTC</dd><dt>Latency</dt><dd>${latency}</dd>${sizes}</dl>${bodyBlock}`);
 }
 
 DW.actions.openPhantomDetail = function(el) { openPhantomDetail(el.dataset.phId); };

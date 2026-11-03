@@ -79,9 +79,19 @@ type OverviewResponse struct {
 			Expiring int `json:"expiring"`
 		} `json:"credentials"`
 		PhantomTokens int `json:"phantom_tokens"`
-		Requests24h   int `json:"requests_24h"`
+		// PhantomRequireApproval counts tokens with token-wide approval or a
+		// permission rule that has an approve endpoint.
+		PhantomRequireApproval int `json:"phantom_require_approval"`
+		Requests24h            int `json:"requests_24h"`
+		// Errors24h counts HTTP 5xx responses in the last 24h.
+		Errors24h int `json:"errors_24h"`
+		// ClientsOffline24h counts active clients not seen for over 24 hours.
+		ClientsOffline24h int `json:"clients_offline_24h"`
 	} `json:"stats"`
-	Posture []OverviewPosture `json:"posture"`
+	// RequestsPerHour is 24 hourly request counts, oldest first, ending with
+	// the current UTC hour.
+	RequestsPerHour []int             `json:"requests_per_hour"`
+	Posture         []OverviewPosture `json:"posture"`
 }
 
 func plural(n int, one, many string) string {
@@ -251,6 +261,14 @@ func (h *OverviewHandler) build() (OverviewResponse, error) {
 	resp.Stats.Credentials.Expiring = creds.Expiring.Count + creds.RefreshOverdue.Count + creds.Deactivated.Count
 	resp.Stats.PhantomTokens = stats.PhantomTokens
 	resp.Stats.Requests24h = stats.Requests24h
+	resp.Stats.PhantomRequireApproval = stats.ApprovalTokens
+	resp.Stats.Errors24h = stats.Errors24h
+	resp.Stats.ClientsOffline24h = stale.Count
+	trend, err := h.q.RequestsPerHour(now)
+	if err != nil {
+		return resp, err
+	}
+	resp.RequestsPerHour = trend
 
 	posture := []OverviewPosture{}
 	if middleware.EnforceCSPEnabled() {

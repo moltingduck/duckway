@@ -293,3 +293,28 @@ func TestMigrationRetiresLegacyRawScopeApprovals(t *testing.T) {
 		t.Fatal("no raw query may remain stored")
 	}
 }
+
+func TestMigrationAddsRequestLogDecisionIdempotently(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`INSERT INTO request_log (service_name, method, path, status_code) VALUES ('s', 'GET', '/legacy', 200)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"approval_id", "decision"} {
+		if _, err := db.Exec(`ALTER TABLE request_log DROP COLUMN ` + col); err != nil {
+			t.Fatalf("simulate an older schema: %v", err)
+		}
+	}
+	for i := 0; i < 3; i++ { // idempotent
+		if err := runMigrations(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var decision, approval string
+	if err := db.QueryRow(`SELECT decision, approval_id FROM request_log WHERE path = '/legacy'`).Scan(&decision, &approval); err != nil || decision != "" || approval != "" {
+		t.Fatalf("legacy row must default to empty decision: %q %q %v", decision, approval, err)
+	}
+}

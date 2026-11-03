@@ -191,3 +191,51 @@ func TestOverviewTombstoneExcludedAndCached(t *testing.T) {
 		t.Fatalf("expected cached response, total=%d", r2.Stats.Credentials.Total)
 	}
 }
+
+func TestOverviewStatSubLinesAndTrend(t *testing.T) {
+	db := overviewDB(t)
+	ovExec(t, db, `INSERT INTO services (id, name, display_name, upstream_url, host_pattern) VALUES ('s1', 'svc', 'S', 'https://e.com', 'e.com')`)
+	ovExec(t, db, `INSERT INTO clients (id, name, token_hash, last_seen_at) VALUES ('c1', 'old1', 'h1', ?)`, ts(-48*time.Hour))
+	ovExec(t, db, `INSERT INTO clients (id, name, token_hash, last_seen_at) VALUES ('c2', 'old2', 'h2', ?)`, ts(-72*time.Hour))
+	ovExec(t, db, `INSERT INTO clients (id, name, token_hash, last_seen_at) VALUES ('c3', 'fresh', 'h3', ?)`, ts(-time.Minute))
+	ovExec(t, db, `INSERT INTO api_keys (id, service_id, name, key_encrypted) VALUES ('k1', 's1', 'plain', 'x')`)
+	ovExec(t, db, `INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, client_id, requires_approval) VALUES ('p1', 'A', 'pa', 's1', 'k1', 'c1', 1)`)
+	ovExec(t, db, `INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, client_id, requires_approval, permission_config) VALUES ('p2', 'B', 'pb', 's1', 'k1', 'c1', 0, ?)`,
+		`{"rules":[{"endpoints":[{"method":"POST","path":"/x","approve":true}]}]}`)
+	ovExec(t, db, `INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, client_id, requires_approval, permission_config) VALUES ('p3', 'C', 'pc', 's1', 'k1', 'c1', 0, ?)`,
+		`{"rules":[{"endpoints":[{"method":"GET","path":"/x","allow":true}]}]}`)
+	ovExec(t, db, `INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, client_id, requires_approval) VALUES ('p4', 'D', 'pd', 's1', 'k1', 'c1', 0)`)
+	// 8 requests in the last 24h (1 x 500, 1 x 503, 1 x 403 held) and one older.
+	for i, code := range []int{200, 200, 200, 200, 200, 403, 500, 503} {
+		ovExec(t, db, `INSERT INTO request_log (service_name, method, path, status_code, created_at) VALUES ('s', 'GET', '/', ?, ?)`, code, ts(-time.Duration(i)*time.Minute))
+	}
+	ovExec(t, db, `INSERT INTO request_log (service_name, method, path, status_code, created_at) VALUES ('s', 'GET', '/old', 500, ?)`, ts(-30*time.Hour))
+
+	r := getOverview(t, db)
+	s := r.Stats
+	if s.PhantomTokens != 4 || s.PhantomRequireApproval != 2 {
+		t.Errorf("phantom tokens %d / require approval %d, want 4 / 2", s.PhantomTokens, s.PhantomRequireApproval)
+	}
+	if s.Requests24h != 8 || s.Errors24h != 2 {
+		t.Errorf("requests %d errors %d, want 8 / 2", s.Requests24h, s.Errors24h)
+	}
+	if s.ClientsOffline24h != 2 {
+		t.Errorf("offline >24h %d, want 2", s.ClientsOffline24h)
+	}
+	if len(r.RequestsPerHour) != queries.OverviewTrendHours {
+		t.Fatalf("trend length %d", len(r.RequestsPerHour))
+	}
+	sum := 0
+	for _, n := range r.RequestsPerHour {
+		sum += n
+	}
+	// The rolling 24h window and the 24 hourly buckets differ by at most the
+	// current partial hour, so the bucketed total cannot exceed the 8 recent rows
+	// plus nothing older than 23h.
+	if sum < 1 || sum > 8 {
+		t.Errorf("trend sum %d outside 1..8: %v", sum, r.RequestsPerHour)
+	}
+	if r.RequestsPerHour[queries.OverviewTrendHours-1] == 0 && r.RequestsPerHour[queries.OverviewTrendHours-2] == 0 {
+		t.Errorf("recent requests missing from the last buckets: %v", r.RequestsPerHour)
+	}
+}

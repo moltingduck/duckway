@@ -221,7 +221,7 @@ function render() {
   if (allApprovals.length === 0) {
     selectedId = '';
     counter.textContent = '';
-    DW.setHTML(list, DW.html`<div class="appr-empty"><strong>${currentTab === 'pending' ? 'No requests waiting' : 'No history yet'}</strong><span class="text-muted text-sm">${currentTab === 'pending' ? 'Held requests appear here as soon as a client sends one.' : 'Decided requests appear here.'}</span></div>`);
+    DW.setHTML(list, DW.html`<div class="appr-empty"><strong>${currentTab === 'pending' ? 'No requests waiting' : 'No history yet'}</strong><span class="text-muted text-sm">${currentTab === 'pending' ? 'Held requests appear here as soon as a client sends one.' : 'Decided requests appear here.'}</span>${currentTab === 'pending' ? DW.raw('<a class="ov2-empty-link" href="/admin/notifications">Configure notifications</a>') : ''}</div>`);
     renderDetail(null);
     setView('list');
     pendingFocus = false;

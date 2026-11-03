@@ -195,8 +195,14 @@ type OverviewStats struct {
 	ClientsOnline int
 	PhantomTokens int
 	Requests24h   int
-	CanaryTokens  int
-	CanaryAlertTo string
+	// Errors24h counts logged requests with an HTTP status >= 500 in the last
+	// 24h (gateway or upstream failures; 403 holds and ACL denials are not errors).
+	Errors24h int
+	// ApprovalTokens counts phantom tokens that need approval: token-wide
+	// requires_approval, or a placeholder permission rule with an approve endpoint.
+	ApprovalTokens int
+	CanaryTokens   int
+	CanaryAlertTo  string
 }
 
 func (q *OverviewQueries) Stats(now time.Time, online time.Duration) (OverviewStats, error) {
@@ -205,10 +211,15 @@ func (q *OverviewQueries) Stats(now time.Time, online time.Duration) (OverviewSt
 		FROM clients WHERE is_active = 1 AND id NOT IN (SELECT client_id FROM client_drafts)`, ovCutoff(now.Add(-online))).Scan(&s.ClientsTotal, &s.ClientsOnline); err != nil {
 		return s, err
 	}
-	if err := q.db.QueryRow(`SELECT COUNT(*) FROM placeholder_keys`).Scan(&s.PhantomTokens); err != nil {
+	if err := q.db.QueryRow(`SELECT COUNT(*),
+		COALESCE(SUM(CASE WHEN requires_approval <> 0
+			OR COALESCE(permission_config, '') LIKE '%"approve":true%'
+			OR COALESCE(permission_config, '') LIKE '%"approve": true%' THEN 1 ELSE 0 END), 0)
+		FROM placeholder_keys`).Scan(&s.PhantomTokens, &s.ApprovalTokens); err != nil {
 		return s, err
 	}
-	if err := q.db.QueryRow(`SELECT COUNT(*) FROM request_log WHERE created_at >= ?`, ovCutoff(now.Add(-24*time.Hour))).Scan(&s.Requests24h); err != nil {
+	if err := q.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END), 0)
+		FROM request_log WHERE created_at >= ?`, ovCutoff(now.Add(-24*time.Hour))).Scan(&s.Requests24h, &s.Errors24h); err != nil {
 		return s, err
 	}
 	if err := q.db.QueryRow(`SELECT COUNT(*) FROM canary_tokens`).Scan(&s.CanaryTokens); err != nil {
@@ -219,4 +230,38 @@ func (q *OverviewQueries) Stats(now time.Time, online time.Duration) (OverviewSt
 		err = nil
 	}
 	return s, err
+}
+
+// OverviewTrendHours is the number of hourly buckets in the request trend.
+const OverviewTrendHours = 24
+
+// RequestsPerHour returns OverviewTrendHours counts, oldest first, ending with
+// the hour containing now (UTC). Rows are bucketed on the "YYYY-MM-DD HH"
+// prefix of the stored timestamp, which is portable to SQLite and PostgreSQL.
+func (q *OverviewQueries) RequestsPerHour(now time.Time) ([]int, error) {
+	end := now.UTC().Truncate(time.Hour)
+	start := end.Add(-(OverviewTrendHours - 1) * time.Hour)
+	rows, err := q.db.Query(`SELECT SUBSTR(created_at, 1, 13), COUNT(*) FROM request_log
+		WHERE created_at >= ? GROUP BY SUBSTR(created_at, 1, 13)`, ovCutoff(start))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]int, OverviewTrendHours)
+	for rows.Next() {
+		var key string
+		var n int
+		if err := rows.Scan(&key, &n); err != nil {
+			return nil, err
+		}
+		t, err := time.ParseInLocation("2006-01-02 15", key, time.UTC)
+		if err != nil {
+			continue
+		}
+		i := int(t.Sub(start) / time.Hour)
+		if i >= 0 && i < OverviewTrendHours {
+			out[i] += n
+		}
+	}
+	return out, rows.Err()
 }
