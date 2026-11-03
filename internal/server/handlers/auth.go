@@ -106,6 +106,13 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to update password", http.StatusInternalServerError)
 		return
 	}
+	// Revoke every other session, then re-issue this one under the new epoch
+	// so the current tab stays signed in.
+	if _, err := h.auth.BumpEpoch(); err != nil {
+		jsonError(w, "password changed but failed to revoke other sessions", http.StatusInternalServerError)
+		return
+	}
+	http.SetCookie(w, h.auth.CreateSession(username, r))
 	w.Header().Set("Cache-Control", "no-store")
 	jsonResponse(w, map[string]string{"status": "ok"})
 }

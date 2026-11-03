@@ -19,6 +19,7 @@ func svcDo(s *Server, shared *SharedServices, method, path, body string, authed 
 		req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 	}
 	rec := httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	return rec
 }

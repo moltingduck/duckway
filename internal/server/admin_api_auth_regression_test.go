@@ -112,6 +112,7 @@ func TestAdminAPIRejectsAnonymousRequestsBeforeHandler(t *testing.T) {
 	} {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
 		rec := httptest.NewRecorder()
+		testSameOrigin(req)
 		s.ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("anonymous %s %s status=%d body=%s", tc.method, tc.path, rec.Code, rec.Body.String())
@@ -149,4 +150,12 @@ func routePath(pattern string) string {
 		return path
 	}
 	return pattern
+}
+
+// testSameOrigin mimics a browser: state-changing requests carry an Origin
+// matching the request host unless the test already set one.
+func testSameOrigin(req *http.Request) {
+	if req.Header.Get("Origin") == "" {
+		req.Header.Set("Origin", "http://"+req.Host)
+	}
 }

@@ -703,12 +703,17 @@ document.addEventListener('DOMContentLoaded', function() {
     allServices = (Array.isArray(r[0]) ? r[0] : []).filter(function(s) { return s && (s.name === 'discord' || s.name === 'telegram'); });
     allKeys = Array.isArray(r[1]) ? r[1] : [];
     allClients = Array.isArray(r[2]) ? r[2] : [];
-  }).catch(function() {}).then(loadCCs).then(function() {
-    // Deep link from the client page: /admin/cc#cc-<id> opens that channel's drawer.
-    var m = /^#cc-([A-Za-z0-9_-]+)$/.exec(location.hash || '');
-    if (m && allCCs.some(function(c) { return c.id === m[1]; })) showCC(m[1], false);
-  });
+  }).catch(function() {}).then(loadCCs).then(function() { openHashCC(false); });
 });
+// Deep link from the client page: /admin/cc#cc-<id> opens that channel's drawer,
+// on first load and whenever the hash changes afterwards.
+function openHashCC(reload) {
+  var m = /^#cc-([A-Za-z0-9_-]+)$/.exec(location.hash || '');
+  if (!m) return;
+  if (allCCs.some(function(c) { return c.id === m[1]; })) { showCC(m[1], false); return; }
+  if (reload) { Promise.resolve(loadCCs()).then(function() { openHashCC(false); }); }
+}
+window.addEventListener('hashchange', function() { openHashCC(true); });
 })();
 </script>
 {{end}}

@@ -36,6 +36,7 @@ func (e *draftEnv) do(method, path, body string, admin bool, hdr map[string]stri
 		req.AddCookie(e.shared.AdminAuth.CreateSession("duckway", req))
 	}
 	rec := httptest.NewRecorder()
+	testSameOrigin(req)
 	e.s.ServeHTTP(rec, req)
 	return rec
 }

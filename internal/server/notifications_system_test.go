@@ -48,6 +48,7 @@ func (e *ntEnv) do(method, path string, body interface{}) *httptest.ResponseReco
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(e.c)
 	rec := httptest.NewRecorder()
+	testSameOrigin(req)
 	e.s.ServeHTTP(rec, req)
 	return rec
 }

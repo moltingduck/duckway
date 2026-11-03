@@ -234,6 +234,7 @@ func TestWhatsNewDismissEndpoint(t *testing.T) {
 	s, shared := newShellTestServer(t)
 	post := func(body string, auth bool) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/api/whats-new/dismiss", strings.NewReader(body))
+		testSameOrigin(req)
 		if auth {
 			req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 		}

@@ -10,6 +10,11 @@
   </div>
 </div>
 
+<div class="cd-banner" id="cl-flash" role="alert" hidden>
+  <span class="cd-banner-text cl-warn" id="cl-flash-text"></span>
+  <span class="cd-banner-actions"><a class="btn btn-sm" href="https://canarytokens.org" target="_blank" rel="noopener noreferrer">Open canarytokens.org</a><button type="button" class="btn btn-sm" data-action="dismissFlash">Dismiss</button></span>
+</div>
+
 <nav class="cl-subtabs" aria-label="Fleet views"><a href="/admin/clients" aria-current="page">All clients</a><a href="/admin/clients/rollouts">Rollouts</a></nav>
 
 <div class="cl-tabs" role="tablist" aria-label="Client status" id="cl-tablist">
@@ -430,6 +435,15 @@ if (window.initSmartSearch) {
     ]
   });
 }
+DW.actions.dismissFlash = function() { el('cl-flash').hidden = true; };
+(function showDeleteFlash() {
+  var n = 0;
+  try { n = parseInt(sessionStorage.getItem('dw-canary-remote-failed') || '0', 10) || 0; sessionStorage.removeItem('dw-canary-remote-failed'); } catch (e) { n = 0; }
+  if (n > 0) {
+    DW.setHTML(el('cl-flash-text'), DW.html`Client deleted. ${n === 1 ? '1 canary token' : n + ' canary tokens'} could not be removed from canarytokens.org and may still be live there. Delete ${n === 1 ? 'it' : 'them'} on canarytokens.org.`);
+    el('cl-flash').hidden = false;
+  }
+})();
 load();
 DW.live.on('rollouts', function() { load(); }, {defer: true});
 </script>

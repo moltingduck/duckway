@@ -300,3 +300,33 @@ func TestCanarySettingsEmailValidatedServerSide(t *testing.T) {
 		}
 	}
 }
+
+func TestClientDeleteReportsRemoteCanaryFailures(t *testing.T) {
+	s, shared := newClientDetailServer(t)
+	seedDetailClient(t, s, "c1", "alpha", "tok1")
+	seedDetailClient(t, s, "c2", "beta", "tok2")
+	svcExec(t, s, `INSERT INTO canary_tokens (id, client_id, token_type, canary_token, auth_token, token_value, memo, deploy_path, deploy_content) VALUES ('t1','c1','env_file','TOK','AUTH','v','m','.x/a','c'),('t2','c1','env_file','TOK2','AUTH2','v','m','.x/b','c')`)
+	shared.CanarySvc.SetHTTPClient(&http.Client{Transport: failingRT{}})
+
+	rec := svcDo(s, shared, http.MethodDelete, "/api/clients/c1", "", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete => %d %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Status string `json:"status"`
+		Failed int    `json:"canary_remote_failed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || resp.Status != "deleted" || resp.Failed != 2 {
+		t.Fatalf("response = %s (%v)", rec.Body.String(), err)
+	}
+	var n int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM canary_tokens WHERE client_id='c1'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("local canary rows must be removed with the client, n=%d", n)
+	}
+	// A client without canary tokens reports zero.
+	rec = svcDo(s, shared, http.MethodDelete, "/api/clients/c2", "", true)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || rec.Code != 200 || resp.Failed != 0 {
+		t.Fatalf("clean delete = %d %s", rec.Code, rec.Body.String())
+	}
+}

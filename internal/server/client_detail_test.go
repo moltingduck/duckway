@@ -35,6 +35,7 @@ func adminGet(s *Server, shared *SharedServices, path string, authed bool) *http
 		req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 	}
 	rec := httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	return rec
 }
@@ -155,6 +156,7 @@ func TestDisabledClientIsRejectedAndReenableRestores(t *testing.T) {
 		req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 		req.Header.Set("X-Duckway-Token", token)
 		rec := httptest.NewRecorder()
+		testSameOrigin(req)
 		s.ServeHTTP(rec, req)
 		return rec.Code
 	}
@@ -168,6 +170,7 @@ func TestDisabledClientIsRejectedAndReenableRestores(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 		rec := httptest.NewRecorder()
+		testSameOrigin(req)
 		s.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("PUT is_active=%v status=%d body=%s", active, rec.Code, rec.Body.String())

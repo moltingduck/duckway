@@ -49,6 +49,8 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 BASE="${DUCKWAY_URL:-http://127.0.0.1:9090}"
+# Admin API mutations must be same-origin (CSRF guard): send Origin like a browser.
+curl() { command curl -H "Origin: $BASE" "$@"; }
 PW="${DUCKWAY_ADMIN_PW:-duckway}"
 RUN_ID="phantom-test-$(date +%s)"
 COOKIES=/tmp/dw-pt-cookies

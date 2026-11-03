@@ -81,7 +81,7 @@ func (s *Server) initShared() *SharedServices {
 	s.notifier = notifier
 	canarySvc := services.NewCanaryService(canaryQ)
 
-	adminAuth := middleware.NewAdminAuth(s.config.SessionSecret)
+	adminAuth := middleware.NewAdminAuth(s.config.SessionSecret).WithEpochStore(settingsQ)
 	clientAuth := middleware.NewClientAuth(clientQ)
 
 	return &SharedServices{
@@ -127,7 +127,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 
 	// Admin pages
 	s.mux.Handle("GET /admin/login", middleware.CSP(http.HandlerFunc(adminPageH.LoginPage)))
-	s.mux.Handle("POST /admin/login", middleware.CSP(http.HandlerFunc(adminPageH.LoginSubmit)))
+	s.mux.Handle("POST /admin/login", middleware.CSP(middleware.SameOrigin(http.HandlerFunc(adminPageH.LoginSubmit))))
 
 	adminPageMux := http.NewServeMux()
 	adminPageMux.HandleFunc("GET /admin/", adminPageH.Dashboard)
@@ -154,11 +154,11 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/docs", adminPageH.DocsPage)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/approve", adminPageH.ApproveAction)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/reject", adminPageH.RejectAction)
-	s.mux.Handle("/admin/", middleware.CSP(ss.AdminAuth.Middleware(adminPageMux)))
+	s.mux.Handle("/admin/", middleware.CSP(middleware.SameOrigin(ss.AdminAuth.Middleware(adminPageMux))))
 
 	// Public API routes
-	s.mux.HandleFunc("POST /api/auth/login", authH.Login)
-	s.mux.HandleFunc("POST /api/auth/logout", authH.Logout)
+	s.mux.Handle("POST /api/auth/login", middleware.SameOrigin(http.HandlerFunc(authH.Login)))
+	s.mux.Handle("POST /api/auth/logout", middleware.SameOrigin(http.HandlerFunc(authH.Logout)))
 
 	// Admin API
 	adminAPIMux := http.NewServeMux()
@@ -412,7 +412,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	s.events = eventsSvc
 	adminAPIMux.Handle("GET /api/events", eventsSvc.Handler(events.HandlerConfig{ValidateSession: ss.AdminAuth.SessionUser}))
 
-	s.mux.Handle("/api/", ss.AdminAuth.Middleware(adminAPIMux))
+	s.mux.Handle("/api/", middleware.SameOrigin(ss.AdminAuth.Middleware(adminAPIMux)))
 
 	// Root redirect
 	s.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {

@@ -1,5 +1,13 @@
 #!/bin/bash
 set -euo pipefail
+# Admin API mutations must be same-origin (CSRF guard): send an Origin matching the request URL.
+curl() {
+  local a o=""
+  for a in "$@"; do
+    case "$a" in http://*|https://*) o="$(printf '%s' "$a" | sed -E 's#^(https?://[^/]+).*#\1#')" ;; esac
+  done
+  command curl ${o:+-H "Origin: $o"} "$@"
+}
 
 RUNTIME="${CONTAINER_RUNTIME:-podman}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

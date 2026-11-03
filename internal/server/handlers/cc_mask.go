@@ -50,12 +50,41 @@ func ccKeySegments(key string) []string {
 	return segs
 }
 
+// ccTokenCountWords mark a key that merely mentions "token" as a unit of LLM
+// usage or a descriptive setting (max_tokens, token_limit, tokenType), not a
+// credential.
+var ccTokenCountWords = map[string]bool{
+	"max": true, "min": true, "limit": true, "limits": true, "count": true, "budget": true,
+	"ttl": true, "type": true, "usage": true, "remaining": true, "endpoint": true, "total": true,
+	"tokens": true, "maxtokens": true, "mintokens": true,
+}
+
+// ccIsTokenCountKey reports whether key names a token quantity or descriptor
+// rather than a token secret: *_tokens (plural), max_tokens, token_limit,
+// token_count, tokenType, and so on.
+func ccIsTokenCountKey(key string) bool {
+	k := strings.ToLower(key)
+	if strings.HasSuffix(k, "tokens") || strings.HasPrefix(k, "maxtoken") || strings.HasPrefix(k, "mintoken") {
+		return true
+	}
+	for _, seg := range ccKeySegments(key) {
+		if ccTokenCountWords[seg] {
+			return true
+		}
+	}
+	return false
+}
+
 func ccIsSecretKey(key string) bool {
 	k := strings.ToLower(key)
 	for _, hint := range ccSecretKeyHints {
-		if strings.Contains(k, hint) {
-			return true
+		if !strings.Contains(k, hint) {
+			continue
 		}
+		if hint == "token" && ccIsTokenCountKey(key) {
+			continue
+		}
+		return true
 	}
 	for _, seg := range ccKeySegments(key) {
 		if ccSecretKeyWords[seg] {

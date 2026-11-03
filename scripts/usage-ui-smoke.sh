@@ -3,6 +3,8 @@ set -euo pipefail
 
 PORT="${1:-19191}"
 BASE="http://127.0.0.1:${PORT}"
+# Admin API mutations must be same-origin (CSRF guard): send Origin like a browser.
+curl() { command curl -H "Origin: $BASE" "$@"; }
 TMP="$(mktemp -d)"
 SERVER="$TMP/duckway-server"
 COOKIE="$TMP/cookies"

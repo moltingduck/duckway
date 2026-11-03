@@ -10,6 +10,8 @@ cd "$PROJECT_DIR"
 
 PORT="${1:-19090}"
 BASE="http://127.0.0.1:$PORT"
+# Admin API mutations must be same-origin (CSRF guard): send Origin like a browser.
+curl() { command curl -H "Origin: $BASE" "$@"; }
 DATA_DIR="/tmp/duckway-e2e-$$"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 PASS=0

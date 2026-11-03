@@ -57,6 +57,7 @@ func (e *ptEnv) do(t *testing.T, method, path, body string, admin bool) *httptes
 		req.AddCookie(e.shared.AdminAuth.CreateSession("duckway", req))
 	}
 	rec := httptest.NewRecorder()
+	testSameOrigin(req)
 	e.s.ServeHTTP(rec, req)
 	return rec
 }

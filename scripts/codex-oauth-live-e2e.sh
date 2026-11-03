@@ -138,6 +138,8 @@ export DUCKWAY_DATA_DIR=/tmp/duckway-server-data
 export DUCKWAY_LISTEN=127.0.0.1:19090
 export DUCKWAY_CC_DISABLE_GATEWAY=1
 BASE=http://127.0.0.1:19090
+# Admin API mutations must be same-origin (CSRF guard): send Origin like a browser.
+curl() { command curl -H "Origin: $BASE" "$@"; }
 PROXY_PORT=18080
 DISCORD_MOCK_PORT=19091
 RUN_ID="codex-oauth-live-$(date +%s)"

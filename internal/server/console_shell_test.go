@@ -70,6 +70,7 @@ func TestAdminPagesSendCSPWithMatchingNonces(t *testing.T) {
 			req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 		}
 		rec := httptest.NewRecorder()
+		testSameOrigin(req)
 		s.ServeHTTP(rec, req)
 		return rec
 	}
@@ -94,6 +95,7 @@ func TestAdminShellShowsPendingApprovalsBadge(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/admin/approvals", nil)
 		req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 		rec := httptest.NewRecorder()
+		testSameOrigin(req)
 		s.ServeHTTP(rec, req)
 		return rec.Body.String()
 	}
@@ -150,6 +152,7 @@ func TestEveryAdminPageRendersWithNonceAndShell(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, p, nil)
 		req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 		rec := httptest.NewRecorder()
+		testSameOrigin(req)
 		s.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s: status %d: %.200s", p, rec.Code, rec.Body.String())
