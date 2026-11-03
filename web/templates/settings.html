@@ -1,187 +1,338 @@
 {{define "content"}}
-<div class="page-header">
-  <h1>Settings</h1>
-</div>
-
-<div class="card">
-  <h3>Gateway Configuration</h3>
-  <p class="text-sm text-muted mb-1">Configure how clients connect to the Duckway gateway. These values are used in setup commands and client config.</p>
-
-  <form id="settings-form">
-    <div class="form-group">
-      <label>Gateway URL</label>
-      <input type="url" id="s-gateway-url" placeholder="http://duckway-gw">
-      <span class="text-muted text-sm">The URL agents use to reach the gateway. Used in install commands and client init. Required in split mode (admin panel does not serve <code>/install.sh</code>). Leave empty in combined mode to fall back to the admin panel URL.</span>
-    </div>
-    <div class="form-group">
-      <label>Client Proxy Port</label>
-      <input type="number" id="s-proxy-port" placeholder="18080" min="1024" max="65535">
-      <span class="text-muted text-sm">Suggested port for <code>duckway proxy</code> on client machines. Default: 18080.</span>
-    </div>
-    <div class="form-group">
-      <label>Approval Request TTL (minutes)</label>
-      <input type="number" id="s-approval-ttl" placeholder="60" min="1" max="10080">
-      <span class="text-muted text-sm">If an admin doesn't reply within this window, the request is marked <code>ignored</code> (not <code>rejected</code>). Default: 60.</span>
-    </div>
-    <button type="submit" class="btn btn-primary">Save Settings</button>
-  </form>
-</div>
-
-<div class="card mt-2">
-  <h3>Change Password</h3>
-  <p class="text-sm text-muted mb-1">Change the password for your admin account.</p>
-  <form id="change-password-form" autocomplete="off">
-    <div class="form-group">
-      <label>Current Password</label>
-      <input type="password" id="cp-current" autocomplete="current-password" required>
-    </div>
-    <div class="form-group">
-      <label>New Password</label>
-      <input type="password" id="cp-new" autocomplete="new-password" minlength="8" required>
-    </div>
-    <div class="form-group">
-      <label>Confirm New Password</label>
-      <input type="password" id="cp-new2" autocomplete="new-password" minlength="8" required>
-    </div>
-    <button type="submit" class="btn btn-primary">Change Password</button>
-  </form>
-</div>
-
-<div class="card mt-2">
-  <h3>Agent Statusline</h3>
-  <p class="text-sm text-muted mb-1">
-    A shell script body that every agent's <code>duckway sync</code> downloads
-    and installs at <code>~/.duckway/statusline.sh</code>. <code>sync</code>
-    also wires <code>~/.claude/settings.json</code>'s <code>statusLine.command</code>
-    to point at it, backing up any existing file to <code>.duckway-backup</code>
-    first. Leave empty to disable and let agents keep whatever statusline they had.
-  </p>
-  <p class="text-sm text-muted mb-1">
-    The script receives a JSON payload from Claude Code on stdin and prints one line of status to stdout.
-    See <a href="https://docs.claude.com/en/docs/claude-code/statusline" target="_blank">Claude Code statusline docs</a>.
-  </p>
-  <form id="statusline-form">
-    <div class="form-group">
-      <label>Script content</label>
-      <textarea id="s-statusline-script" rows="14"
-        style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:pre"
-        placeholder="#!/bin/sh&#10;input=$(cat)&#10;echo &quot;[duckway] $(date '+%H:%M:%S')&quot;"></textarea>
-    </div>
-    <button type="submit" class="btn btn-primary">Save Statusline</button>
-  </form>
-</div>
-
-<div class="card mt-2">
-  <h3>Architecture</h3>
-  <div class="table-wrap">
-  <table>
-    <thead><tr><th>Profile</th><th>Containers</th><th>Ports</th></tr></thead>
-    <tbody>
-      <tr>
-        <td><strong>combined</strong></td>
-        <td><code>duckway-server</code></td>
-        <td>127.0.0.1:8080 (dev)</td>
-      </tr>
-      <tr>
-        <td><strong>split</strong></td>
-        <td><code>duckway-admin</code> + <code>duckway-gateway</code></td>
-        <td>127.0.0.1:9091 + 127.0.0.1:8080 (dev)</td>
-      </tr>
-      <tr>
-        <td><strong>prod</strong></td>
-        <td><code>duckway-server</code></td>
-        <td>none — reverse proxy or Tailscale</td>
-      </tr>
-      <tr>
-        <td><strong>prod-split</strong></td>
-        <td><code>duckway-admin</code> + <code>duckway-gateway</code></td>
-        <td>none — reverse proxy or Tailscale</td>
-      </tr>
-      <tr>
-        <td><strong>tailscale-combined</strong></td>
-        <td><code>duckway-server</code> + Tailscale sidecar</td>
-        <td>:80 inside tailnet</td>
-      </tr>
-      <tr>
-        <td><strong>tailscale</strong></td>
-        <td><code>duckway-admin</code> + <code>duckway-gateway</code> + 2 Tailscale sidecars</td>
-        <td>:80 each inside tailnet</td>
-      </tr>
-    </tbody>
-  </table>
+<div class="page-header st-header">
+  <div>
+    <h1>Settings</h1>
+    <p class="st-sub">Each section saves on its own. The deployment architecture reference now lives in <a href="/admin/docs#architecture">Docs</a>.</p>
   </div>
-  <p class="text-sm text-muted mt-1">In split mode, agents only access the gateway. Admin panel runs on a separate node protected by Tailscale ACL. Use <code>./scripts/prod.sh</code> to start production profiles.</p>
+</div>
+
+<div class="st-layout">
+  <nav class="st-nav" aria-label="Settings sections">
+    <a href="#gateway" class="st-navlink" data-sec="gateway" data-action="stPick">Gateway<span class="st-dot" hidden><span class="sr-only"> (unsaved changes)</span></span></a>
+    <a href="#approvals" class="st-navlink" data-sec="approvals" data-action="stPick">Approvals<span class="st-dot" hidden><span class="sr-only"> (unsaved changes)</span></span></a>
+    <a href="#password" class="st-navlink" data-sec="password" data-action="stPick">Admin password<span class="st-dot" hidden><span class="sr-only"> (unsaved changes)</span></span></a>
+    <a href="#statusline" class="st-navlink" data-sec="statusline" data-action="stPick">Agent statusline<span class="st-dot" hidden><span class="sr-only"> (unsaved changes)</span></span></a>
+  </nav>
+
+  <div class="st-panels">
+    <div id="st-load-error" class="st-banner" role="alert" hidden>
+      <span id="st-load-error-t"></span>
+      <button type="button" class="btn btn-sm" data-action="stReload">Retry</button>
+    </div>
+
+    <!-- Gateway -->
+    <section class="card st-sec" id="sec-gateway" data-sec="gateway" aria-labelledby="gateway-h">
+      <h2 id="gateway-h">Gateway</h2>
+      <p class="text-sm text-muted">Where clients connect. These values are used in install commands and client config, and reach clients on their next sync.</p>
+      <form class="st-form" data-sec="gateway" data-on-submit="stSave" novalidate>
+        <div class="form-group">
+          <label for="s-gateway-url">Gateway URL</label>
+          <input type="url" id="s-gateway-url" data-sec="gateway" data-on-input="stInput" placeholder="http://duckway-gw" autocomplete="off" aria-describedby="s-gateway-url-hint s-gateway-url-err">
+          <p class="text-sm text-muted" id="s-gateway-url-hint">The URL agents use to reach the gateway. Required in split mode, where the admin panel does not serve <code>/install.sh</code>. Leave empty in combined mode to fall back to the admin panel URL.</p>
+          <p class="st-err" id="s-gateway-url-err" role="status" hidden></p>
+        </div>
+        <div class="form-group">
+          <label for="s-proxy-port">Client proxy port</label>
+          <input type="number" id="s-proxy-port" data-sec="gateway" data-on-input="stInput" placeholder="18080" min="1024" max="65535" inputmode="numeric" aria-describedby="s-proxy-port-hint s-proxy-port-err">
+          <p class="text-sm text-muted" id="s-proxy-port-hint">Suggested port for <code>duckway proxy</code> on client machines (1024 to 65535). Default: 18080.</p>
+          <p class="st-err" id="s-proxy-port-err" role="status" hidden></p>
+        </div>
+        <div class="st-bar">
+          <span class="st-dirty text-sm" data-sec="gateway" role="status" aria-live="polite"></span>
+          <button type="button" class="btn" data-action="stDiscard" data-sec="gateway" disabled>Discard</button>
+          <button type="submit" class="btn btn-primary" data-save="gateway" disabled>Save gateway</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Approvals -->
+    <section class="card st-sec" id="sec-approvals" data-sec="approvals" aria-labelledby="approvals-h" hidden>
+      <h2 id="approvals-h">Approvals</h2>
+      <p class="text-sm text-muted">If nobody answers an approval request within this window it is marked <code>ignored</code> (not <code>rejected</code>).</p>
+      <form class="st-form" data-sec="approvals" data-on-submit="stSave" novalidate>
+        <div class="form-group">
+          <label for="s-approval-ttl">Ignore undecided requests after (minutes)</label>
+          <input type="number" id="s-approval-ttl" data-sec="approvals" data-on-input="stInput" placeholder="60" min="1" max="10080" inputmode="numeric" aria-describedby="s-approval-ttl-hint s-approval-ttl-err">
+          <p class="text-sm text-muted" id="s-approval-ttl-hint">Whole minutes from 1 to 10080 (7 days). Default: 60.</p>
+          <p class="st-err" id="s-approval-ttl-err" role="status" hidden></p>
+        </div>
+        <p class="text-sm" id="st-channels" role="status" aria-live="polite">Checking notification channels…</p>
+        <div class="st-bar">
+          <span class="st-dirty text-sm" data-sec="approvals" role="status" aria-live="polite"></span>
+          <button type="button" class="btn" data-action="stDiscard" data-sec="approvals" disabled>Discard</button>
+          <button type="submit" class="btn btn-primary" data-save="approvals" disabled>Save approvals</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Password -->
+    <section class="card st-sec" id="sec-password" data-sec="password" aria-labelledby="password-h" hidden>
+      <h2 id="password-h">Admin password</h2>
+      <p class="text-sm text-muted">Changes the password for the account you are signed in with. Sessions are signed cookies without a server-side list, so other signed-in sessions are <strong>not</strong> signed out by a change; they stay valid until they expire (up to 7 days). This session stays signed in.</p>
+      <form class="st-form" data-sec="password" data-on-submit="stSave" novalidate autocomplete="off">
+        <div class="form-group">
+          <label for="cp-current">Current password</label>
+          <input type="password" id="cp-current" data-sec="password" data-on-input="stInput" autocomplete="current-password" aria-describedby="cp-current-err">
+          <p class="st-err" id="cp-current-err" role="status" hidden></p>
+        </div>
+        <div class="form-group">
+          <label for="cp-new">New password</label>
+          <input type="password" id="cp-new" data-sec="password" data-on-input="stInput" autocomplete="new-password" aria-describedby="cp-new-hint cp-new-err">
+          <p class="text-sm text-muted" id="cp-new-hint">At least 12 characters.</p>
+          <p class="st-err" id="cp-new-err" role="status" hidden></p>
+        </div>
+        <div class="form-group">
+          <label for="cp-new2">Confirm new password</label>
+          <input type="password" id="cp-new2" data-sec="password" data-on-input="stInput" autocomplete="new-password" aria-describedby="cp-new2-err">
+          <p class="st-err" id="cp-new2-err" role="status" hidden></p>
+        </div>
+        <div class="st-bar">
+          <span class="st-dirty text-sm" data-sec="password" role="status" aria-live="polite"></span>
+          <button type="button" class="btn" data-action="stDiscard" data-sec="password" disabled>Discard</button>
+          <button type="submit" class="btn btn-primary" data-save="password" disabled>Change password</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Statusline -->
+    <section class="card st-sec" id="sec-statusline" data-sec="statusline" aria-labelledby="statusline-h" hidden>
+      <h2 id="statusline-h">Agent statusline</h2>
+      <p class="text-sm text-muted">A shell script that every agent's <code>duckway sync</code> installs at <code>~/.duckway/statusline.sh</code> and wires into <code>~/.claude/settings.json</code> (<code>statusLine.command</code>), backing up any existing file to <code>.duckway-backup</code>. Leave it empty to disable and let agents keep their own statusline. Claude Code pipes a JSON payload to the script on stdin and shows the first line it prints. See the <a href="https://docs.claude.com/en/docs/claude-code/statusline" target="_blank" rel="noopener noreferrer">Claude Code statusline docs</a>.</p>
+      <form class="st-form" data-sec="statusline" data-on-submit="stSave" novalidate>
+        <div class="form-group">
+          <label for="s-statusline-script">Script content</label>
+          <textarea id="s-statusline-script" class="st-mono" rows="14" data-sec="statusline" data-on-input="stInput" spellcheck="false" placeholder="#!/bin/sh&#10;input=$(cat)&#10;echo &quot;[duckway] $(date '+%H:%M:%S')&quot;" aria-describedby="s-statusline-meta s-statusline-err"></textarea>
+          <p class="text-sm text-muted" id="s-statusline-meta"></p>
+          <p class="st-err" id="s-statusline-err" role="status" hidden></p>
+        </div>
+        <div class="st-preview">
+          <p class="st-preview-h">Preview</p>
+          <div class="st-preview-line st-mono" id="st-preview-line" aria-live="polite"></div>
+          <p class="text-sm text-muted" id="st-preview-note"></p>
+        </div>
+        <details class="st-payload">
+          <summary>Sample payload your script receives on stdin</summary>
+          <pre class="st-mono" id="st-payload"></pre>
+        </details>
+        <div class="st-bar">
+          <span class="st-dirty text-sm" data-sec="statusline" role="status" aria-live="polite"></span>
+          <button type="button" class="btn" data-action="stDiscard" data-sec="statusline" disabled>Discard</button>
+          <button type="submit" class="btn btn-primary" data-save="statusline" disabled>Save statusline</button>
+        </div>
+      </form>
+    </section>
+  </div>
 </div>
 
 <script nonce="{{$.CSPNonce}}">
-document.addEventListener('DOMContentLoaded', function() {
-  fetch('/api/settings', {credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(s) {
-      document.getElementById('s-gateway-url').value = s.gateway_url || '';
-      document.getElementById('s-proxy-port').value = s.proxy_port || '18080';
-      document.getElementById('s-approval-ttl').value = s.approval_request_ttl_minutes || '60';
-      document.getElementById('s-statusline-script').value = s.agent_statusline_script || '';
-    });
-});
-
-document.getElementById('settings-form').addEventListener('submit', function(e) {
-  e.preventDefault();
-  var body = {
-    gateway_url: document.getElementById('s-gateway-url').value.trim(),
-    proxy_port: document.getElementById('s-proxy-port').value.trim() || '18080',
-    approval_request_ttl_minutes: document.getElementById('s-approval-ttl').value.trim() || '60'
+(function () {
+  var MAXSCRIPT = 64 * 1024;
+  var SAMPLE = { workspace: { current_dir: '/home/agent/projects/api' }, model: { display_name: 'Claude' }, rate_limits: { five_hour: { used_percentage: 42, resets_at: 1767225600 }, seven_day: { used_percentage: 18, resets_at: 1767571200 } } };
+  var SECS = {
+    gateway: { fields: { 's-gateway-url': 'gateway_url', 's-proxy-port': 'proxy_port' }, defaults: { proxy_port: '18080' }, done: 'Gateway settings saved. Clients pick them up on their next sync.' },
+    approvals: { fields: { 's-approval-ttl': 'approval_request_ttl_minutes' }, defaults: { approval_request_ttl_minutes: '60' }, done: 'Approval timeout saved.' },
+    statusline: { fields: { 's-statusline-script': 'agent_statusline_script' }, defaults: {}, done: 'Statusline saved. Agents pick it up on their next `duckway sync`.' },
+    password: { fields: { 'cp-current': null, 'cp-new': null, 'cp-new2': null }, defaults: {} }
   };
-  fetch('/api/settings', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('Settings saved', 'success');
-  });
-});
+  var base = {};      // saved values per field id
+  var loaded = false;
+  var busy = {};
+  function $(id) { return document.getElementById(id); }
+  function q(sel, root) { return (root || document).querySelector(sel); }
 
-// Statusline script is saved separately so the big textarea doesn't
-// re-roundtrip with every Gateway-config save (and so the form
-// validation rules on the numeric fields don't fight with multi-line
-// text). Hits the same POST /api/settings backend.
-document.getElementById('statusline-form').addEventListener('submit', function(e) {
-  e.preventDefault();
-  var body = { agent_statusline_script: document.getElementById('s-statusline-script').value };
-  fetch('/api/settings', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('Statusline saved — agents pick it up on next `duckway sync`', 'success');
-  });
-});
+  function msg(id, text) { var e = $(id + '-err'); if (!e) return; e.textContent = text || ''; e.hidden = !text; }
 
-document.getElementById('change-password-form').addEventListener('submit', function(e) {
-  e.preventDefault();
-  var cur = document.getElementById('cp-current').value;
-  var nw  = document.getElementById('cp-new').value;
-  var nw2 = document.getElementById('cp-new2').value;
-  if (nw !== nw2) { showToast('New passwords do not match', 'error'); return; }
-  fetch('/api/auth/change-password', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({current_password: cur, new_password: nw})
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('Password changed successfully', 'success');
-    document.getElementById('change-password-form').reset();
+  /* ---------- validation (server re-validates; its answer is authoritative) ---------- */
+  var RULES = {
+    's-gateway-url': function (v) {
+      v = v.trim(); if (!v) return '';
+      try { var u = new URL(v); if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'Gateway URL must start with http:// or https://.'; if (!u.hostname) return 'Gateway URL needs a host name.'; }
+      catch (e) { return 'Enter a full URL such as http://duckway-gw or https://gateway.example.com.'; }
+      return '';
+    },
+    's-proxy-port': function (v) {
+      v = v.trim(); if (!v) return 'Enter a port, for example 18080.';
+      if (!/^\d+$/.test(v) || +v < 1024 || +v > 65535) return 'Port must be a number from 1024 to 65535.';
+      return '';
+    },
+    's-approval-ttl': function (v) {
+      v = v.trim(); if (!v) return 'Enter a number of minutes, for example 60.';
+      if (!/^\d+$/.test(v) || +v < 1 || +v > 10080) return 'Use a whole number of minutes from 1 to 10080.';
+      return '';
+    },
+    's-statusline-script': function (v) { return new Blob([v]).size > MAXSCRIPT ? 'The script must be 64 KB or smaller.' : ''; },
+    'cp-current': function (v) { return v ? '' : 'Enter your current password.'; },
+    'cp-new': function (v) {
+      if (!v) return 'Enter a new password.';
+      if (v.length < 12) return 'Use at least 12 characters (' + v.length + ' so far).';
+      if (v === $('cp-current').value) return 'The new password must differ from the current one.';
+      return '';
+    },
+    'cp-new2': function (v) { return v === $('cp-new').value ? '' : 'The confirmation does not match the new password.'; }
+  };
+  function validateSec(sec) {
+    var ok = true;
+    Object.keys(SECS[sec].fields).forEach(function (id) {
+      var m = RULES[id]($(id).value);
+      msg(id, m);
+      if (m) ok = false;
+    });
+    return ok;
+  }
+
+  /* ---------- dirty tracking ---------- */
+  function isDirty(sec) {
+    return Object.keys(SECS[sec].fields).some(function (id) { return $(id).value !== (base[id] || ''); });
+  }
+  function refresh(sec) {
+    var d = isDirty(sec);
+    var form = q('form[data-sec="' + sec + '"]');
+    q('[data-save="' + sec + '"]', form).disabled = !d || !!busy[sec];
+    q('[data-action="stDiscard"]', form).disabled = !d;
+    var lbl = q('.st-dirty', form);
+    if (!busy[sec]) lbl.textContent = d ? 'Unsaved changes' : '';
+    lbl.classList.toggle('st-dirty-on', d);
+    q('.st-navlink[data-sec="' + sec + '"] .st-dot').hidden = !d;
+  }
+  DW.actions.stInput = function (el) {
+    var sec = el.dataset.sec;
+    // Re-validate a field only after its error has been shown once, or for live checks.
+    var e = $(el.id + '-err');
+    if (e && !e.hidden) msg(el.id, RULES[el.id](el.value));
+    if (el.id === 'cp-new' && !$('cp-new2-err').hidden) msg('cp-new2', RULES['cp-new2']($('cp-new2').value));
+    if (sec === 'statusline') preview();
+    refresh(sec);
+  };
+  DW.actions.stDiscard = function (el) {
+    var sec = el.dataset.sec;
+    Object.keys(SECS[sec].fields).forEach(function (id) { $(id).value = base[id] || ''; msg(id, ''); });
+    if (sec === 'statusline') preview();
+    refresh(sec);
+    q('.st-dirty', q('form[data-sec="' + sec + '"]')).textContent = 'Changes discarded.';
+    var f = $(Object.keys(SECS[sec].fields)[0]); if (f) f.focus();
+  };
+  window.addEventListener('beforeunload', function (e) {
+    if (Object.keys(SECS).some(isDirty)) { e.preventDefault(); e.returnValue = ''; }
   });
-});
+
+  /* ---------- load ---------- */
+  function setBase(id, v) { base[id] = v; $(id).value = v; }
+  function load() {
+    $('st-load-error').hidden = true;
+    return fetch('/api/settings', { credentials: 'same-origin' }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (s) {
+      Object.keys(SECS).forEach(function (sec) {
+        Object.keys(SECS[sec].fields).forEach(function (id) {
+          var key = SECS[sec].fields[id];
+          if (key) setBase(id, s[key] || SECS[sec].defaults[key] || '');
+        });
+        refresh(sec);
+      });
+      loaded = true;
+      preview();
+    }).catch(function (e) {
+      $('st-load-error-t').textContent = 'Could not load settings: ' + e.message + '. Saving is disabled until they load.';
+      $('st-load-error').hidden = false;
+    });
+  }
+  DW.actions.stReload = function () { load(); };
+
+  function channels() {
+    return fetch('/api/notifications', { credentials: 'same-origin' }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (list) {
+      var n = list.filter(function (c) { return c.is_active; }).length;
+      DW.setHTML($('st-channels'), DW.html`Alerts go to every enabled channel on <a href="/admin/notifications">Notifications</a> (${n} active of ${list.length}).`);
+    }).catch(function () {
+      DW.setHTML($('st-channels'), DW.html`Could not count notification channels. See <a href="/admin/notifications">Notifications</a>.`);
+    });
+  }
+
+  /* ---------- save ---------- */
+  function say(sec, text) { q('.st-dirty', q('form[data-sec="' + sec + '"]')).textContent = text; }
+  DW.actions.stSave = function (form) {
+    var sec = form.dataset.sec;
+    if (busy[sec]) return;
+    if (!loaded) { say(sec, 'Settings have not loaded yet.'); return; }
+    if (!validateSec(sec)) {
+      say(sec, 'Fix the highlighted fields, then save.');
+      var bad = q('.st-err:not([hidden])', form); if (bad) { var i = bad.parentElement.querySelector('input,textarea'); if (i) i.focus(); }
+      return;
+    }
+    busy[sec] = true; refresh(sec); say(sec, 'Saving…');
+    var req;
+    if (sec === 'password') {
+      req = fetch('/api/auth/change-password', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_password: $('cp-current').value, new_password: $('cp-new').value }) });
+    } else {
+      var body = {};
+      Object.keys(SECS[sec].fields).forEach(function (id) { var v = $(id).value; body[SECS[sec].fields[id]] = sec === 'statusline' ? v : v.trim(); });
+      req = fetch('/api/settings', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    }
+    return req.then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok && !j.error, j: j }; }); })
+      .then(function (res) {
+        busy[sec] = false;
+        if (!res.ok) {
+          var target = null;
+          Object.keys(SECS[sec].fields).forEach(function (id) { if (SECS[sec].fields[id] && SECS[sec].fields[id] === res.j.field) target = id; });
+          if (sec === 'password') target = /current/.test(res.j.error || '') ? 'cp-current' : 'cp-new';
+          if (target) msg(target, res.j.error);
+          refresh(sec); say(sec, 'Not saved: ' + (res.j.error || 'request failed'));
+          return;
+        }
+        Object.keys(SECS[sec].fields).forEach(function (id) { base[id] = sec === 'password' ? '' : (sec === 'statusline' ? $(id).value : $(id).value.trim()); $(id).value = base[id]; msg(id, ''); });
+        refresh(sec);
+        say(sec, sec === 'password' ? 'Password changed. Other signed-in sessions stay valid until they expire.' : SECS[sec].done);
+      }).catch(function (e) { busy[sec] = false; refresh(sec); say(sec, 'Not saved: ' + e.message); });
+  };
+
+  /* ---------- statusline preview ---------- */
+  // The script is never executed. If it ends by echoing a literal line, show that
+  // line (with ANSI codes stripped and $(date ...) filled in); otherwise say so.
+  function preview() {
+    var src = $('s-statusline-script').value;
+    var bytes = new Blob([src]).size;
+    var lines = src ? src.split('\n').length : 0;
+    $('s-statusline-meta').textContent = src ? (lines + ' lines, ' + bytes + ' bytes (limit 65536).') : 'Empty: agents keep their own statusline.';
+    var out = null;
+    src.split('\n').forEach(function (l) {
+      var m = /^\s*(?:echo(?:\s+-e)?|printf)\s+(['"])(.*)\1\s*(?:;|$)/.exec(l);
+      if (m && m[2].charAt(0) !== '%') out = m[2];
+    });
+    var note;
+    if (!src.trim()) { out = null; note = 'Nothing will be installed on agents.'; }
+    else if (out === null) note = 'This script builds its output at run time, so it cannot be previewed without running it. Duckway does not run it here; agents run it on their own machines.';
+    else {
+      var d = new Date();
+      var hms = [d.getHours(), d.getMinutes(), d.getSeconds()].map(function (n) { return String(n).padStart(2, '0'); }).join(':');
+      out = out.replace(/\\(?:033|e|x1b)\[[0-9;]*m/g, '').replace(/\$\(\s*date[^)]*\)/g, hms).replace(/\\n/g, ' ');
+      note = 'Static preview of the last echo/printf line, with the clock filled in. Variables such as $input are shown as written.';
+    }
+    $('st-preview-line').textContent = out === null ? (src.trim() ? 'No literal output line found' : '(empty)') : out;
+    $('st-preview-note').textContent = note;
+  }
+
+  /* ---------- section nav ---------- */
+  function show(sec) {
+    if (!SECS[sec]) sec = 'gateway';
+    Array.prototype.forEach.call(document.querySelectorAll('.st-sec'), function (s) { s.hidden = s.dataset.sec !== sec; });
+    Array.prototype.forEach.call(document.querySelectorAll('.st-navlink'), function (a) {
+      if (a.dataset.sec === sec) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+  }
+  DW.actions.stPick = function (el) {
+    show(el.dataset.sec);
+    history.replaceState(null, '', '#' + el.dataset.sec);
+    var h = q('#sec-' + el.dataset.sec + ' h2'); if (h) { h.setAttribute('tabindex', '-1'); h.focus(); }
+  };
+  window.addEventListener('hashchange', function () { show(location.hash.slice(1)); });
+
+  $('st-payload').textContent = JSON.stringify(SAMPLE, null, 2);
+  show(location.hash.slice(1));
+  document.addEventListener('DOMContentLoaded', function () { load(); channels(); });
+})();
 </script>
 {{end}}

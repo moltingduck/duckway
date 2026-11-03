@@ -378,7 +378,7 @@ func (h *AdminHandler) NotificationsPage(w http.ResponseWriter, r *http.Request)
 	h.render(w, r, "notifications", pageData{
 		Title:    "Notifications",
 		Active:   "notifications",
-		Channels: channels,
+		Channels: NotificationViews(channels), // masked: secrets never reach the page
 	})
 }
 

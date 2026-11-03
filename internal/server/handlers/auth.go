@@ -79,8 +79,8 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "current_password and new_password are required", http.StatusBadRequest)
 		return
 	}
-	if len(req.NewPassword) < 8 {
-		jsonError(w, "new password must be at least 8 characters", http.StatusBadRequest)
+	if len(req.NewPassword) < MinAdminPasswordLen {
+		jsonError(w, "new password must be at least 12 characters", http.StatusBadRequest)
 		return
 	}
 

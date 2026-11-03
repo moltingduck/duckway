@@ -1,304 +1,371 @@
 {{define "content"}}
-<div class="page-header">
-  <h1>Notification Channels</h1>
-  <button class="btn btn-primary" data-action="openAddModal">Add Channel</button>
-</div>
-
-<div class="card">
-  <div class="table-wrap">
-  <table>
-    <thead>
-      <tr><th>Name</th><th>Type</th><th>Details</th><th>Status</th><th></th></tr>
-    </thead>
-    <tbody id="channels-list">
-      {{range .Channels}}
-      <tr id="notif-{{.ID}}">
-        <td><a href="#" data-action="openDetail" data-id="{{.ID}}"><strong>{{.Name}}</strong></a></td>
-        <td><span class="badge badge-blue">{{.ChannelType}}</span></td>
-        <td class="text-sm text-muted" id="detail-{{.ID}}"></td>
-        <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
-        <td class="text-right">
-          <button class="btn btn-sm btn-danger"
-            hx-delete="/api/notifications/{{.ID}}"
-            hx-target="#notif-{{.ID}}"
-            hx-swap="outerHTML"
-            hx-confirm="Delete channel '{{.Name}}'?">Delete</button>
-        </td>
-      </tr>
-      {{else}}
-      <tr><td colspan="5" class="text-muted">No notification channels configured. Add one to receive approval alerts.</td></tr>
-      {{end}}
-    </tbody>
-  </table>
+<div class="page-header nt-header">
+  <div>
+    <h1>Notifications</h1>
+    <p class="nt-sub">Where Duckway sends approval alerts. Each channel can be switched off without deleting it.</p>
+  </div>
+  <div class="nt-header-actions">
+    <button type="button" class="btn btn-primary" data-action="ntAdd">Add channel</button>
   </div>
 </div>
 
-<!-- Add Channel Modal -->
-<div id="add-modal" class="modal-backdrop" style="display:none">
-  <div class="modal">
-    <h2>Add Notification Channel</h2>
-    <form id="add-channel-form">
-      <div class="form-group"><label>Name</label><input type="text" id="ch-name" placeholder="My Alert Channel" required></div>
-      <div class="form-group"><label>Type</label>
-        <select id="ch-type" data-on-change="onTypeChange">
-          <option value="telegram">Telegram Bot</option>
-          <option value="discord">Discord Webhook</option>
-          <option value="discord_bot">Discord Bot</option>
-          <option value="webhook">Generic Webhook</option>
+<section class="card nt-events" aria-labelledby="nt-events-h">
+  <h2 id="nt-events-h">When alerts are sent</h2>
+  <p class="text-sm">Every <strong>enabled</strong> channel gets one message when an agent request needs approval and none is on file:</p>
+  <ul class="text-sm nt-events-list">
+    <li>a proxied API call through a phantom token that requires approval;</li>
+    <li>a key loan (<code>LOAN</code>) for a binding that requires approval.</li>
+  </ul>
+  <p class="text-sm text-muted">The message names the approval ID, client, service, method and path. Nothing else is sent to these channels. Canary alerts use the canary email instead. Telegram and Discord bot channels also take Approve / Reject replies; webhooks are send-only.</p>
+  <p class="text-sm text-muted">Disabling a channel stops alerts to it immediately. Reply listeners for a Telegram or Discord bot channel that was already running keep listening until the server restarts.</p>
+</section>
+
+<section class="card nt-listcard" aria-labelledby="nt-list-h">
+  <div class="nt-list-head">
+    <h2 id="nt-list-h">Channels</h2>
+    <span class="text-sm text-muted" id="nt-count" role="status" aria-live="polite"></span>
+  </div>
+  <div id="nt-load" class="text-muted" role="status">Loading channels…</div>
+  <div id="nt-error" class="nt-error" role="alert" hidden>
+    <span id="nt-error-t">Could not load channels.</span>
+    <button type="button" class="btn btn-sm" data-action="ntReload">Retry</button>
+  </div>
+  <p id="nt-empty" class="text-muted" hidden>No notification channels yet. Add one to receive approval alerts.</p>
+  <ul class="nt-list" id="nt-list" hidden></ul>
+</section>
+
+<!-- Add / edit channel -->
+<div id="nt-modal" class="modal-backdrop" hidden>
+  <div class="modal nt-modal">
+    <h2 id="nt-modal-title">Add channel</h2>
+    <form id="nt-form" data-on-submit="ntSave" novalidate autocomplete="off">
+      <div class="form-group">
+        <label for="nt-name">Name</label>
+        <input type="text" id="nt-name" maxlength="80" placeholder="On-call Telegram" autocomplete="off" data-on-input="ntValidateLive" aria-describedby="nt-name-err">
+        <p class="nt-err" id="nt-name-err" role="status" hidden></p>
+      </div>
+      <div class="form-group" id="nt-type-group">
+        <label for="nt-type">Type</label>
+        <select id="nt-type" data-on-change="ntTypeChange">
+          <option value="telegram">Telegram bot</option>
+          <option value="discord">Discord webhook</option>
+          <option value="discord_bot">Discord bot</option>
+          <option value="webhook">Generic webhook</option>
         </select>
       </div>
-      <div id="fields-telegram">
-        <div class="form-group"><label>Bot Token</label><input type="text" id="tg-bot-token" placeholder="123456:ABC-DEF..."></div>
-        <div class="form-group"><label>Chat ID</label><input type="text" id="tg-chat-id" placeholder="-1001234567890"></div>
-      </div>
-      <div id="fields-discord" style="display:none">
-        <div class="form-group"><label>Webhook URL</label><input type="url" id="dc-webhook-url" placeholder="https://discord.com/api/webhooks/..."></div>
-      </div>
-      <div id="fields-discord_bot" style="display:none">
-        <div class="form-group"><label>Bot Token</label><input type="text" id="dcbot-token" placeholder="MTIzNDU2..."></div>
-        <div class="form-group"><label>Channel ID</label><input type="text" id="dcbot-channel" placeholder="1234567890123456789"></div>
-      </div>
-      <div id="fields-webhook" style="display:none">
-        <div class="form-group"><label>URL</label><input type="url" id="wh-url" placeholder="https://your-server.com/webhook"></div>
-        <div class="form-group"><label>Secret (optional)</label><input type="text" id="wh-secret"></div>
-      </div>
+      <p class="text-sm" id="nt-type-fixed" hidden>Type: <span class="badge badge-blue" id="nt-type-badge"></span></p>
+      <p class="text-sm text-muted" id="nt-type-help"></p>
+      <div id="nt-fields"></div>
+      <p class="nt-err" id="nt-form-err" role="alert" hidden></p>
       <div class="modal-actions">
         <button type="button" class="btn" data-action="modal-close">Cancel</button>
-        <button type="submit" class="btn btn-primary">Add Channel</button>
+        <button type="submit" class="btn btn-primary" id="nt-save">Add channel</button>
       </div>
     </form>
   </div>
 </div>
 
-<!-- Detail / Edit modal -->
-<div id="detail-modal" class="modal-backdrop" style="display:none">
-  <div class="modal">
-    <h2 id="detail-title">Channel Details</h2>
-    <div id="detail-view">
-      <table class="detail-table">
-        <tr><td class="text-muted">ID</td><td id="d-id" class="mono text-sm"></td></tr>
-        <tr><td class="text-muted">Name</td><td id="d-name"></td></tr>
-        <tr><td class="text-muted">Type</td><td id="d-type"></td></tr>
-        <tr><td class="text-muted">Status</td><td id="d-status"></td></tr>
-        <tr><td class="text-muted">Created</td><td id="d-created"></td></tr>
-      </table>
-      <div class="mt-1">
-        <strong class="text-sm">Configuration</strong>
-        <pre id="d-config" class="mono text-sm" style="background:var(--bg-card);border:1px solid var(--border);border-radius:4px;padding:0.5rem;margin-top:0.25rem;white-space:pre-wrap"></pre>
-      </div>
-      <div class="modal-actions mt-1">
-        <button type="button" class="btn" data-action="modal-close">Close</button>
-        <button type="button" class="btn" data-action="testFromDetail">Test</button>
-        <button type="button" class="btn btn-primary" data-action="switchToEdit">Edit</button>
-      </div>
-    </div>
-    <div id="detail-edit" style="display:none">
-      <form id="edit-channel-form">
-        <input type="hidden" id="edit-ch-id">
-        <input type="hidden" id="edit-ch-type-val">
-        <div class="form-group"><label>Name</label><input type="text" id="edit-ch-name" required></div>
-        <div class="form-group"><label>Type</label><span id="edit-ch-type-badge" class="badge badge-blue"></span></div>
-        <div id="edit-fields-telegram" style="display:none">
-          <div class="form-group"><label>Bot Token</label><input type="text" id="edit-tg-bot-token"></div>
-          <div class="form-group"><label>Chat ID</label><input type="text" id="edit-tg-chat-id"></div>
-        </div>
-        <div id="edit-fields-discord" style="display:none">
-          <div class="form-group"><label>Webhook URL</label><input type="url" id="edit-dc-webhook-url"></div>
-        </div>
-        <div id="edit-fields-discord_bot" style="display:none">
-          <div class="form-group"><label>Bot Token</label><input type="text" id="edit-dcbot-token"></div>
-          <div class="form-group"><label>Channel ID</label><input type="text" id="edit-dcbot-channel"></div>
-        </div>
-        <div id="edit-fields-webhook" style="display:none">
-          <div class="form-group"><label>URL</label><input type="url" id="edit-wh-url"></div>
-          <div class="form-group"><label>Secret</label><input type="text" id="edit-wh-secret"></div>
-        </div>
-        <div class="modal-actions">
-          <button type="button" class="btn" data-action="switchToView">Back</button>
-          <button type="button" class="btn" data-action="testFromEdit">Test</button>
-          <button type="submit" class="btn btn-primary">Save</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
 <script nonce="{{$.CSPNonce}}">
-var channels = [
-  {{range .Channels}}{id:"{{.ID}}", type:"{{.ChannelType}}", config:{{.Config}} },{{end}}
-];
-var currentChannel = null;
+(function () {
+  // Must equal handlers.ccSecretMask: the server swaps stored secrets for this
+  // value in every GET and keeps the stored value when it is sent back.
+  var MASK = '********';
+  var TYPES = {
+    telegram: { label: 'Telegram bot', help: 'Sends alerts with Approve / Reject buttons through a Telegram bot.',
+      fields: [
+        { key: 'bot_token', label: 'Bot token', secret: true, ph: '123456:ABC-DEF…', hint: 'From @BotFather. Stored encrypted-at-rest by the database; never shown again.' },
+        { key: 'chat_id', label: 'Chat ID', ph: '-1001234567890' }] },
+    discord: { label: 'Discord webhook', help: 'Posts alerts to a Discord channel through a webhook. Send-only.',
+      fields: [{ key: 'webhook_url', label: 'Webhook URL', secret: true, url: true, ph: 'https://discord.com/api/webhooks/…', hint: 'The URL contains a secret token, so it is masked after saving.' }] },
+    discord_bot: { label: 'Discord bot', help: 'Posts alerts through a Discord bot and accepts reaction replies.',
+      fields: [
+        { key: 'bot_token', label: 'Bot token', secret: true, ph: 'MTIzNDU2…' },
+        { key: 'channel_id', label: 'Channel ID', ph: '1234567890123456789' }] },
+    webhook: { label: 'Generic webhook', help: 'POSTs a JSON body to your server. Send-only.',
+      fields: [
+        { key: 'url', label: 'URL', secret: true, url: true, ph: 'https://example.com/hooks/duckway', hint: 'Webhook URLs often embed a token, so it is masked after saving.' },
+        { key: 'secret', label: 'Shared secret (optional)', secret: true, optional: true, hint: 'Sent as the X-Duckway-Secret header.' }] }
+  };
 
-document.addEventListener('DOMContentLoaded', function() {
-  channels.forEach(function(ch) {
-    var el = document.getElementById('detail-' + ch.id);
-    if (!el) return;
-    var cfg = ch.config;
-    switch(ch.type) {
-      case 'telegram':
-        DW.setHTML(el, DW.html`Bot: <code>${(cfg.bot_token||'').substring(0,10)}...</code> Chat: <code>${cfg.chat_id||''}</code>`); break;
-      case 'discord':
-        DW.setHTML(el, DW.html`Webhook: <code>${(cfg.webhook_url||'').replace('https://discord.com/api/webhooks/','').substring(0,20)}...</code>`); break;
-      case 'discord_bot':
-        DW.setHTML(el, DW.html`Bot: <code>${(cfg.bot_token||'').substring(0,12)}...</code> Channel: <code>${cfg.channel_id||''}</code>`); break;
-      case 'webhook':
-        DW.setHTML(el, DW.html`URL: <code>${(cfg.url||'').substring(0,40)}</code>${cfg.secret ? ' (with secret)' : ''}`); break;
+  var state = { channels: [], status: {}, editing: null, replacing: {}, pendingDelete: null, busy: {} };
+
+  function $(id) { return document.getElementById(id); }
+  function statusFor(id) { return state.status[id] || ''; }
+  function setStatus(id, msg) {
+    state.status[id] = msg;
+    var el = document.querySelector('[data-status-for="' + CSS.escape(id) + '"]');
+    if (el) el.textContent = msg;
+  }
+  function api(method, url, body) {
+    var opt = { method: method, credentials: 'same-origin', headers: {} };
+    if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+    return fetch(url, opt).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok || j.error) throw new Error(j.error || ('Request failed (' + r.status + ')'));
+        return j;
+      });
+    });
+  }
+
+  /* ---------- list ---------- */
+  function itemHTML(ch) {
+    var on = !!ch.is_active;
+    var typ = TYPES[ch.channel_type] ? TYPES[ch.channel_type].label : ch.channel_type;
+    var confirming = state.pendingDelete === ch.id;
+    return DW.html`<li class="nt-item${on ? '' : ' nt-off'}" data-id="${ch.id}">
+      <div class="nt-main">
+        <div class="nt-name"><strong>${ch.name}</strong> <span class="badge badge-blue">${typ}</span></div>
+        <div class="nt-summary text-sm text-muted">${ch.summary || ''}</div>
+        <div class="nt-status text-sm" role="status" aria-live="polite" data-status-for="${ch.id}">${statusFor(ch.id)}</div>
+      </div>
+      <div class="nt-actions">
+        <button type="button" class="nt-switch" role="switch" aria-checked="${on ? 'true' : 'false'}" data-action="ntToggle" data-id="${ch.id}" aria-label="${'Send alerts to ' + ch.name}">
+          <span class="nt-track" aria-hidden="true"><span class="nt-knob"></span></span>
+          <span class="nt-switch-t">${on ? 'Enabled' : 'Disabled'}</span>
+        </button>
+        <button type="button" class="btn" data-action="ntEdit" data-id="${ch.id}" aria-label="${'Edit ' + ch.name}">Edit</button>
+        <button type="button" class="btn" data-action="ntTest" data-id="${ch.id}" aria-label="${'Test ' + ch.name}">Test</button>
+        <button type="button" class="btn nt-del" data-action="ntAskDelete" data-id="${ch.id}" aria-label="${'Delete ' + ch.name}">Delete</button>
+      </div>
+      ${confirming ? DW.html`<div class="nt-confirm" role="group" aria-label="Confirm delete">
+        <p class="text-sm"><strong>Delete ${ch.name}?</strong> Alerts will stop going to it and its stored settings are removed. This cannot be undone.</p>
+        <div class="nt-confirm-btns">
+          <button type="button" class="btn" data-action="ntCancelDelete">Cancel</button>
+          <button type="button" class="btn btn-danger" data-action="ntDelete" data-id="${ch.id}">Delete channel</button>
+        </div></div>` : ''}
+    </li>`;
+  }
+  function render() {
+    var list = $('nt-list');
+    var ae = document.activeElement, keep = null;
+    if (ae && list.contains(ae) && ae.dataset.id) keep = '[data-action="' + ae.dataset.action + '"][data-id="' + CSS.escape(ae.dataset.id) + '"]';
+    $('nt-load').hidden = true;
+    $('nt-error').hidden = true;
+    var n = state.channels.length;
+    $('nt-empty').hidden = n !== 0;
+    list.hidden = n === 0;
+    DW.setHTML(list, DW.html`${state.channels.map(itemHTML)}`);
+    var active = state.channels.filter(function (c) { return c.is_active; }).length;
+    $('nt-count').textContent = n ? (active + ' of ' + n + ' enabled') : '';
+    if (keep) { var k = list.querySelector(keep); if (k) k.focus(); }
+  }
+  function load() {
+    $('nt-load').hidden = false;
+    $('nt-error').hidden = true;
+    return api('GET', '/api/notifications').then(function (list) {
+      state.channels = list;
+      render();
+    }).catch(function (e) {
+      $('nt-load').hidden = true;
+      $('nt-list').hidden = true;
+      $('nt-empty').hidden = true;
+      $('nt-error-t').textContent = 'Could not load channels: ' + e.message;
+      $('nt-error').hidden = false;
+    });
+  }
+  function find(id) { return state.channels.filter(function (c) { return c.id === id; })[0]; }
+
+  DW.actions.ntReload = function () { load(); };
+
+  DW.actions.ntToggle = function (el) {
+    var id = el.dataset.id, ch = find(id);
+    if (!ch || state.busy[id]) return;
+    var next = !ch.is_active;
+    state.busy[id] = true;
+    setStatus(id, 'Saving…');
+    return api('POST', '/api/notifications/' + encodeURIComponent(id) + '/active', { active: next }).then(function () {
+      ch.is_active = next;
+      state.status[id] = next ? 'Enabled. Alerts will be sent here.' : 'Disabled. No alerts will be sent here.';
+      render();
+    }).catch(function (e) {
+      setStatus(id, 'Could not change: ' + e.message);
+    }).then(function () { delete state.busy[id]; });
+  };
+
+  DW.actions.ntTest = function (el) {
+    var id = el.dataset.id;
+    if (state.busy[id]) return;
+    state.busy[id] = true;
+    setStatus(id, 'Testing…');
+    var ch = find(id);
+    return api('POST', '/api/notifications/' + encodeURIComponent(id) + '/test').then(function (r) {
+      var msg = (r.send_ok ? 'Sent. ' : 'Send failed. ') + (r.message || '');
+      setStatus(id, msg + (ch && !ch.is_active ? ' (channel is disabled; tests still send)' : ''));
+    }).catch(function (e) { setStatus(id, 'Test failed: ' + e.message); })
+      .then(function () { delete state.busy[id]; });
+  };
+
+  DW.actions.ntAskDelete = function (el) { state.pendingDelete = el.dataset.id; render(); var b = document.querySelector('.nt-confirm .btn'); if (b) b.focus(); };
+  DW.actions.ntCancelDelete = function () {
+    var id = state.pendingDelete; state.pendingDelete = null; render();
+    var b = id && document.querySelector('[data-action="ntAskDelete"][data-id="' + CSS.escape(id) + '"]'); if (b) b.focus();
+  };
+  DW.actions.ntDelete = function (el) {
+    var id = el.dataset.id;
+    setStatus(id, 'Deleting…');
+    return api('DELETE', '/api/notifications/' + encodeURIComponent(id)).then(function () {
+      state.channels = state.channels.filter(function (c) { return c.id !== id; });
+      state.pendingDelete = null;
+      render();
+      $('nt-count').textContent = 'Channel deleted. ' + $('nt-count').textContent;
+      var add = document.querySelector('[data-action="ntAdd"]'); if (add) add.focus();
+    }).catch(function (e) { state.pendingDelete = null; render(); setStatus(id, 'Delete failed: ' + e.message); });
+  };
+
+  /* ---------- add / edit form ---------- */
+  function cfgOf(ch) { try { return JSON.parse(ch.config) || {}; } catch (e) { return {}; } }
+
+  function fieldHTML(f, cfg, editing) {
+    var id = 'nt-f-' + f.key;
+    var stored = editing && f.secret && cfg[f.key] === MASK;
+    var val = (!f.secret && cfg[f.key]) ? cfg[f.key] : '';
+    var err = DW.html`<p class="nt-err" id="${id}-err" role="status" hidden></p>`;
+    var hint = f.hint ? DW.html`<p class="text-sm text-muted" id="${id}-hint">${f.hint}</p>` : '';
+    if (stored && !state.replacing[f.key]) {
+      return DW.html`<div class="form-group nt-field" data-key="${f.key}">
+        <span class="nt-lbl" id="${id}-lbl">${f.label}</span>
+        <div class="nt-stored"><span class="nt-mask" aria-labelledby="${id}-lbl">Stored (hidden)</span>
+          <button type="button" class="btn" data-action="ntReplace" data-key="${f.key}">Replace</button></div>
+        ${hint}${err}</div>`;
     }
-  });
-});
+    var type = f.secret ? 'password' : (f.url ? 'url' : 'text');
+    var keep = stored ? DW.html`<button type="button" class="btn" data-action="ntKeep" data-key="${f.key}">Keep stored value</button>` : '';
+    var show = f.secret ? DW.html`<button type="button" class="btn nt-reveal" data-action="ntReveal" data-target="${id}" aria-controls="${id}" aria-pressed="false"><span class="nt-reveal-t">Show</span><span class="sr-only"> ${f.label}</span></button>` : '';
+    return DW.html`<div class="form-group nt-field" data-key="${f.key}">
+      <label for="${id}">${f.label}</label>
+      <div class="nt-input-row">
+        <input type="${type}" id="${id}" data-key="${f.key}" value="${val}" placeholder="${f.ph || ''}" autocomplete="off" spellcheck="false" data-on-input="ntValidateLive" aria-describedby="${id}-hint ${id}-err">
+        ${show}${keep}
+      </div>${hint}${err}</div>`;
+  }
 
-function openDetail(id) {
-  fetch('/api/notifications/' + encodeURIComponent(id), {credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(ch) {
-      if (ch.error) { showToast(ch.error, 'error'); return; }
-      currentChannel = ch;
-      document.getElementById('detail-title').textContent = ch.name;
-      document.getElementById('d-id').textContent = ch.id;
-      document.getElementById('d-name').textContent = ch.name;
-      DW.setHTML(document.getElementById('d-type'), DW.html`<span class="badge badge-blue">${ch.channel_type}</span>`);
-      DW.setHTML(document.getElementById('d-status'), ch.is_active ? DW.raw('<span class="badge badge-green">Active</span>') : DW.raw('<span class="badge badge-red">Inactive</span>'));
-      document.getElementById('d-created').textContent = ch.created_at || '—';
-      try {
-        var cfg = JSON.parse(ch.config);
-        // Mask sensitive tokens
-        var display = {};
-        for (var k in cfg) {
-          if (k.indexOf('token') !== -1 && cfg[k] && cfg[k].length > 20) display[k] = cfg[k].substring(0,12) + '...';
-          else display[k] = cfg[k];
-        }
-        document.getElementById('d-config').textContent = JSON.stringify(display, null, 2);
-      } catch(e) { document.getElementById('d-config').textContent = ch.config; }
-      document.getElementById('detail-view').style.display = '';
-      document.getElementById('detail-edit').style.display = 'none';
-      DW.modal.open('#detail-modal');
+  function renderFields() {
+    var type = state.editing ? state.editing.channel_type : $('nt-type').value;
+    var def = TYPES[type];
+    var cfg = state.editing ? cfgOf(state.editing) : {};
+    $('nt-type-help').textContent = def.help;
+    DW.setHTML($('nt-fields'), DW.html`${def.fields.map(function (f) { return fieldHTML(f, cfg, !!state.editing); })}`);
+  }
+
+  function openForm(ch) {
+    state.editing = ch || null;
+    state.replacing = {};
+    $('nt-modal-title').textContent = ch ? 'Edit channel' : 'Add channel';
+    $('nt-save').textContent = ch ? 'Save changes' : 'Add channel';
+    $('nt-name').value = ch ? ch.name : '';
+    $('nt-type-group').hidden = !!ch;
+    $('nt-type-fixed').hidden = !ch;
+    if (ch) $('nt-type-badge').textContent = TYPES[ch.channel_type] ? TYPES[ch.channel_type].label : ch.channel_type;
+    else $('nt-type').value = 'telegram';
+    $('nt-form-err').hidden = true;
+    $('nt-name-err').hidden = true;
+    renderFields();
+    DW.modal.open('#nt-modal');
+    $('nt-name').focus();
+  }
+  DW.actions.ntAdd = function () { openForm(null); };
+  DW.actions.ntEdit = function (el) {
+    var id = el.dataset.id;
+    // Always refetch so the form reflects stored state; the response is masked.
+    return api('GET', '/api/notifications/' + encodeURIComponent(id)).then(openForm)
+      .catch(function (e) { setStatus(id, 'Could not open: ' + e.message); });
+  };
+  DW.actions.ntTypeChange = function () { renderFields(); };
+  DW.actions.ntReplace = function (el) {
+    state.replacing[el.dataset.key] = true;
+    var cfgNow = collect(true); renderFields(); restore(cfgNow);
+    var i = $('nt-f-' + el.dataset.key); if (i) i.focus();
+  };
+  DW.actions.ntKeep = function (el) {
+    delete state.replacing[el.dataset.key];
+    var cfgNow = collect(true); renderFields(); restore(cfgNow);
+    var b = document.querySelector('.nt-field[data-key="' + el.dataset.key + '"] [data-action="ntReplace"]'); if (b) b.focus();
+  };
+  // Typed values get a show/hide toggle only while being entered.
+  DW.actions.ntReveal = function (el) {
+    var i = $(el.dataset.target); if (!i) return;
+    var show = i.type === 'password';
+    i.type = show ? 'text' : 'password';
+    el.setAttribute('aria-pressed', show ? 'true' : 'false');
+    el.querySelector('.nt-reveal-t').textContent = show ? 'Hide' : 'Show';
+  };
+
+  function collect(raw) {
+    var type = state.editing ? state.editing.channel_type : $('nt-type').value;
+    var cfg = {};
+    TYPES[type].fields.forEach(function (f) {
+      var i = $('nt-f-' + f.key);
+      if (i) cfg[f.key] = i.value.trim();
+      else if (f.secret && state.editing) cfg[f.key] = MASK; // stored value kept
     });
-}
-
-function switchToEdit() {
-  if (!currentChannel) return;
-  var ch = currentChannel;
-  document.getElementById('edit-ch-id').value = ch.id;
-  document.getElementById('edit-ch-type-val').value = ch.channel_type;
-  document.getElementById('edit-ch-name').value = ch.name;
-  document.getElementById('edit-ch-type-badge').textContent = ch.channel_type;
-  ['telegram','discord','discord_bot','webhook'].forEach(function(t) {
-    var el = document.getElementById('edit-fields-' + t);
-    if (el) el.style.display = t === ch.channel_type ? 'block' : 'none';
-  });
-  var cfg = {}; try { cfg = JSON.parse(ch.config); } catch(e) {}
-  switch(ch.channel_type) {
-    case 'telegram': document.getElementById('edit-tg-bot-token').value = cfg.bot_token||''; document.getElementById('edit-tg-chat-id').value = cfg.chat_id||''; break;
-    case 'discord': document.getElementById('edit-dc-webhook-url').value = cfg.webhook_url||''; break;
-    case 'discord_bot': document.getElementById('edit-dcbot-token').value = cfg.bot_token||''; document.getElementById('edit-dcbot-channel').value = cfg.channel_id||''; break;
-    case 'webhook': document.getElementById('edit-wh-url').value = cfg.url||''; document.getElementById('edit-wh-secret').value = cfg.secret||''; break;
+    return cfg;
   }
-  document.getElementById('detail-view').style.display = 'none';
-  document.getElementById('detail-edit').style.display = '';
-}
-
-function switchToView() {
-  document.getElementById('detail-view').style.display = '';
-  document.getElementById('detail-edit').style.display = 'none';
-}
-
-function getEditConfig() {
-  var type = document.getElementById('edit-ch-type-val').value;
-  switch(type) {
-    case 'telegram': return {bot_token: document.getElementById('edit-tg-bot-token').value.trim(), chat_id: document.getElementById('edit-tg-chat-id').value.trim()};
-    case 'discord': return {webhook_url: document.getElementById('edit-dc-webhook-url').value.trim()};
-    case 'discord_bot': return {bot_token: document.getElementById('edit-dcbot-token').value.trim(), channel_id: document.getElementById('edit-dcbot-channel').value.trim()};
-    case 'webhook': var c = {url: document.getElementById('edit-wh-url').value.trim()}; var s = document.getElementById('edit-wh-secret').value.trim(); if(s) c.secret=s; return c;
+  function restore(cfg) {
+    Object.keys(cfg).forEach(function (k) { var i = $('nt-f-' + k); if (i && cfg[k] !== MASK) i.value = cfg[k]; });
   }
-  return {};
-}
 
-document.getElementById('edit-channel-form').addEventListener('submit', function(e) {
-  e.preventDefault();
-  var id = document.getElementById('edit-ch-id').value;
-  fetch('/api/notifications/' + id, {
-    method: 'PUT',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name: document.getElementById('edit-ch-name').value, config: JSON.stringify(getEditConfig())}),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('Channel updated', 'success');
-    location.reload();
-  });
-});
-
-DW.actions.openAddModal = function() { openAddModal(); };
-DW.actions.openDetail = function(el) { openDetail(el.dataset.id); };
-DW.actions.onTypeChange = function() { onTypeChange(); };
-DW.actions.testFromDetail = function() { testFromDetail(); };
-DW.actions.switchToEdit = function() { switchToEdit(); };
-DW.actions.switchToView = function() { switchToView(); };
-DW.actions.testFromEdit = function() { testFromEdit(); };
-
-function testFromDetail() { if (currentChannel) doTest(currentChannel.id); }
-function testFromEdit() {
-  var id = document.getElementById('edit-ch-id').value;
-  var name = document.getElementById('edit-ch-name').value;
-  fetch('/api/notifications/' + id, {
-    method: 'PUT',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name: name, config: JSON.stringify(getEditConfig())}),
-    credentials: 'same-origin'
-  }).then(function() { doTest(id); });
-}
-
-function doTest(id) {
-  showToast('Testing...', '');
-  fetch('/api/notifications/' + id + '/test', {method:'POST', credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.error) { showToast('Test failed: ' + data.error, 'error'); return; }
-      var ok = data.send_ok && data.receive_ok;
-      showToast((data.send_ok ? 'Send OK' : 'Send FAIL') + ' / ' + (data.receive_ok ? 'Receive OK' : 'Receive pending') + ' - ' + data.message, ok ? 'success' : 'error');
+  function showErr(id, msg) {
+    var el = $(id); if (!el) return;
+    el.textContent = msg || '';
+    el.hidden = !msg;
+  }
+  function validate() {
+    var type = state.editing ? state.editing.channel_type : $('nt-type').value;
+    var cfg = collect();
+    var ok = true;
+    var name = $('nt-name').value.trim();
+    showErr('nt-name-err', name ? '' : 'Enter a name for this channel.');
+    if (!name) ok = false;
+    TYPES[type].fields.forEach(function (f) {
+      var msg = '';
+      var v = cfg[f.key] || '';
+      var isStored = v === MASK;
+      if (!v && !f.optional) msg = f.label + ' is required.';
+      else if (v && !isStored && f.url) {
+        try { var u = new URL(v); if (u.protocol !== 'https:' && u.protocol !== 'http:') msg = f.label + ' must start with http:// or https://.'; }
+        catch (e) { msg = f.label + ' must be a full URL, for example https://example.com/hook.'; }
+      }
+      showErr('nt-f-' + f.key + '-err', msg);
+      if (msg) ok = false;
     });
-}
-
-function openAddModal() {
-  document.getElementById('ch-name').value = '';
-  document.getElementById('ch-type').value = 'telegram';
-  onTypeChange();
-  DW.modal.open('#add-modal');
-}
-
-function onTypeChange() {
-  var type = document.getElementById('ch-type').value;
-  ['telegram','discord','discord_bot','webhook'].forEach(function(t) {
-    var el = document.getElementById('fields-' + t);
-    if (el) el.style.display = t === type ? 'block' : 'none';
-  });
-}
-
-document.getElementById('add-channel-form').addEventListener('submit', function(e) {
-  e.preventDefault();
-  var type = document.getElementById('ch-type').value;
-  var name = document.getElementById('ch-name').value;
-  var config = {};
-  switch(type) {
-    case 'telegram': config = {bot_token: document.getElementById('tg-bot-token').value.trim(), chat_id: document.getElementById('tg-chat-id').value.trim()}; if(!config.bot_token||!config.chat_id){showToast('Bot token and chat ID required','error');return;} break;
-    case 'discord': config = {webhook_url: document.getElementById('dc-webhook-url').value.trim()}; if(!config.webhook_url){showToast('URL required','error');return;} break;
-    case 'discord_bot': config = {bot_token: document.getElementById('dcbot-token').value.trim(), channel_id: document.getElementById('dcbot-channel').value.trim()}; if(!config.bot_token||!config.channel_id){showToast('Token and channel required','error');return;} break;
-    case 'webhook': config = {url: document.getElementById('wh-url').value.trim()}; var s=document.getElementById('wh-secret').value.trim(); if(s) config.secret=s; if(!config.url){showToast('URL required','error');return;} break;
+    return ok;
   }
-  fetch('/api/notifications', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({channel_type: type, name: name, config: JSON.stringify(config)}),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('Channel added', 'success');
-    location.reload();
-  });
-});
+  DW.actions.ntValidateLive = function (el) {
+    // Only re-check fields the user has already tried to submit (an error is showing).
+    var errId = el.id === 'nt-name' ? 'nt-name-err' : el.id + '-err';
+    var e = $(errId);
+    if (e && !e.hidden) validate();
+  };
+
+  DW.actions.ntSave = function () {
+    $('nt-form-err').hidden = true;
+    if (!validate()) {
+      var bad = document.querySelector('#nt-form .nt-err:not([hidden])');
+      if (bad) { var inp = bad.parentElement.querySelector('input'); if (inp) inp.focus(); }
+      return;
+    }
+    var type = state.editing ? state.editing.channel_type : $('nt-type').value;
+    var body = { name: $('nt-name').value.trim(), config: JSON.stringify(collect()) };
+    var req;
+    var btn = $('nt-save');
+    btn.disabled = true;
+    if (state.editing) req = api('PUT', '/api/notifications/' + encodeURIComponent(state.editing.id), body);
+    else { body.channel_type = type; req = api('POST', '/api/notifications', body); }
+    var wasEdit = !!state.editing, editedId = state.editing && state.editing.id;
+    return req.then(function (res) {
+      DW.modal.close('#nt-modal');
+      return load().then(function () {
+        var id = wasEdit ? editedId : res.id;
+        setStatus(id, wasEdit ? 'Saved. Use Test to verify the new settings.' : 'Channel added. Use Test to verify it.');
+        render();
+      });
+    }).catch(function (e) {
+      $('nt-form-err').textContent = 'Could not save: ' + e.message;
+      $('nt-form-err').hidden = false;
+    }).then(function () { btn.disabled = false; });
+  };
+
+  document.addEventListener('DOMContentLoaded', load);
+})();
 </script>
 {{end}}
