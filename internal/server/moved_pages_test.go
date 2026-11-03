@@ -26,6 +26,7 @@ func TestMovedPagesReturn404NoticeInShell(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, old, nil)
 		req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 		rec := httptest.NewRecorder()
+		testSameOrigin(req)
 		s.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("%s: status %d, want 404", old, rec.Code)
@@ -50,6 +51,7 @@ func TestMovedPagesMapTargetsAreRealPages(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, m.NewPath, nil)
 		req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 		rec := httptest.NewRecorder()
+		testSameOrigin(req)
 		s.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s -> %s: new location status %d", old, m.NewPath, rec.Code)

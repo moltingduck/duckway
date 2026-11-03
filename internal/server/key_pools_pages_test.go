@@ -20,6 +20,7 @@ func poolsAPI(t *testing.T, s *Server, shared *SharedServices, method, path, bod
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 	rec := httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	out := map[string]interface{}{}
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)

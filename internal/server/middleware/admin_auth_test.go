@@ -275,3 +275,56 @@ func TestMiddleware_CookieValue_ContainsTimestamp(t *testing.T) {
 		t.Errorf("timestamp %d outside expected range [%d, %d]", ts, before, after)
 	}
 }
+
+type memEpoch map[string]string
+
+func (m memEpoch) Get(k string) string    { return m[k] }
+func (m memEpoch) Set(k, v string) error { m[k] = v; return nil }
+
+func TestSessionEpochRevokesOldCookiesImmediately(t *testing.T) {
+	store := memEpoch{}
+	a := newTestAuth().WithEpochStore(store)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	old := a.CreateSession("alice", req)
+	if _, ok := a.validateSession(old.Value); !ok {
+		t.Fatal("fresh cookie rejected")
+	}
+	if n, err := a.BumpEpoch(); err != nil || n != 1 {
+		t.Fatalf("bump = %d, %v", n, err)
+	}
+	if _, ok := a.validateSession(old.Value); ok {
+		t.Fatal("old-epoch cookie accepted after bump")
+	}
+	fresh := a.CreateSession("alice", req)
+	if _, ok := a.validateSession(fresh.Value); !ok {
+		t.Fatal("re-issued cookie rejected")
+	}
+}
+
+func TestSessionEpochLegacyCookieValidUntilFirstBump(t *testing.T) {
+	a := newTestAuth().WithEpochStore(memEpoch{})
+	legacy := buildCookieValue(a, "alice", time.Now().Unix())
+	if _, ok := a.validateSession(legacy); !ok {
+		t.Fatal("legacy cookie rejected at epoch 0")
+	}
+	if _, err := a.BumpEpoch(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.validateSession(legacy); ok {
+		t.Fatal("legacy cookie accepted after bump")
+	}
+}
+
+func TestSessionEpochCannotBeForgedInCookie(t *testing.T) {
+	a := newTestAuth().WithEpochStore(memEpoch{"session_epoch": "3"})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	c := a.CreateSession("alice", req)
+	parts := strings.Split(c.Value, "|")
+	if len(parts) != 4 || parts[2] != "3" {
+		t.Fatalf("cookie %q lacks epoch", c.Value)
+	}
+	parts[2] = "4" // signature no longer matches
+	if _, ok := a.validateSession(strings.Join(parts, "|")); ok {
+		t.Fatal("tampered epoch accepted")
+	}
+}

@@ -62,6 +62,7 @@ func TestClientServicesReturnsOnlyAuthenticatedClientAssignmentState(t *testing.
 		req := httptest.NewRequest(http.MethodGet, "/client/services", nil)
 		req.Header.Set("X-Duckway-Token", token)
 		rec := httptest.NewRecorder()
+		testSameOrigin(req)
 		s.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s status=%d body=%s", clientID, rec.Code, rec.Body.String())
@@ -95,6 +96,7 @@ func TestClientServicesReturnsOnlyAuthenticatedClientAssignmentState(t *testing.
 		req := httptest.NewRequest(http.MethodGet, "/client/sync", nil)
 		req.Header.Set("X-Duckway-Token", token)
 		rec := httptest.NewRecorder()
+		testSameOrigin(req)
 		s.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s sync status=%d body=%s", clientID, rec.Code, rec.Body.String())

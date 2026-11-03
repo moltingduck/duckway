@@ -28,6 +28,7 @@ func credAdminRequest(t *testing.T, s *Server, shared *SharedServices, method, p
 	}
 	req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 	rec := httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	return rec
 }

@@ -50,6 +50,7 @@ func TestApprovalsListRequiresAuthAndCarriesDetailFields(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://admin.example/api/approvals/list?status=pending", nil)
 	req.AddCookie(shared.AdminAuth.CreateSession("approvals-admin", req))
 	rec := httptest.NewRecorder()
+	testSameOrigin(req)
 	admin.ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("list = %d %s", rec.Code, rec.Body.String())

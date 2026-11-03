@@ -34,7 +34,7 @@ func newAuthTestEnv(t *testing.T) *authTestEnv {
 	t.Cleanup(func() { db.Close() })
 
 	userQ := queries.NewAdminUserQueries(db)
-	auth := middleware.NewAdminAuth([]byte("test-secret"))
+	auth := middleware.NewAdminAuth([]byte("test-secret")).WithEpochStore(queries.NewSettingsQueries(db))
 	h := handlers.NewAuthHandler(userQ, auth)
 
 	return &authTestEnv{handler: h, users: userQ, auth: auth}
@@ -251,5 +251,70 @@ func TestChangePassword_NotAuthenticated_Returns401(t *testing.T) {
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", rr.Code)
+	}
+}
+
+func TestChangePassword_RevokesOtherSessionsKeepsCurrent(t *testing.T) {
+	env := newAuthTestEnv(t)
+	seedUser(t, env, "u1", "alice", "oldpassword")
+	mw := env.auth.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	probe := func(c *http.Cookie) int {
+		req := httptest.NewRequest(http.MethodGet, "/api/keys", nil)
+		req.AddCookie(c)
+		rr := httptest.NewRecorder()
+		mw.ServeHTTP(rr, req)
+		return rr.Code
+	}
+	base := httptest.NewRequest(http.MethodGet, "/", nil)
+	other := env.auth.CreateSession("alice", base)
+	current := env.auth.CreateSession("alice", base)
+	if probe(other) != 200 {
+		t.Fatal("session invalid before change")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", jsonBody(t, map[string]string{
+		"current_password": "oldpassword", "new_password": "newpassword123",
+	}))
+	req = injectUser(req, "alice")
+	rr := httptest.NewRecorder()
+	env.handler.ChangePassword(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d %s", rr.Code, rr.Body.String())
+	}
+	if probe(other) != 401 || probe(current) != 401 {
+		t.Fatal("pre-change cookies must be rejected")
+	}
+	var reissued *http.Cookie
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == "duckway_session" {
+			reissued = c
+		}
+	}
+	if reissued == nil {
+		t.Fatal("no re-issued session cookie")
+	}
+	if probe(reissued) != 200 {
+		t.Fatal("re-issued cookie rejected")
+	}
+}
+
+func TestChangePassword_WrongCurrentPasswordKeepsSessions(t *testing.T) {
+	env := newAuthTestEnv(t)
+	seedUser(t, env, "u1", "alice", "oldpassword")
+	c := env.auth.CreateSession("alice", httptest.NewRequest(http.MethodGet, "/", nil))
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", jsonBody(t, map[string]string{
+		"current_password": "nope", "new_password": "newpassword123",
+	}))
+	rr := httptest.NewRecorder()
+	env.handler.ChangePassword(rr, injectUser(req, "alice"))
+	if rr.Code != 401 {
+		t.Fatalf("status %d", rr.Code)
+	}
+	if _, ok := func() (string, bool) {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.AddCookie(c)
+		return env.auth.SessionUser(r)
+	}(); !ok {
+		t.Fatal("failed change revoked sessions")
 	}
 }

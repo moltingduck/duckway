@@ -62,6 +62,7 @@ func getLogs(t *testing.T, s *Server, shared *SharedServices, query string, anon
 		req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 	}
 	rec := httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	var p logsPage
 	if rec.Code == 200 && query != "" {
@@ -276,6 +277,7 @@ func TestLogsFacetsAndDuration(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/logs/facets", nil)
 	req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 	rec := httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("facets %d", rec.Code)
@@ -291,6 +293,7 @@ func TestLogsFacetsAndDuration(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/api/logs?limit=200", nil)
 	req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 	rec = httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	var raw struct {
 		Items []struct {

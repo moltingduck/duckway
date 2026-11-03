@@ -141,6 +141,7 @@ func TestOverviewEndpointRequiresAdminAuth(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/overview", nil)
 	req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 	rec = httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"attention"`) {
 		t.Fatalf("authed status=%d body=%s", rec.Code, rec.Body.String())

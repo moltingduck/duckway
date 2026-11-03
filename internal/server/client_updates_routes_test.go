@@ -43,6 +43,7 @@ func TestClientUpdateRoutesEnforceClientAndAdminAuth(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/client/control/heartbeat", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous heartbeat status=%d body=%s", rec.Code, rec.Body.String())
@@ -50,6 +51,7 @@ func TestClientUpdateRoutesEnforceClientAndAdminAuth(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/client/control/heartbeat", bytes.NewBufferString(body))
 	req.Header.Set("X-Duckway-Token", clientToken)
 	rec = httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("authenticated heartbeat status=%d body=%s", rec.Code, rec.Body.String())
@@ -57,6 +59,7 @@ func TestClientUpdateRoutesEnforceClientAndAdminAuth(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodGet, "/api/client-updates", nil)
 	rec = httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous admin API status=%d body=%s", rec.Code, rec.Body.String())
@@ -64,6 +67,7 @@ func TestClientUpdateRoutesEnforceClientAndAdminAuth(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/api/client-updates", nil)
 	req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 	rec = httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("authenticated admin API status=%d body=%s", rec.Code, rec.Body.String())
@@ -73,6 +77,7 @@ func TestClientUpdateRoutesEnforceClientAndAdminAuth(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/api/client-updates", bytes.NewBufferString(rolloutBody))
 	req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
 	rec = httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create rollout status=%d body=%s", rec.Code, rec.Body.String())
@@ -80,6 +85,7 @@ func TestClientUpdateRoutesEnforceClientAndAdminAuth(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/client/control/heartbeat", bytes.NewBufferString(body))
 	req.Header.Set("X-Duckway-Token", clientToken)
 	rec = httptest.NewRecorder()
+	testSameOrigin(req)
 	s.ServeHTTP(rec, req)
 	var heartbeat controlplane.HeartbeatResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &heartbeat); err != nil {
@@ -96,6 +102,7 @@ func TestClientUpdateRoutesEnforceClientAndAdminAuth(t *testing.T) {
 		req = httptest.NewRequest(http.MethodPost, "/client/control/jobs/"+heartbeat.Command.ID+"/status", bytes.NewReader(statusBody))
 		req.Header.Set("X-Duckway-Token", clientToken)
 		rec = httptest.NewRecorder()
+		testSameOrigin(req)
 		s.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("job status %s=%d body=%s", status.Status, rec.Code, rec.Body.String())

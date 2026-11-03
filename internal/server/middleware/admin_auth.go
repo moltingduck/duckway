@@ -9,8 +9,17 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// EpochStore persists the admin session epoch (settings.session_epoch).
+type EpochStore interface {
+	Get(key string) string
+	Set(key, value string) error
+}
+
+const epochSettingKey = "session_epoch"
 
 const sessionMaxAgeSecs = 86400 * 7 // 7 days, matches MaxAge below
 
@@ -19,7 +28,44 @@ type contextKey string
 const AdminUserKey contextKey = "admin_user"
 
 type AdminAuth struct {
-	secret []byte
+	secret  []byte
+	epochMu sync.Mutex
+	epochs  EpochStore
+}
+
+// WithEpochStore enables session revocation: cookies carry the epoch current
+// at issue time and are rejected once it changes. Without a store the epoch is
+// always 0.
+func (a *AdminAuth) WithEpochStore(s EpochStore) *AdminAuth {
+	a.epochs = s
+	return a
+}
+
+// Epoch returns the current session epoch (0 when unset or unparsable). It is
+// read from the store on every call so a bump takes effect immediately.
+func (a *AdminAuth) Epoch() int64 {
+	if a.epochs == nil {
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(a.epochs.Get(epochSettingKey)), 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// BumpEpoch invalidates every previously issued session cookie.
+func (a *AdminAuth) BumpEpoch() (int64, error) {
+	if a.epochs == nil {
+		return 0, nil
+	}
+	a.epochMu.Lock()
+	defer a.epochMu.Unlock()
+	n := a.Epoch() + 1
+	if err := a.epochs.Set(epochSettingKey, strconv.FormatInt(n, 10)); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func NewAdminAuth(secret []byte) *AdminAuth {
@@ -68,7 +114,7 @@ func (a *AdminAuth) unauthorized(w http.ResponseWriter, r *http.Request) {
 
 func (a *AdminAuth) CreateSession(username string, r *http.Request) *http.Cookie {
 	ts := time.Now().Unix()
-	data := fmt.Sprintf("%s|%d", username, ts)
+	data := fmt.Sprintf("%s|%d|%d", username, ts, a.Epoch())
 	sig := a.sign(data)
 	value := data + "|" + sig
 
@@ -95,14 +141,25 @@ func (a *AdminAuth) sign(data string) string {
 }
 
 func (a *AdminAuth) validateSession(value string) (string, bool) {
-	parts := strings.SplitN(value, "|", 3)
-	if len(parts) != 3 {
+	// Current format: user|ts|epoch|sig. Legacy cookies (user|ts|sig) predate
+	// revocation and count as epoch 0.
+	parts := strings.Split(value, "|")
+	var epoch int64
+	var data, sig string
+	switch len(parts) {
+	case 3:
+		data, sig = parts[0]+"|"+parts[1], parts[2]
+	case 4:
+		n, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil || n < 0 {
+			return "", false
+		}
+		epoch = n
+		data, sig = parts[0]+"|"+parts[1]+"|"+parts[2], parts[3]
+	default:
 		return "", false
 	}
-
 	username := parts[0]
-	data := parts[0] + "|" + parts[1]
-	sig := parts[2]
 
 	expected := a.sign(data)
 	if !hmac.Equal([]byte(sig), []byte(expected)) {
@@ -116,5 +173,8 @@ func (a *AdminAuth) validateSession(value string) (string, bool) {
 		return "", false
 	}
 
+	if epoch != a.Epoch() {
+		return "", false
+	}
 	return username, true
 }
