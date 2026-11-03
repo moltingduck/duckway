@@ -612,7 +612,7 @@ function loadActivity() {
   if (!activity.loaded) DW.setHTML(el('cd-activity'), DW.raw('<div class="card cd-card text-muted">Loading…</div>'));
   Promise.all([
     fetchJSON('/api/logs?client=' + enc(CID) + '&limit=20'),
-    fetchJSON('/api/approvals/list?client_id=' + enc(CID) + '&status=pending,approved,rejected,ignored').then(function(a) { return {ok: true, list: Array.isArray(a) ? a : []}; }, function() { return {ok: false, list: []}; })
+    fetchJSON('/api/approvals/list?client_id=' + enc(CID) + '&status=pending,approved,rejected,ignored&limit=5').then(function(a) { return {ok: true, list: Array.isArray(a) ? a : []}; }, function() { return {ok: false, list: []}; })
   ]).then(function(res) {
     var d = res[0];
     if (seq !== activitySeq) return;

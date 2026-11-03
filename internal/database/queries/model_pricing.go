@@ -73,3 +73,37 @@ func (q *ModelPricingQueries) Effective(serviceID, model string, at time.Time) (
 	}
 	return &p, nil
 }
+
+// GetByID returns one price version scoped to its service.
+func (q *ModelPricingQueries) GetByID(serviceID, id string) (*models.ModelPricing, error) {
+	var p models.ModelPricing
+	err := scanModelPricing(q.db.QueryRow(`SELECT `+modelPricingCols+` FROM model_pricing
+		WHERE service_id = ? AND id = ?`, serviceID, id), &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// Update rewrites a price version in place. Usage rows keep the cost and
+// pricing_version they were priced with, so history is unaffected.
+func (q *ModelPricingQueries) Update(p *models.ModelPricing) error {
+	_, err := q.db.Exec(`UPDATE model_pricing SET model=?, version=?, input_usd_micros_per_mtok=?,
+		output_usd_micros_per_mtok=?, cache_read_usd_micros_per_mtok=?,
+		cache_creation_usd_micros_per_mtok=?, reasoning_usd_micros_per_mtok=?, effective_from=?
+		WHERE id=? AND service_id=?`,
+		p.Model, p.Version, p.InputUSDMicrosPerMTok, p.OutputUSDMicrosPerMTok,
+		p.CacheReadUSDMicrosPerMTok, p.CacheCreationUSDMicrosPerMTok,
+		p.ReasoningUSDMicrosPerMTok, p.EffectiveFrom, p.ID, p.ServiceID)
+	return err
+}
+
+// Delete removes one price version; it reports whether a row was removed.
+func (q *ModelPricingQueries) Delete(serviceID, id string) (bool, error) {
+	res, err := q.db.Exec(`DELETE FROM model_pricing WHERE service_id = ? AND id = ?`, serviceID, id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
