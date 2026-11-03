@@ -39,20 +39,19 @@ func TestPlaceholdersTemplateSupportsGitHubRepoScopedAssignments(t *testing.T) {
 	}
 }
 
-func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
-	body, err := Content.ReadFile("templates/clients.html")
+func TestClientDetailTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
+	body, err := Content.ReadFile("templates/client_detail.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(body)
 	required := []string{
-		`data-action="rotateClientToken"`,
+		`data-action="dzRotate"`,
 		`/rotate-token`,
-		`function showClientToken(data, rotated)`,
+		`function showClientToken(data)`,
 		`Reconfigure the Duckway client`,
-		`isRefreshable:{{.IsRefreshable}}`,
-		`isMintable:{{.IsMintable}}`,
-		`permissionConfig:"{{if .PermissionConfig}}{{deref .PermissionConfig}}{{end}}"`,
+		`var apiKeys = {{.Keys}};`,
+		`permissionConfig: p.permission_config || ''`,
 		`id="assign-github-repo-scope"`,
 		`id="eph-github-repo-scope"`,
 		`function loadAssignGitHubRepos()`,
@@ -90,7 +89,7 @@ func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
 	}
 	for _, want := range required {
 		if !strings.Contains(html, want) {
-			t.Fatalf("clients template missing mintable GitHub repo assignment contract: %s", want)
+			t.Fatalf("client detail template missing mintable GitHub repo assignment contract: %s", want)
 		}
 	}
 	if strings.Contains(html, `github-policy-preset`) || strings.Contains(html, `<details class="repo-grant-details"`) {
@@ -98,8 +97,8 @@ func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
 	}
 }
 
-func TestClientsTemplateDefaultsFirstUseApprovalOffAndKeepsOptIn(t *testing.T) {
-	body, err := Content.ReadFile("templates/clients.html")
+func TestClientDetailTemplateDefaultsFirstUseApprovalOffAndKeepsOptIn(t *testing.T) {
+	body, err := Content.ReadFile("templates/client_detail.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,23 +114,26 @@ func TestClientsTemplateDefaultsFirstUseApprovalOffAndKeepsOptIn(t *testing.T) {
 	}
 }
 
-func TestClientsTemplateMakesClientReconfigurationDiscoverable(t *testing.T) {
-	body, err := Content.ReadFile("templates/clients.html")
+func TestClientDetailTemplateMakesClientTokenRotationDiscoverable(t *testing.T) {
+	body, err := Content.ReadFile("templates/client_detail.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(body)
 	required := []string{
-		`data-action="openClientDetail" data-id="{{.ID}}">Reconfigure connection info</button>`,
-		`Reconfiguring connection info revokes the current client token immediately. Existing client and API key assignments remain in place. The new token and setup instructions are shown once.`,
-		`>Reconfigure Connection Info</button>`,
-		`The current token will be revoked immediately. Existing client and API key assignments will remain in place. The new token and setup instructions will be shown once.`,
-		`showClientToken(result.body, true)`,
+		`data-action="dzRotate">Rotate client token…</button>`,
+		`The machine must re-run <code>duckway init</code> with the new one-time token.`,
+		`The current token for <strong>${im.name}</strong> is revoked immediately.`,
+		`showClientToken(data)`,
+		`/rotate-token`,
 	}
 	for _, want := range required {
 		if !strings.Contains(html, want) {
-			t.Fatalf("clients template missing client reconfiguration contract: %s", want)
+			t.Fatalf("client detail template missing client token rotation contract: %s", want)
 		}
+	}
+	if strings.Contains(html, "Reconfigure connection info") || strings.Contains(html, "Reconfigure Connection Info") {
+		t.Fatal("rotation was renamed from Reconfigure connection info to Rotate client token")
 	}
 }
 

@@ -1,0 +1,1505 @@
+{{define "content"}}
+{{if eq .Error "not_found"}}
+<div class="cd-crumb"><a href="/admin/clients">Clients</a> / <span>Not found</span></div>
+<div class="card cd-notfound" role="alert">
+  <h1>Client not found</h1>
+  <p class="text-muted">No client with this id exists. It may have been deleted.</p>
+  <a class="btn btn-primary" href="/admin/clients">Back to clients</a>
+</div>
+{{else}}
+<div class="cd-crumb"><a href="/admin/clients">Clients</a> / <span>{{.Clients.Name}}</span></div>
+<div id="cd-root" data-client-id="{{.Clients.ID}}">
+  <div class="cd-head">
+    <div>
+      <div class="cd-title"><h1 id="cd-h1">{{.Clients.Name}}</h1><span id="cd-status"></span><span id="cd-policy"></span></div>
+      <div class="cd-meta" id="cd-meta">Loading…</div>
+    </div>
+    <div class="cd-actions">
+      <button type="button" class="btn" data-action="openEdit">Edit</button>
+      <button type="button" class="btn btn-primary" data-action="openAssign">Add credential</button>
+    </div>
+  </div>
+
+  <div class="cl-tabs" role="tablist" aria-label="Client sections" id="cd-tablist">
+    <button type="button" role="tab" class="cl-tab" id="cd-tab-overview" aria-selected="true" aria-controls="cd-panel-overview" data-action="pickTab" data-tab="overview">Overview</button>
+    <button type="button" role="tab" class="cl-tab" id="cd-tab-credentials" aria-selected="false" tabindex="-1" aria-controls="cd-panel-credentials" data-action="pickTab" data-tab="credentials">Credentials · <span id="cd-cred-count">0</span></button>
+    <button type="button" role="tab" class="cl-tab" id="cd-tab-channel" aria-selected="false" tabindex="-1" aria-controls="cd-panel-channel" data-action="pickTab" data-tab="channel">Control channel</button>
+    <button type="button" role="tab" class="cl-tab" id="cd-tab-canary" aria-selected="false" tabindex="-1" aria-controls="cd-panel-canary" data-action="pickTab" data-tab="canary">Canary</button>
+    <button type="button" role="tab" class="cl-tab" id="cd-tab-activity" aria-selected="false" tabindex="-1" aria-controls="cd-panel-activity" data-action="pickTab" data-tab="activity">Activity</button>
+  </div>
+
+  <div class="cd-layout">
+    <div class="cd-main">
+      <section class="cd-panel" id="cd-panel-overview" role="tabpanel" aria-labelledby="cd-tab-overview"><div id="cd-overview"></div></section>
+      <section class="cd-panel" id="cd-panel-credentials" role="tabpanel" aria-labelledby="cd-tab-credentials" hidden>
+        <div id="cd-banners"></div>
+        <div class="card cd-tablecard">
+          <div class="table-wrap">
+            <table class="cd-table">
+              <thead><tr><th scope="col">Environment variable</th><th scope="col">Credential</th><th scope="col">From</th><th scope="col">Approval</th><th scope="col">Rules</th><th scope="col" class="text-right">Requests</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+              <tbody id="cd-creds"><tr><td colspan="7" class="text-muted">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <section class="cd-panel" id="cd-panel-channel" role="tabpanel" aria-labelledby="cd-tab-channel" hidden><div id="cd-channel"></div></section>
+      <section class="cd-panel" id="cd-panel-canary" role="tabpanel" aria-labelledby="cd-tab-canary" hidden><div id="cd-canary"></div></section>
+      <section class="cd-panel" id="cd-panel-activity" role="tabpanel" aria-labelledby="cd-tab-activity" hidden><div id="cd-activity"></div></section>
+    </div>
+
+    <aside class="cd-side">
+      <section class="card cd-card" aria-labelledby="cd-about-h">
+        <h2 id="cd-about-h">About</h2>
+        <dl class="cd-dl" id="cd-about"></dl>
+      </section>
+      <section class="cd-danger" aria-labelledby="cd-dz-h">
+        <h2 id="cd-dz-h">Danger zone</h2>
+        <div class="cd-danger-item">
+          <button type="button" class="btn btn-dz" data-action="dzRotate">Rotate client token…</button>
+          <span class="cd-dz-note">The machine must re-run <code>duckway init</code> with the new one-time token.</span>
+        </div>
+        <div class="cd-danger-item">
+          <button type="button" class="btn btn-dz" id="cd-btn-disable" data-action="dzDisable">Disable client…</button>
+          <span class="cd-dz-note" id="cd-disable-note">All its phantom tokens stop working until re-enabled.</span>
+        </div>
+        <div class="cd-danger-item">
+          <button type="button" class="btn btn-dz" data-action="dzDelete">Delete client…</button>
+          <span class="cd-dz-note">Also removes its phantom tokens, canary tokens and control channel.</span>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <div class="cd-bar"><button type="button" class="btn btn-primary" data-action="openAssign">Add credential</button></div>
+</div>
+
+<!-- Edit client -->
+<div id="edit-modal" class="modal-backdrop" hidden>
+  <div class="modal">
+    <h2>Edit client</h2>
+    <form id="edit-form" data-on-submit="saveEdit">
+      <div class="form-group"><label for="ce-name">Name</label><input type="text" id="ce-name" required maxlength="120"></div>
+      <div class="form-group">
+        <label class="cd-check"><input type="checkbox" id="ce-managed"> Managed updates</label>
+        <span class="text-muted text-sm">Turn off to exclude this client from fleet rollouts and update it manually.</span>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Danger / confirm dialog (filled by JS) -->
+<div id="dz-modal" class="modal-backdrop" hidden>
+  <div class="modal">
+    <h2 id="dz-title">Confirm</h2>
+    <div id="dz-body"></div>
+    <div class="form-group" id="dz-type-row" hidden>
+      <label for="dz-type">Type <span class="cd-confirm-name" id="dz-type-name"></span> to confirm</label>
+      <input type="text" id="dz-type" autocomplete="off" data-on-input="dzTyped">
+    </div>
+    <div id="dz-error" class="field-error" role="alert" hidden></div>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="modal-close">Cancel</button>
+      <button type="button" class="btn" id="dz-confirm" data-action="dzConfirm">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Change / assign key bundle -->
+<div id="bundle-modal" class="modal-backdrop" hidden>
+  <div class="modal">
+    <h2 id="bundle-title">Assign key bundle</h2>
+    <p class="text-sm text-muted" id="bundle-note"></p>
+    <div class="form-group">
+      <label for="bundle-select">Key bundle</label>
+      <select id="bundle-select"></select>
+      <span class="text-muted text-sm">Manage bundles in <a href="/admin/key-suites">Key bundles</a>.</span>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="modal-close">Cancel</button>
+      <button type="button" class="btn btn-primary" data-action="submitBundle">Assign bundle</button>
+    </div>
+  </div>
+</div>
+
+<!-- Phantom token detail -->
+<div id="ph-detail-modal" class="modal-backdrop" hidden>
+  <div class="modal">
+    <h2>Phantom token details</h2>
+    <table id="ph-detail-table">
+      <tbody>
+        <tr><th scope="row" class="text-muted">Env name</th><td id="phd-env" class="mono"></td></tr>
+        <tr><th scope="row" class="text-muted">Service</th><td id="phd-service"></td></tr>
+        <tr><th scope="row" class="text-muted">Phantom token</th><td id="phd-placeholder" class="mono text-sm"></td></tr>
+        <tr><th scope="row" class="text-muted">Linked API key</th><td id="phd-apikey"></td></tr>
+        <tr><th scope="row" class="text-muted">Key path</th><td id="phd-keypath" class="mono text-sm"></td></tr>
+        <tr><th scope="row" class="text-muted">Approval</th><td id="phd-approval"></td></tr>
+        <tr><th scope="row" class="text-muted">Usage count</th><td id="phd-usage"></td></tr>
+      </tbody>
+    </table>
+    <div id="phd-git-setup" class="cd-detail-git" hidden>
+      <strong>Git repo setup</strong>
+      <div class="grid-2 mt-1">
+        <div class="form-group"><label for="phd-git-repo">Repository for clone example</label><input type="text" id="phd-git-repo" placeholder="OWNER/REPO" list="phd-git-repo-options" data-on-input="renderGitSetupPhd"><datalist id="phd-git-repo-options"></datalist></div>
+        <div class="form-group"><label for="phd-git-mode">Mode</label>
+          <select id="phd-git-mode" data-on-change="renderGitSetupPhd">
+            <option value="deploy">Pull only deploy</option>
+            <option value="dev">Pull and push development</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Granted repositories</label>
+        <div id="phd-git-grants" class="text-sm"></div>
+      </div>
+      <div class="form-group">
+        <label>Client commands</label>
+        <pre id="phd-git-commands" class="cd-pre"></pre>
+      </div>
+      <div class="form-group">
+        <label>ACL permission_config</label>
+        <pre id="phd-git-acl" class="cd-pre"></pre>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="modal-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit phantom token -->
+<div id="edit-ph-modal" class="modal-backdrop" hidden>
+  <div class="modal cd-modal-wide">
+    <h2>Edit phantom token</h2>
+    <input type="hidden" id="eph-id">
+    <form id="edit-ph-form" data-on-submit="saveEditPh">
+      <div class="form-group"><label for="eph-env">Env name</label><input type="text" id="eph-env" required></div>
+      <div class="form-group"><label for="eph-path">Key path (under ~/)</label><input type="text" id="eph-path" placeholder=".config/openai/credentials"></div>
+      <div class="form-group">
+        <label class="cd-check"><input type="checkbox" id="eph-approval"> Require approval</label>
+      </div>
+      <div class="form-group"><label for="eph-ttl">Approval TTL (minutes, 0 = no approval)</label><input type="number" id="eph-ttl" min="0"></div>
+      <div id="eph-github-repo-scope" class="cd-repo-scope" hidden>
+        <div class="flex-between">
+          <strong>GitHub repository authorization</strong>
+          <button type="button" class="btn btn-sm" data-action="loadEditGitHubRepos">Reload</button>
+        </div>
+        <div id="eph-github-repo-status" class="text-sm text-muted mt-1">Repository list loads for GitHub App installation minters.</div>
+        <div id="eph-github-repo-list" class="cd-repo-list"></div>
+      </div>
+      <div class="form-group">
+        <label class="text-sm">ACL pre-set rules <span class="text-muted">(click to load)</span></label>
+        <div id="eph-acl-templates" class="cd-acl-templates"></div>
+      </div>
+      <div class="form-group">
+        <label class="text-sm" for="eph-acl">ACL JSON editor</label>
+        <textarea id="eph-acl" class="cd-acl-text" placeholder="Leave empty to inherit from API key / service" data-on-input="ephACLInput"></textarea>
+        <span class="text-muted text-sm">Narrowest layer — can only restrict, not widen</span>
+      </div>
+      <div class="form-group">
+        <label class="text-sm">Preview</label>
+        <div id="eph-acl-preview" class="acl-preview"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-sm" data-action="clearEphACL">Clear</button>
+        <button type="button" class="btn" data-action="modal-close">Close</button>
+        <button type="submit" class="btn btn-primary">Apply</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Add credential -->
+<div id="assign-modal" class="modal-backdrop" hidden>
+  <div class="modal cd-modal-wide">
+    <h2>Add credential to <span id="assign-client-name"></span></h2>
+    <input type="hidden" id="assign-client-id">
+    <div class="form-group">
+      <span class="text-sm text-muted" id="assign-bind-label">Bind to</span>
+      <div class="cd-radio-row" role="radiogroup" aria-labelledby="assign-bind-label">
+        <label><input type="radio" name="assign-bind-type" value="key" checked data-on-change="onAssignBindTypeChange"> Single API key</label>
+        <label><input type="radio" name="assign-bind-type" value="group" data-on-change="onAssignBindTypeChange"> Key pool</label>
+      </div>
+    </div>
+    <div class="form-group" id="assign-key-row">
+      <label for="assign-key-select">API key</label>
+      <select id="assign-key-select" data-on-change="onAssignKeyChange"><option value="">Select an API key...</option></select>
+    </div>
+    <div class="form-group" id="assign-group-row" hidden>
+      <label for="assign-group-select">Key pool</label>
+      <select id="assign-group-select" data-on-change="onAssignGroupChange"><option value="">Select a key pool...</option></select>
+      <span class="text-muted text-sm">Manage pools in <a href="/admin/key-groups">Key pools</a></span>
+    </div>
+    <div id="assign-preview" class="card mt-1" hidden>
+      <div class="text-sm">
+        <div><strong>Service:</strong> <span id="assign-svc-name"></span></div>
+        <div><strong>Env name:</strong> <span id="assign-env-name"></span></div>
+      </div>
+    </div>
+    <div id="assign-github-repo-scope" class="cd-repo-scope mt-2" hidden>
+      <div class="flex-between">
+        <strong>Allowed repositories</strong>
+        <button type="button" class="btn btn-sm" data-action="loadAssignGitHubRepos">Reload</button>
+      </div>
+      <div id="assign-github-repo-status" class="text-sm text-muted mt-1">Select a GitHub App installation minter key.</div>
+      <div id="assign-github-repo-list" class="cd-repo-list"></div>
+    </div>
+    <div class="form-group mt-1">
+      <label class="cd-check"><input type="checkbox" id="assign-approval"> Require admin approval on first use</label>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-action="modal-close">Cancel</button>
+      <button type="button" class="btn btn-primary" data-action="submitAssign">Assign &amp; generate phantom token</button>
+    </div>
+  </div>
+</div>
+
+<!-- One-time token after rotation -->
+<div id="token-modal" class="modal-backdrop" hidden>
+  <div class="modal">
+    <h2 id="token-modal-title">Client token rotated</h2>
+    <p id="token-modal-notice" class="text-sm text-muted mb-1">The previous token has been revoked. Reconfigure the Duckway client with this one-time token.</p>
+    <div class="form-group">
+      <label for="token-value">Client token</label>
+      <div class="cl-token-row">
+        <input type="text" id="token-value" readonly>
+        <button type="button" class="btn btn-sm btn-icon" data-action="copyToken" title="Copy client token" aria-label="Copy client token"><span class="copy-icon" aria-hidden="true"></span></button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Quick setup (duckway already installed)</label>
+      <div class="cl-cmd"><code id="init-cmd"></code>
+        <button type="button" class="btn btn-sm btn-icon" data-action="copyCmd" title="Copy quick setup command" aria-label="Copy quick setup command"><span class="copy-icon" aria-hidden="true"></span></button></div>
+    </div>
+    <div class="form-group">
+      <label>Full setup (install + register in one command)</label>
+      <div class="cl-cmd"><code id="full-setup-cmd"></code>
+        <button type="button" class="btn btn-sm btn-icon" data-action="copyFullSetup" title="Copy full setup command" aria-label="Copy full setup command"><span class="copy-icon" aria-hidden="true"></span></button></div>
+    </div>
+    <details class="cl-systemd">
+      <summary>Auto-start Duckway on Linux with systemd</summary>
+      <div class="cl-systemd-body">
+        <p class="text-sm text-muted">Run this on the client after the setup command above. It starts the local proxy at login; enable linger if it should run after boot before you log in.</p>
+        <pre><code># Finish client state first
+duckway sync
+
+mkdir -p ~/.config/systemd/user
+
+cat &gt; ~/.config/systemd/user/duckway-proxy.service &lt;&lt;'EOF'
+[Unit]
+Description=Duckway local API proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/duckway proxy
+Restart=on-failure
+RestartSec=5
+Environment=HOME=%h
+
+[Install]
+WantedBy=default.target
+EOF
+
+cat &gt; ~/.config/systemd/user/duckway-cc-watch.service &lt;&lt;'EOF'
+[Unit]
+Description=Duckway Control Channel watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/duckway cc watch
+Restart=on-failure
+RestartSec=5
+Environment=HOME=%h
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now duckway-proxy
+
+# Optional: only needed for Discord/Control Channel agents.
+systemctl --user enable --now duckway-cc-watch
+
+# Optional: keep user services running after boot before login.
+sudo loginctl enable-linger "$USER"</code></pre>
+        <p class="text-sm text-muted mt-1">If Duckway was installed somewhere other than <code>/usr/local/bin/duckway</code>, replace that path in both service files. Logs: <code>journalctl --user -u duckway-proxy -f</code> and <code>journalctl --user -u duckway-cc-watch -f</code>.</p>
+      </div>
+    </details>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-primary" data-action="dismissToken">I've saved the token</button>
+    </div>
+  </div>
+</div>
+
+<script nonce="{{$.CSPNonce}}" src="/static/client-install.js"></script>
+<script nonce="{{$.CSPNonce}}">
+var apiKeys = {{.Keys}};
+var keyGroups = {{.Groups}};
+</script>
+<script nonce="{{$.CSPNonce}}">
+var CID = document.getElementById('cd-root').dataset.clientId;
+var C = null;              // client record
+var RT = null;             // runtime status (version, platform)
+var recommended = '';
+var placeholders = [];     // credentials for this client (camelCase view)
+var ccForClient = null;
+var assignedSuites = [];   // key bundles assigned to this client
+var allSuites = [];
+var canary = {tokens: [], email: null, loaded: false};
+var activity = {loaded: false, items: [], error: ''};
+var activeTab = 'overview';
+var tabOrder = ['overview', 'credentials', 'channel', 'canary', 'activity'];
+var assignGitHubRepoLoadSeq = 0;
+var editGitHubRepoLoadSeq = 0;
+var editPhLoadSeq = 0;
+var svcEnvMap = {"openai":"OPENAI_API_KEY","anthropic":"ANTHROPIC_API_KEY","github":"GITHUB_TOKEN","discord":"DISCORD_BOT_TOKEN","telegram":"TELEGRAM_BOT_TOKEN"};
+var gatewayInfo = null;
+var lastSnapshot = '';
+var ONLINE_MS = 10 * 60 * 1000;
+
+function el(id) { return document.getElementById(id); }
+function enc(s) { return encodeURIComponent(s); }
+function plural(n, one, many) { return n + ' ' + (n === 1 ? one : (many || one + 's')); }
+function fetchJSON(url) {
+  return fetch(url, {credentials: 'same-origin'}).then(function(r) {
+    if (r.status === 401) { window.location = '/admin/login'; return null; }
+    if (r.status === 404) { var e = new Error('not found'); e.notFound = true; throw e; }
+    if (!r.ok) throw new Error(url + ' ' + r.status);
+    return r.json();
+  });
+}
+function soft(p, fallback) { return p.catch(function() { return fallback; }); }
+function sendJSON(method, url, body) {
+  var opts = {method: method, credentials: 'same-origin'};
+  if (body !== undefined) { opts.headers = {'Content-Type': 'application/json'}; opts.body = JSON.stringify(body); }
+  return fetch(url, opts).then(function(r) {
+    return r.text().then(function(text) {
+      var data = {};
+      if (text) { try { data = JSON.parse(text); } catch (e) { data = {}; } }
+      if (!r.ok || data.error) { var err = new Error(data.error || ('request failed (' + r.status + ')')); err.status = r.status; err.body = data; throw err; }
+      return data;
+    });
+  });
+}
+
+/* ---------- data ---------- */
+function mapPh(p) {
+  return {id: p.id, envName: p.env_name, placeholder: p.placeholder, serviceName: p.service_name || '', serviceId: p.service_id,
+    apiKeyId: p.api_key_id || '', apiKeyName: p.api_key_name || '', groupId: p.group_id || '', suiteId: p.suite_id || '',
+    clientId: p.client_id, keyPath: p.key_path || '', permissionConfig: p.permission_config || '',
+    requiresApproval: !!p.requires_approval, approvalTTL: p.approval_ttl_minutes || 0, usageCount: p.usage_count || 0,
+    approvalStatus: p.approval_status || '', approvedAt: p.approved_at || '', expiresAt: p.expires_at || ''};
+}
+function loadAll() {
+  return Promise.all([
+    fetchJSON('/api/clients/' + enc(CID)),
+    soft(fetchJSON('/api/client-updates'), {}),
+    fetchJSON('/api/placeholders/with-approvals?client_id=' + enc(CID)),
+    soft(fetchJSON('/api/cc'), []),
+    soft(fetchJSON('/api/key-suites/clients/' + enc(CID)), []),
+    soft(fetchJSON('/api/key-suites'), []),
+    soft(fetchJSON('/api/canary/clients/' + enc(CID)), []),
+    soft(fetchJSON('/api/canary/settings'), {})
+  ]).then(function(r) {
+    var snap = JSON.stringify(r);
+    var changed = snap !== lastSnapshot;
+    lastSnapshot = snap;
+    C = r[0];
+    RT = (r[1] && r[1].runtimes && r[1].runtimes[CID]) || null;
+    recommended = (r[1] && r[1].recommended_version) || '';
+    placeholders = (Array.isArray(r[2]) ? r[2] : []).filter(function(p) { return p.client_id === CID; }).map(mapPh);
+    ccForClient = (Array.isArray(r[3]) ? r[3] : []).filter(function(c) { return c.client_id === CID; })[0] || null;
+    assignedSuites = Array.isArray(r[4]) ? r[4] : [];
+    allSuites = Array.isArray(r[5]) ? r[5] : [];
+    canary.tokens = Array.isArray(r[6]) ? r[6] : [];
+    canary.email = r[7] && r[7].email ? r[7].email : '';
+    canary.loaded = true;
+    return changed;
+  });
+}
+function showGone() {
+  DW.setHTML(el('cd-root'), DW.raw('<div class="card cd-notfound" role="alert"><h1>Client not found</h1><p class="text-muted">This client no longer exists. It may have been deleted.</p><a class="btn btn-primary" href="/admin/clients">Back to clients</a></div>'));
+}
+function refresh(quiet) {
+  return loadAll().then(function(changed) {
+    if (!quiet || changed) renderAll();
+  }).catch(function(err) {
+    if (err && err.notFound) { showGone(); return; }
+    if (!quiet) showToast('Could not refresh: ' + (err && err.message ? err.message : 'request failed'), 'error');
+  });
+}
+
+/* ---------- derived ---------- */
+function lastSeenMs() {
+  var a = DWInstall.parseTime(C && C.last_seen_at);
+  var b = RT ? DWInstall.parseTime(RT.last_heartbeat_at) : NaN;
+  var m = Math.max(isFinite(a) ? a : -Infinity, isFinite(b) ? b : -Infinity);
+  return isFinite(m) ? m : NaN;
+}
+function statusKey() {
+  if (!C.is_active) return 'disabled';
+  var seen = lastSeenMs();
+  return isFinite(seen) && (Date.now() - seen) < ONLINE_MS ? 'online' : 'offline';
+}
+var STATUS_PILL = {online: ['Online', 'cl-pill-ok'], offline: ['Offline', 'cl-pill-warn'], disabled: ['Disabled', 'cl-pill-mute']};
+function normVer(v) { return String(v || '').replace(/^v/i, ''); }
+function needsUpdate() { return !!(RT && RT.version && recommended && normVer(RT.version) !== normVer(recommended) && C.is_active); }
+function agentLabel(t) { return t === 'claude_code' ? 'Claude Code' : (t === 'codex' ? 'Codex' : (t || 'Agent')); }
+function suiteName(id) { var s = allSuites.filter(function(x) { return x.id === id; })[0] || assignedSuites.filter(function(x) { return x.id === id; })[0]; return s ? s.name : 'Key bundle'; }
+function pendingCount() { return placeholders.filter(function(p) { return p.approvalStatus === 'pending'; }).length; }
+function fmtDate(s) { var ms = DWInstall.parseTime(s); return isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : (s || '—'); }
+function seenLabel() { var m = lastSeenMs(); return isFinite(m) ? DWInstall.relTime(new Date(m).toISOString()) : 'never'; }
+
+/* ---------- render ---------- */
+function renderAll() {
+  renderHead(); renderOverview(); renderCreds(); renderChannel(); renderCanary(); renderAbout(); renderDangerLabels();
+  if (activeTab === 'activity') loadActivity();
+}
+function renderHead() {
+  var sp = STATUS_PILL[statusKey()];
+  el('cd-h1').textContent = C.name;
+  DW.setHTML(el('cd-status'), DW.html`<span class="cl-pill ${sp[1]}">${sp[0]}</span>`);
+  DW.setHTML(el('cd-policy'), DW.html`<span class="cl-pill cl-pill-mute">${C.update_policy === 'manual' ? 'Manual updates' : 'Managed updates'}</span>`);
+  DW.setHTML(el('cd-meta'), DW.html`${RT && RT.version ? RT.version : 'version unknown'} · last seen ${seenLabel()} · <span class="mono">${C.id}</span>`);
+  el('cd-cred-count').textContent = placeholders.length;
+}
+function statCard(label, value, extra) {
+  return DW.html`<div class="cd-stat"><div class="cd-stat-label">${label}</div><div class="cd-stat-value">${value}</div>${extra ? DW.html`<div class="text-sm text-muted">${extra}</div>` : ''}</div>`;
+}
+function renderOverview() {
+  var sk = statusKey(), sp = STATUS_PILL[sk];
+  var total = placeholders.reduce(function(n, p) { return n + p.usageCount; }, 0);
+  var bundleN = placeholders.filter(function(p) { return p.suiteId; }).length;
+  var stats = DW.html`<div class="cd-stats">
+    ${statCard('Status', DW.html`<span class="cl-pill ${sp[1]}">${sp[0]}</span>`, C.is_active ? '' : 'Requests are rejected')}
+    ${statCard('Version', RT && RT.version ? RT.version : 'Unknown', needsUpdate() ? 'Recommended: ' + recommended : (RT && RT.version ? 'Up to date' : 'No heartbeat yet'))}
+    ${statCard('Last seen', seenLabel())}
+    ${statCard('Credentials', placeholders.length, bundleN ? bundleN + ' from key bundles' : '')}
+    ${statCard('Pending approvals', pendingCount())}
+    ${statCard('Requests', total.toLocaleString(), 'total across credentials')}</div>`;
+  var items = [];
+  if (!C.is_active) items.push(DW.html`<li><span class="cl-pill cl-pill-mute">Disabled</span><span class="cd-attn-text">This client is disabled: every request it sends is rejected.</span><button type="button" class="btn btn-sm" data-action="dzEnable">Enable client</button></li>`);
+  if (sk === 'offline') items.push(DW.html`<li><span class="cl-pill cl-pill-warn">Offline</span><span class="cd-attn-text">Last seen ${seenLabel()}.</span></li>`);
+  if (needsUpdate()) items.push(DW.html`<li><span class="cl-pill cl-pill-info">Update</span><span class="cd-attn-text">Running ${RT.version}; ${recommended} is recommended.</span><a class="btn btn-sm" href="/admin/clients/rollouts">Rollouts</a></li>`);
+  if (pendingCount()) items.push(DW.html`<li><span class="cl-pill cl-pill-warn">Approvals</span><span class="cd-attn-text">${plural(pendingCount(), 'request')} waiting for approval.</span><a class="btn btn-sm" href="/admin/approvals">Open approvals</a></li>`);
+  if (!placeholders.length) items.push(DW.html`<li><span class="cl-pill cl-pill-info">Setup</span><span class="cd-attn-text">No credentials assigned yet.</span><button type="button" class="btn btn-sm" data-action="openAssign">Add credential</button></li>`);
+  if (C.canary_enabled && !canary.tokens.length) items.push(DW.html`<li><span class="cl-pill cl-pill-warn">Canary</span><span class="cd-attn-text">Canary is on but no tokens have been generated.</span><button type="button" class="btn btn-sm" data-action="pickTab" data-tab="canary">Open canary</button></li>`);
+  var attn = DW.html`<section class="card cd-card" aria-labelledby="ov-attn-h"><h2 id="ov-attn-h">Needs attention</h2>${items.length ? DW.html`<ul class="cd-attn">${items}</ul>` : DW.html`<p class="text-muted text-sm">Nothing needs attention.</p>`}</section>`;
+  var runtime = RT ? DW.html`<section class="card cd-card" aria-labelledby="ov-rt-h"><h2 id="ov-rt-h">Runtime</h2><dl class="cd-dl">
+    <dt>Platform</dt><dd>${RT.os || '—'}/${RT.arch || '—'}</dd>
+    <dt>Install path</dt><dd class="mono">${RT.install_path || '—'}</dd>
+    <dt>Binary writable</dt><dd>${RT.install_writable ? 'Yes' : 'No (manual install required)'}</dd>
+    <dt>Last heartbeat</dt><dd>${RT.last_heartbeat_at ? DWInstall.relTime(RT.last_heartbeat_at) : '—'}</dd></dl></section>` : '';
+  DW.setHTML(el('cd-overview'), DW.html`${stats}${attn}${runtime}`);
+}
+
+function rulesSummary(cfg) {
+  if (!cfg) return '—';
+  var grants = gitGrantsFromACL(cfg);
+  if (grants.length) return plural(grants.length, 'repo');
+  try { var o = JSON.parse(cfg); if (o && Array.isArray(o.rules)) return plural(o.rules.length, 'rule'); } catch (e) { /* custom */ }
+  return 'Custom ACL';
+}
+function approvalCell(p) {
+  var parts = [p.requiresApproval ? DW.html`Required <span class="cl-muted">· ${p.approvalTTL ? (p.approvalTTL >= 1440 ? (p.approvalTTL / 1440) + 'd' : p.approvalTTL + 'm') : '24h'}</span>` : DW.raw('None')];
+  if (p.approvalStatus === 'approved') parts.push(DW.html` <span class="cl-pill cl-pill-ok">Approved</span>`);
+  else if (p.approvalStatus === 'pending') parts.push(DW.html` <span class="cl-pill cl-pill-warn">Pending</span>`);
+  if (p.expiresAt) {
+    var exp = DWInstall.parseTime(p.expiresAt);
+    var expired = isFinite(exp) && exp < Date.now();
+    parts.push(DW.html` <span class="text-sm ${expired ? 'cl-warn' : 'cl-muted'}">${expired ? 'expired ' : 'valid until '}${p.expiresAt}</span>`);
+  }
+  return DW.html`${parts}`;
+}
+function credRow(p) {
+  var cred = p.apiKeyName ? DW.html`${p.apiKeyName}` : (p.groupId ? DW.raw('Key pool') : DW.raw('—'));
+  var from = p.suiteId ? DW.html`<span class="cl-pill cl-pill-info">${suiteName(p.suiteId)}</span>` : DW.raw('<span class="cl-pill cl-pill-mute">Manual</span>');
+  return DW.html`<tr data-id="${p.id}">
+    <td class="cd-c-env" data-field="env"><button type="button" class="cd-env" data-action="showPhDetail" data-id="${p.id}" aria-label="${'Details for ' + p.envName}">${p.envName}</button></td>
+    <td data-label="Credential">${cred} <span class="cl-muted">· ${p.serviceName}</span></td>
+    <td data-label="From">${from}</td>
+    <td data-label="Approval">${approvalCell(p)}</td>
+    <td data-label="Rules" class="cl-muted">${rulesSummary(p.permissionConfig)}</td>
+    <td class="cd-num" data-label="Requests">${p.usageCount.toLocaleString()}</td>
+    <td><div class="cd-rowactions"><button type="button" class="btn btn-sm" data-action="editPh" data-id="${p.id}" data-env="${p.envName}" data-key-path="${p.keyPath}" aria-label="${'Edit ' + p.envName}">Edit</button><button type="button" class="btn btn-sm btn-dz" data-action="unassignPh" data-id="${p.id}" aria-label="${'Unassign ' + p.envName}">Unassign</button></div></td></tr>`;
+}
+function renderCreds() {
+  var banners = assignedSuites.map(function(s) {
+    var n = placeholders.filter(function(p) { return p.suiteId === s.id; }).length;
+    return DW.html`<div class="cd-banner"><span class="cd-banner-text">Key bundle <strong>${s.name}</strong> provides ${plural(n, 'of these token', 'of these tokens')}.</span>
+      <span class="cd-banner-actions"><button type="button" class="btn btn-sm" data-action="changeBundle" data-id="${s.id}">Change bundle</button><button type="button" class="btn btn-sm btn-dz" data-action="dzUnassignBundle" data-id="${s.id}">Unassign…</button></span></div>`;
+  });
+  if (!assignedSuites.length) banners = [DW.html`<div class="cd-banner"><span class="cd-banner-text">No key bundle assigned. A bundle adds a set of credentials in one step.</span><span class="cd-banner-actions"><button type="button" class="btn btn-sm" data-action="changeBundle" data-id="">Assign bundle</button></span></div>`];
+  DW.setHTML(el('cd-banners'), DW.html`<div class="cd-main">${banners}</div>`);
+  var body = el('cd-creds');
+  if (!placeholders.length) {
+    DW.setHTML(body, DW.raw('<tr><td colspan="7"><div class="cl-empty"><strong>No credentials assigned</strong><span class="text-muted text-sm">Add a credential to issue this client a phantom token.</span><button type="button" class="btn btn-primary" data-action="openAssign">Add credential</button></div></td></tr>'));
+  } else {
+    DW.setHTML(body, DW.html`${placeholders.map(credRow)}`);
+  }
+}
+function renderChannel() {
+  if (!ccForClient) {
+    DW.setHTML(el('cd-channel'), DW.raw('<div class="card cd-card"><h2>Control channel</h2><p class="text-muted text-sm">No control channel is assigned to this client.</p><p class="mt-2"><a class="btn btn-primary" href="/admin/cc">Open Control channels</a></p></div>'));
+    return;
+  }
+  var cc = ccForClient;
+  var st = cc.is_active ? DW.raw('<span class="cl-pill cl-pill-ok">Active</span>') : DW.raw('<span class="cl-pill cl-pill-mute">Inactive</span>');
+  DW.setHTML(el('cd-channel'), DW.html`<div class="card cd-card"><h2>Control channel</h2><dl class="cd-dl"><dt>Name</dt><dd>${cc.name}</dd><dt>Agent</dt><dd>${agentLabel(cc.agent_type)}</dd><dt>Status</dt><dd>${st}</dd></dl><p class="mt-2"><a class="btn" href="/admin/cc">Manage in Control channels</a></p></div>`);
+}
+function canaryRow(t) {
+  var cell;
+  if (t.manage_url && /^https:\/\//.test(t.manage_url)) cell = DW.html`<a href="${t.manage_url}" target="_blank" rel="noopener" class="mono text-sm" title="Manage on canarytokens.org">${(t.canary_token || '').substring(0, 12)}…</a>`;
+  else cell = DW.raw('<span class="cl-muted text-sm">local</span>');
+  return DW.html`<tr><td data-label="Type"><span class="cl-pill cl-pill-info">${t.token_type}</span></td><td data-label="Token">${cell}</td><td data-label="Deploy path" class="mono text-sm">~/${t.deploy_path}</td><td data-label="Created" class="cl-muted text-sm">${t.created_at}</td><td><div class="cd-rowactions"><button type="button" class="btn btn-sm btn-dz" data-action="dzRemoveCanary" data-id="${t.id}" aria-label="Remove canary token">Remove</button></div></td></tr>`;
+}
+function renderCanary() {
+  var on = !!C.canary_enabled;
+  var note = (on && !canary.email) ? DW.raw('<p class="text-sm cl-warn" role="status">Canary tokens require an alert email. <a href="/admin/canary">Configure in Canary tokens settings</a>.</p>') : '';
+  var head = DW.html`<div class="card cd-card"><h2>Canary tokens</h2>
+    <p class="text-sm">Canary is <span class="cl-pill ${on ? 'cl-pill-ok' : 'cl-pill-mute'}">${on ? 'On' : 'Off'}</span> for this client. ${plural(canary.tokens.length, 'token')} deployed.</p>${note}
+    <div class="cd-actions mt-2">
+      <button type="button" class="btn" data-action="toggleCanary" data-enable="${on ? 'false' : 'true'}">${on ? 'Turn canary off' : 'Turn canary on'}</button>
+      ${on ? DW.html`<button type="button" class="btn" data-action="genCanary">${canary.tokens.length ? 'Regenerate tokens' : 'Generate tokens'}</button>` : ''}
+      ${canary.tokens.length ? DW.html`<button type="button" class="btn btn-dz" data-action="dzRemoveCanaryAll">Remove all…</button>` : ''}
+    </div></div>`;
+  var table = DW.html`<div class="card cd-tablecard"><div class="table-wrap"><table class="cd-table"><thead><tr><th scope="col">Type</th><th scope="col">Token / hostname</th><th scope="col">Deploy path</th><th scope="col">Created</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${canary.tokens.length ? canary.tokens.map(canaryRow) : DW.raw('<tr><td colspan="5" class="text-muted text-sm">No canary tokens.</td></tr>')}</tbody></table></div></div>`;
+  DW.setHTML(el('cd-canary'), DW.html`${head}${table}`);
+}
+function renderAbout() {
+  var agent = ccForClient ? DW.html`${agentLabel(ccForClient.agent_type)} via <a href="/admin/cc">${ccForClient.name}</a>` : DW.raw('—');
+  DW.setHTML(el('cd-about'), DW.html`<dt>Agent</dt><dd>${agent}</dd>
+    <dt>Canary</dt><dd>${C.canary_enabled ? plural(canary.tokens.length, 'token') + ' deployed' : 'Off'}</dd>
+    <dt>Updates</dt><dd>${C.update_policy === 'manual' ? 'Manual' : 'Managed'}</dd>
+    <dt>Platform</dt><dd>${RT && RT.os ? RT.os + '/' + RT.arch : '—'}</dd>
+    <dt>Created</dt><dd>${fmtDate(C.created_at)}</dd>
+    <dt>Short ID</dt><dd class="mono">${C.short_id}</dd>`);
+}
+function renderDangerLabels() {
+  el('cd-btn-disable').textContent = C.is_active ? 'Disable client…' : 'Enable client';
+  el('cd-btn-disable').className = C.is_active ? 'btn btn-dz' : 'btn';
+  el('cd-disable-note').textContent = C.is_active ? 'All its phantom tokens stop working until re-enabled.' : 'This client is disabled. Enabling it restores access.';
+}
+
+/* ---------- activity ---------- */
+var activitySeq = 0;
+function loadActivity() {
+  var seq = ++activitySeq;
+  if (!activity.loaded) DW.setHTML(el('cd-activity'), DW.raw('<div class="card cd-card text-muted">Loading…</div>'));
+  fetchJSON('/api/logs?client=' + enc(CID) + '&limit=20').then(function(d) {
+    if (seq !== activitySeq) return;
+    activity.loaded = true; activity.error = '';
+    activity.items = d && Array.isArray(d.items) ? d.items : [];
+    renderActivity();
+  }).catch(function(err) {
+    if (seq !== activitySeq) return;
+    activity.loaded = true; activity.error = err && err.message ? err.message : 'request failed';
+    renderActivity();
+  });
+}
+function statusPill(code) {
+  if (code === null || code === undefined) return DW.raw('<span class="cl-pill cl-pill-mute">n/a</span>');
+  var cls = code >= 500 ? 'cl-pill-bad' : (code >= 400 ? 'cl-pill-warn' : 'cl-pill-ok');
+  return DW.html`<span class="cl-pill ${cls}">${code}</span>`;
+}
+function renderActivity() {
+  var box = el('cd-activity');
+  if (activity.error) {
+    DW.setHTML(box, DW.html`<div class="card cd-card"><strong>Could not load activity</strong><p class="text-muted text-sm">${activity.error}</p><button type="button" class="btn" data-action="reloadActivity">Retry</button></div>`);
+    return;
+  }
+  var rows = activity.items.length
+    ? activity.items.map(function(l) {
+        return DW.html`<tr><td data-label="Time" class="cl-muted text-sm">${l.created_at}</td><td data-label="Service">${l.service_name}</td><td data-label="Request"><span class="mono">${l.method}</span> <span class="mono">${l.path}</span></td><td data-label="Credential" class="cl-muted">${l.env_name || l.credential || '—'}</td><td data-label="Status">${statusPill(l.status_code)}</td></tr>`;
+      })
+    : DW.raw('<tr><td colspan="5" class="text-muted text-sm">No requests from this client yet.</td></tr>');
+  DW.setHTML(box, DW.html`<div class="card cd-card"><div class="flex-between"><h2>Recent requests</h2><a class="btn btn-sm" href="${'/admin/logs?client=' + enc(CID)}">Open in Request log</a></div>
+    <div class="table-wrap"><table class="cd-table"><thead><tr><th scope="col">Time</th><th scope="col">Service</th><th scope="col">Request</th><th scope="col">Credential</th><th scope="col">Status</th></tr></thead><tbody>${rows}</tbody></table></div></div>`);
+}
+DW.actions.reloadActivity = function() { loadActivity(); };
+
+/* ---------- tabs ---------- */
+function setTab(t, focus) {
+  if (tabOrder.indexOf(t) < 0) t = 'overview';
+  activeTab = t;
+  tabOrder.forEach(function(k) {
+    var on = k === t;
+    el('cd-panel-' + k).hidden = !on;
+    var b = el('cd-tab-' + k);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+    b.tabIndex = on ? 0 : -1;
+  });
+  try { history.replaceState(null, '', location.pathname + (t === 'overview' ? '' : '#' + t)); } catch (e) { /* ignore */ }
+  if (t === 'activity') loadActivity();
+  if (focus) el('cd-tab-' + t).focus();
+}
+DW.actions.pickTab = function(b) { setTab(b.dataset.tab, b.closest('#cd-tablist') !== null); };
+el('cd-tablist').addEventListener('keydown', function(e) {
+  var i = tabOrder.indexOf(activeTab);
+  if (e.key === 'ArrowRight') i = (i + 1) % tabOrder.length;
+  else if (e.key === 'ArrowLeft') i = (i + tabOrder.length - 1) % tabOrder.length;
+  else if (e.key === 'Home') i = 0;
+  else if (e.key === 'End') i = tabOrder.length - 1;
+  else return;
+  e.preventDefault();
+  setTab(tabOrder[i], true);
+});
+
+/* ---------- generic confirm dialog ---------- */
+var dz = null;
+function dzError(msg) { var b = el('dz-error'); b.textContent = msg || ''; b.hidden = !msg; }
+function openDz(cfg) {
+  dz = cfg;
+  el('dz-title').textContent = cfg.title;
+  DW.setHTML(el('dz-body'), cfg.body);
+  var typed = !!cfg.typeName;
+  el('dz-type-row').hidden = !typed;
+  el('dz-type').value = '';
+  el('dz-type-name').textContent = cfg.typeName || '';
+  var b = el('dz-confirm');
+  b.textContent = cfg.confirmLabel || 'Confirm';
+  b.className = 'btn ' + (cfg.danger ? 'btn-danger' : 'btn-primary');
+  b.disabled = typed || !!cfg.loading;
+  dzError('');
+  DW.modal.open('#dz-modal');
+}
+DW.actions.dzTyped = function() { el('dz-confirm').disabled = !dz || el('dz-type').value !== dz.typeName; };
+DW.actions.dzConfirm = function() {
+  if (!dz) return;
+  var cfg = dz, b = el('dz-confirm');
+  b.disabled = true; dzError('');
+  return Promise.resolve().then(function() { return cfg.run(); }).then(function() {
+    if (dz === cfg) DW.modal.close('#dz-modal');
+  }).catch(function(err) {
+    dzError(err && err.message ? err.message : 'Action failed');
+    b.disabled = !!cfg.typeName && el('dz-type').value !== cfg.typeName;
+  });
+};
+function loadImpact() {
+  return fetchJSON('/api/clients/' + enc(CID) + '/impact');
+}
+function bullets(list) { return DW.html`<ul class="cd-impact">${list.map(function(x) { return DW.html`<li>${x}</li>`; })}</ul>`; }
+function openImpactDz(cfg, build) {
+  cfg.body = DW.raw('<p class="text-muted text-sm">Loading impact…</p>');
+  cfg.loading = true;
+  openDz(cfg);
+  loadImpact().then(function(im) {
+    if (dz !== cfg) return;
+    DW.setHTML(el('dz-body'), build(im));
+    cfg.loading = false;
+    el('dz-confirm').disabled = !!cfg.typeName && el('dz-type').value !== cfg.typeName;
+  }).catch(function(err) {
+    if (dz !== cfg) return;
+    DW.setHTML(el('dz-body'), DW.html`<p class="cl-warn">Could not load impact: ${err && err.message ? err.message : 'request failed'}</p>`);
+  });
+}
+
+DW.actions.dzRotate = function() {
+  openImpactDz({title: 'Rotate client token', confirmLabel: 'Rotate token', danger: true, run: function() {
+    return sendJSON('POST', '/api/clients/' + enc(CID) + '/rotate-token').then(function(data) {
+      DW.modal.close('#dz-modal');
+      showClientToken(data);
+    });
+  }}, function(im) {
+    return DW.html`<p>The current token for <strong>${im.name}</strong> is revoked immediately. The machine must re-run <code>duckway init</code> with the new one-time token shown next.</p>${bullets([
+      plural(im.phantom_tokens, 'phantom token') + ' and its key bundle assignments stay in place.',
+      im.control_channel ? 'Control channel ' + im.control_channel.name + ' stays bound; the agent reconnects after re-init.' : 'No control channel is bound.'
+    ])}`;
+  });
+};
+DW.actions.dzDisable = function() {
+  if (!C.is_active) { return DW.actions.dzEnable(); }
+  openImpactDz({title: 'Disable client', confirmLabel: 'Disable client', danger: true, run: function() {
+    return sendJSON('PUT', '/api/clients/' + enc(CID), {is_active: false}).then(function() { showToast('Client disabled', 'success'); return refresh(); });
+  }}, function(im) {
+    var l = [plural(im.phantom_tokens, 'phantom token') + ' stop working: every request this client sends is rejected until it is re-enabled.'];
+    if (im.control_channel) l.push('Control channel ' + im.control_channel.name + ' cannot connect while disabled.');
+    l.push('Nothing is deleted. Re-enabling restores access with the same token.');
+    return DW.html`<p>Disable <strong>${im.name}</strong>?</p>${bullets(l)}`;
+  });
+};
+DW.actions.dzEnable = function() {
+  openDz({title: 'Enable client', confirmLabel: 'Enable client', danger: false, body: DW.html`<p>Enable <strong>${C.name}</strong>? Its existing token and phantom tokens work again immediately.</p>`, run: function() {
+    return sendJSON('PUT', '/api/clients/' + enc(CID), {is_active: true}).then(function() { showToast('Client enabled', 'success'); return refresh(); });
+  }});
+};
+DW.actions.dzDelete = function() {
+  openImpactDz({title: 'Delete client', confirmLabel: 'Delete client', danger: true, typeName: C.name, run: function() {
+    return sendJSON('DELETE', '/api/clients/' + enc(CID)).then(function() { window.location = '/admin/clients'; });
+  }}, function(im) {
+    var l = [plural(im.phantom_tokens, 'phantom token') + ' removed (' + im.bundle_tokens + ' from key bundles, ' + im.manual_tokens + ' manual).'];
+    if (im.bundles.length) l.push('Removed from ' + plural(im.bundles.length, 'key bundle') + ': ' + im.bundles.map(function(b) { return b.name; }).join(', ') + '.');
+    if (im.control_channel) l.push('Control channel ' + im.control_channel.name + ' (' + agentLabel(im.control_channel.agent_type) + ') and its channels are removed.');
+    if (im.canary_tokens) l.push(plural(im.canary_tokens, 'canary token') + ' removed.');
+    if (im.pending_approvals) l.push(plural(im.pending_approvals, 'pending approval') + ' discarded.');
+    l.push('Request history is kept but no longer linked to this client.');
+    return DW.html`<p>This permanently deletes <strong>${im.name}</strong> and cannot be undone.</p>${bullets(l)}`;
+  });
+};
+DW.actions.dzUnassignBundle = function(b) {
+  var id = b.dataset.id, name = suiteName(id);
+  var n = placeholders.filter(function(p) { return p.suiteId === id; }).length;
+  openDz({title: 'Unassign key bundle', confirmLabel: 'Unassign bundle', danger: true,
+    body: DW.html`<p>Remove <strong>${name}</strong> from this client?</p>${bullets([plural(n, 'phantom token') + ' from this bundle are removed.', 'Individually assigned credentials are kept.'])}`,
+    run: function() {
+      return sendJSON('DELETE', '/api/key-suites/' + enc(id) + '/assignments/' + enc(CID)).then(function() { showToast('Key bundle unassigned', 'success'); return refresh(); });
+    }});
+};
+DW.actions.unassignPh = function(b) {
+  var id = b.dataset.id, ph = placeholders.filter(function(p) { return p.id === id; })[0];
+  if (!ph) return;
+  openDz({title: 'Unassign credential', confirmLabel: 'Unassign', danger: true,
+    body: DW.html`<p>Unassign <strong class="mono">${ph.envName}</strong> from this client?</p>${bullets(['The phantom token stops working on the machine.', 'The API key or refreshable token itself is not deleted.'])}`,
+    run: function() { return sendJSON('DELETE', '/api/placeholders/' + enc(id)).then(function() { showToast('Phantom token unassigned', 'success'); return refresh(); }); }});
+};
+
+/* ---------- edit client ---------- */
+DW.actions.openEdit = function() {
+  el('ce-name').value = C.name;
+  el('ce-managed').checked = C.update_policy !== 'manual';
+  DW.modal.open('#edit-modal');
+};
+DW.actions.saveEdit = function() {
+  var name = el('ce-name').value.trim();
+  if (!name) return;
+  return sendJSON('PUT', '/api/clients/' + enc(CID), {name: name, update_policy: el('ce-managed').checked ? 'managed' : 'manual'}).then(function() {
+    DW.modal.close('#edit-modal');
+    showToast('Client updated', 'success');
+    return refresh();
+  }).catch(function(err) { showToast(err.message, 'error'); });
+};
+
+/* ---------- key bundles ---------- */
+var bundleFrom = '';
+DW.actions.changeBundle = function(b) {
+  bundleFrom = b.dataset.id || '';
+  var assignedIds = assignedSuites.map(function(s) { return s.id; });
+  var sel = el('bundle-select');
+  sel.replaceChildren();
+  var ph = document.createElement('option'); ph.value = ''; ph.textContent = 'Select a key bundle...'; sel.appendChild(ph);
+  allSuites.forEach(function(s) {
+    if (assignedIds.indexOf(s.id) >= 0) return;
+    var o = document.createElement('option'); o.value = s.id;
+    o.textContent = s.name + ' (' + plural(s.entry_count || 0, 'service') + ')';
+    sel.appendChild(o);
+  });
+  el('bundle-title').textContent = bundleFrom ? 'Change key bundle' : 'Assign key bundle';
+  el('bundle-note').textContent = bundleFrom ? 'The current bundle ' + suiteName(bundleFrom) + ' is unassigned first: its phantom tokens are removed and the new bundle issues fresh ones.' : 'The bundle issues one phantom token per service entry.';
+  DW.modal.open('#bundle-modal');
+};
+DW.actions.submitBundle = function() {
+  var id = el('bundle-select').value;
+  if (!id) { showToast('Select a key bundle', 'error'); return; }
+  var from = bundleFrom;
+  function assign(force) { return sendJSON('POST', '/api/key-suites/' + enc(id) + '/assign', {client_id: CID, force: force}); }
+  var chain = from ? sendJSON('DELETE', '/api/key-suites/' + enc(from) + '/assignments/' + enc(CID)) : Promise.resolve();
+  return chain.then(function() { return assign(false); }).then(function() {
+    DW.modal.close('#bundle-modal'); showToast('Key bundle assigned', 'success'); return refresh();
+  }).catch(function(err) {
+    if (err.status === 409 && err.body && err.body.error === 'conflicts_detected') {
+      var names = (err.body.conflicts || []).map(function(c) { return c.service_name; });
+      DW.modal.close('#bundle-modal');
+      openDz({title: 'Individual credentials take priority', confirmLabel: 'Assign anyway', danger: false,
+        body: DW.html`<p>This client already has individually assigned credentials for: <strong>${names.join(', ')}</strong>.</p><p>Those are kept and the bundle entries for those services are skipped.</p>`,
+        run: function() { return assign(true).then(function() { showToast('Key bundle assigned', 'success'); return refresh(); }); }});
+      return;
+    }
+    showToast(err.message, 'error');
+    return refresh();
+  });
+};
+
+/* ---------- canary ---------- */
+DW.actions.toggleCanary = function(b) {
+  var enable = b.dataset.enable === 'true';
+  return sendJSON('POST', '/api/clients/' + enc(CID) + '/canary', {enabled: enable}).then(function() {
+    showToast('Canary tokens ' + (enable ? 'enabled' : 'disabled'), 'success'); return refresh();
+  }).catch(function(err) { showToast(err.message, 'error'); });
+};
+DW.actions.genCanary = function() {
+  showToast('Generating canary tokens...', '');
+  return sendJSON('POST', '/api/canary/clients/' + enc(CID) + '/generate?name=' + enc(C.name) + '&short_id=' + enc(C.short_id)).then(function(data) {
+    showToast((Array.isArray(data) ? data.length : 0) + ' canary tokens generated', 'success'); return refresh();
+  }).catch(function(err) { showToast(err.message, 'error'); });
+};
+DW.actions.dzRemoveCanary = function(b) {
+  var id = b.dataset.id;
+  openDz({title: 'Remove canary token', confirmLabel: 'Remove token', danger: true, body: DW.html`<p>Remove this canary token? It is deleted from canarytokens.org and no longer deployed to the client.</p>`,
+    run: function() { return sendJSON('DELETE', '/api/canary/tokens/' + enc(id)).then(function() { showToast('Canary token removed', 'success'); return refresh(); }); }});
+};
+DW.actions.dzRemoveCanaryAll = function() {
+  openDz({title: 'Remove all canary tokens', confirmLabel: 'Remove all', danger: true, body: DW.html`<p>Remove all ${plural(canary.tokens.length, 'canary token')} for <strong>${C.name}</strong>?</p>`,
+    run: function() { return sendJSON('DELETE', '/api/canary/clients/' + enc(CID)).then(function() { showToast('Canary tokens removed', 'success'); return refresh(); }); }});
+};
+
+/* ---------- one-time token after rotation ---------- */
+(function() {
+  var tokenModal = el('token-modal');
+  if (!tokenModal) return;
+  // Only the explicit button dismisses the one-time token: block backdrop click and Esc.
+  tokenModal.addEventListener('mousedown', function(e) { if (e.target === tokenModal) e.stopPropagation(); });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && !tokenModal.hidden && getComputedStyle(tokenModal).display !== 'none') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }, true);
+})();
+function showClientToken(data) {
+  el('token-value').value = data.token;
+  DWInstall.gateway().then(function(g) {
+    gatewayInfo = g;
+    if (!g.valid) {
+      var warn = '# Set Gateway URL in Settings first - current admin URL does not serve /install.sh';
+      el('init-cmd').textContent = warn;
+      el('full-setup-cmd').textContent = warn;
+    } else {
+      var initCmd = DWInstall.initCmd(g.url, data.name, data.token);
+      el('init-cmd').textContent = initCmd;
+      el('full-setup-cmd').textContent = 'curl -fsSL ' + DWInstall.shellQuote(g.url + '/install.sh') + ' | sh && ' + initCmd;
+    }
+  });
+  DW.modal.open('#token-modal');
+}
+DW.actions.copyToken = function() { DWInstall.copy(el('token-value').value).then(function() { showToast('Token copied', 'success'); }); };
+DW.actions.copyCmd = function() { DWInstall.copy(el('init-cmd').textContent).then(function() { showToast('Command copied', 'success'); }); };
+DW.actions.copyFullSetup = function() { DWInstall.copy(el('full-setup-cmd').textContent).then(function() { showToast('Full setup command copied', 'success'); }); };
+DW.actions.dismissToken = function() {
+  el('token-value').value = '';
+  el('init-cmd').textContent = '';
+  el('full-setup-cmd').textContent = '';
+  DW.modal.close('#token-modal');
+  refresh();
+};
+
+/* ---------- ported credential editors (assign, edit, details, git helpers) ---------- */
+DW.actions.showPhDetail = function(el_) { showPhDetail(el_.dataset.id); };
+DW.actions.editPh = function(el_) { editPh(el_.dataset.id, el_.dataset.env, el_.dataset.keyPath || ''); };
+DW.actions.openAssign = function() { openAssignModal(CID, C.name); };
+DW.actions.submitAssign = function() { submitAssign(); };
+DW.actions.loadEditGitHubRepos = function() { loadEditGitHubRepos(); };
+DW.actions.loadAssignGitHubRepos = function() { loadAssignGitHubRepos(); };
+DW.actions.onAssignBindTypeChange = function() { onAssignBindTypeChange(); };
+DW.actions.renderGitSetupPhd = function() { renderGitSetup('phd'); };
+DW.actions.ephACLInput = function() { renderACLPreview('eph-acl', 'eph-acl-preview'); };
+DW.actions.clearEphACL = function() {
+  el('eph-acl').value = '';
+  renderACLPreview('eph-acl', 'eph-acl-preview');
+};
+DW.actions.onGitHubGrantToggle = function(el_) { onGitHubGrantToggle(el_); };
+DW.actions.saveEditPh = function() { return saveEditPh(); };
+DW.actions.onAssignKeyChange = function() {
+  var keySel = el('assign-key-select');
+  var opt = keySel.options[keySel.selectedIndex];
+  if (!opt || !opt.value) {
+    el('assign-preview').hidden = true;
+    el('assign-github-repo-scope').hidden = true;
+    return;
+  }
+  buildAssignPreview(opt.dataset.serviceName);
+  updateAssignGitHubRepoScope();
+};
+DW.actions.onAssignGroupChange = function() {
+  var grpSel = el('assign-group-select');
+  var opt = grpSel.options[grpSel.selectedIndex];
+  el('assign-github-repo-scope').hidden = true;
+  if (!opt || !opt.value) { el('assign-preview').hidden = true; return; }
+  buildAssignPreview(opt.dataset.serviceName);
+};
+
+function showPhDetail(phId) {
+  var ph = placeholders.find(function(p) { return p.id === phId; });
+  if (!ph) return;
+  el('phd-env').textContent = ph.envName;
+  el('phd-env').dataset.placeholderId = ph.id;
+  DW.setHTML(el('phd-service'), DW.html`<span class="badge badge-blue">${ph.serviceName}</span>`);
+  el('phd-placeholder').textContent = ph.placeholder;
+  DW.setHTML(el('phd-approval'), ph.requiresApproval
+    ? DW.raw('<span class="cl-pill cl-pill-warn">Required</span>')
+    : DW.raw('<span class="cl-pill cl-pill-ok">None</span>'));
+  el('phd-usage').textContent = ph.usageCount;
+  el('phd-keypath').textContent = ph.keyPath ? '~/' + ph.keyPath : '(keys.env only)';
+  var ak = apiKeys.find(function(k) { return k.id === ph.apiKeyId; });
+  if (ak) {
+    DW.setHTML(el('phd-apikey'), DW.html`<strong>${ak.name}</strong> <span class="badge badge-blue">${ak.serviceName}</span>`);
+  } else if (ph.groupId) {
+    DW.setHTML(el('phd-apikey'), DW.raw('<span class="badge badge-gray">Key pool</span>'));
+  } else {
+    el('phd-apikey').textContent = '—';
+  }
+  var gitSetup = el('phd-git-setup');
+  if (ph.serviceName === 'github') {
+    gitSetup.hidden = false;
+    renderGitGrants(ph, 'phd');
+    renderGitSetup('phd');
+  } else {
+    gitSetup.hidden = true;
+  }
+  DW.modal.open('#ph-detail-modal');
+}
+
+
+function renderGitSetup(prefix) {
+  var repoEl = document.getElementById(prefix + '-git-repo');
+  var modeEl = document.getElementById(prefix + '-git-mode');
+  var cmdEl = document.getElementById(prefix + '-git-commands');
+  var aclEl = document.getElementById(prefix + '-git-acl');
+  if (!repoEl || !modeEl || !cmdEl || !aclEl) return;
+  var repo = normalizeGitRepo(repoEl.value);
+  var activePh = prefix === 'phd' ? placeholders.find(function(p) { return p.id === document.getElementById('phd-env').dataset.placeholderId; }) : null;
+  var grant = activePh ? gitGrantForRepo(activePh.permissionConfig, repo) : null;
+  var mode = grant ? grantMode(grant) : (modeEl.value || 'deploy');
+  modeEl.value = mode;
+  var repoDir = repo.split('/').pop();
+  cmdEl.textContent = [
+    'duckway update',
+    'duckway restart',
+    'duckway git list',
+    'duckway git setup',
+    '',
+    '# Pick a repo from `duckway git list`:',
+    'duckway git clone ' + repo,
+    '',
+    'cd ' + repoDir,
+    mode === 'deploy' ? 'git pull --ff-only' : 'git pull --ff-only && git push'
+  ].join('\n');
+  aclEl.textContent = JSON.stringify(gitACL(repo, mode), null, 2);
+}
+
+function renderGitGrants(ph, prefix) {
+  var grants = gitGrantsFromACL(ph.permissionConfig);
+  var list = document.getElementById(prefix + '-git-grants');
+  var options = document.getElementById(prefix + '-git-repo-options');
+  var repoEl = document.getElementById(prefix + '-git-repo');
+  if (!list || !options || !repoEl) return;
+  options.replaceChildren();
+  if (!grants.length) {
+    DW.setHTML(list, DW.raw('<span class="text-muted">No repository ACL found. Use the editor to set repository scope.</span>'));
+    return;
+  }
+  grants.forEach(function(g) {
+    var opt = document.createElement('option');
+    opt.value = g.repo;
+    options.appendChild(opt);
+  });
+  var allowed = {};
+  grants.forEach(function(g) { allowed[g.repo.toLowerCase()] = true; });
+  if (!allowed[normalizeGitRepo(repoEl.value).toLowerCase()]) repoEl.value = grants[0].repo;
+  DW.setHTML(list, DW.html`${grants.map(function(g) {
+    return DW.html`<div><code>${g.repo}</code> <span class="badge badge-gray">${grantLabel(g)}</span></div>`;
+  })}`);
+}
+
+function gitGrantForRepo(configJSON, repo) {
+  repo = normalizeGitRepo(repo).toLowerCase();
+  return gitGrantsFromACL(configJSON).find(function(g) { return g.repo.toLowerCase() === repo; }) || null;
+}
+
+function gitGrantsFromACL(configJSON) {
+  if (!configJSON) return [];
+  var cfg;
+  try { cfg = JSON.parse(configJSON); } catch(e) { return []; }
+	if (cfg.version === '2' && cfg.provider === 'github') {
+		return Object.keys(cfg.repositories || {}).sort().map(function(repo) {
+			var p = cfg.repositories[repo] || {};
+			return {repo: repo, capabilities: p.capabilities || {}, workflow_allowlist: p.workflow_allowlist || [], ref_allowlist: p.ref_allowlist || [], environment_allowlist: p.environment_allowlist || [], pull: !!(p.capabilities || {}).clone, push: !!(p.capabilities || {}).push};
+		});
+	}
+  var byRepo = {};
+  (cfg.rules || []).forEach(function(rule) {
+    (rule.endpoints || []).forEach(function(ep) {
+      if (!ep.allow || !ep.path) return;
+      var repo = repoFromGitACLPath(ep.path);
+      if (!repo) return;
+      if (!byRepo[repo]) byRepo[repo] = {repo: repo, pull: false, push: false, capabilities: {}};
+      if (ep.path.indexOf('.git/git-upload-pack') !== -1) byRepo[repo].pull = true;
+      if (ep.path.indexOf('.git/git-receive-pack') !== -1) byRepo[repo].push = true;
+    });
+  });
+  return Object.keys(byRepo).sort(function(a,b) { return a.localeCompare(b); }).map(function(repo) { return byRepo[repo]; });
+}
+
+function grantMode(grant) {
+  return grant && grant.push ? 'dev' : 'deploy';
+}
+
+function grantLabel(grant) {
+	if (grant.capabilities && Object.keys(grant.capabilities).length) {
+		return Object.keys(grant.capabilities).filter(function(k) { return grant.capabilities[k]; }).join(', ') || 'none';
+	}
+  var parts = [];
+  if (grant.pull) parts.push('pull');
+  if (grant.push) parts.push('push');
+  return parts.length ? parts.join(' + ') : 'none';
+}
+
+function repoFromGitACLPath(path) {
+  path = (path || '').trim();
+  var suffixes = ['.git/info/refs', '.git/git-upload-pack', '.git/git-receive-pack'];
+  for (var i = 0; i < suffixes.length; i++) {
+    if (path.endsWith(suffixes[i])) return normalizeGitRepo(path.slice(0, -suffixes[i].length));
+  }
+  if (path.indexOf('/repos/') === 0) {
+    var parts = path.replace(/^\/repos\//, '').split('/');
+    if (parts.length >= 2) return normalizeGitRepo(parts[0] + '/' + parts[1]);
+  }
+  return '';
+}
+
+function gitACL(repo, mode) {
+  return gitACLForRepoGrants([{repo: repo, pull: true, push: mode === 'dev'}]);
+}
+
+function gitACLForRepos(repos, mode) {
+  return gitACLForRepoGrants(repos.map(function(repo) {
+    return {repo: repo, pull: true, push: mode === 'dev'};
+  }));
+}
+
+function gitACLForRepoGrants(grants) {
+	var repositories = {};
+  grants.forEach(function(grant) {
+		var caps = grant.capabilities || githubPresetCapabilities(grant.push ? 'developer' : 'read');
+		repositories[grant.repo] = {capabilities: caps};
+		if (grant.workflow_allowlist && grant.workflow_allowlist.length) repositories[grant.repo].workflow_allowlist = grant.workflow_allowlist;
+		if (grant.ref_allowlist && grant.ref_allowlist.length) repositories[grant.repo].ref_allowlist = grant.ref_allowlist;
+		if (grant.environment_allowlist && grant.environment_allowlist.length) repositories[grant.repo].environment_allowlist = grant.environment_allowlist;
+  });
+	return {version:'2', provider:'github', repositories:repositories};
+}
+
+function githubPresetCapabilities(preset) {
+	var c = {clone:true, push:false, issues_read:true, issues_write:false, pull_requests_read:true, pull_requests_write:false, releases_read:true, releases_write:false, actions_read:true, workflow_dispatch:false, workflow_rerun:false, workflow_cancel:false};
+	if (preset === 'developer') { c.push=true; c.issues_write=true; c.pull_requests_write=true; }
+	if (preset === 'cicd') { c.workflow_dispatch=true; c.workflow_rerun=true; c.workflow_cancel=true; }
+	return c;
+}
+
+function normalizeGitRepo(value) {
+  var repo = (value || '').trim()
+    .replace(/^https:\/\/github\.com\//, '')
+    .replace(/^\/+|\/+$/g, '');
+  repo = repo
+    .replace(/^git@github\.com:/, '')
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\.git$/, '')
+    .replace(/^\/+|\/+$/g, '');
+  return repo || 'ORG/REPO';
+}
+
+function parseGitRepoList(value) {
+  var seen = {};
+  return (value || '').split(/[\n,]+/).map(normalizeGitRepo).filter(function(repo) {
+    if (repo === 'ORG/REPO' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || seen[repo.toLowerCase()]) return false;
+    seen[repo.toLowerCase()] = true;
+    return true;
+  });
+}
+
+function editPh(phId, envName, keyPath) {
+  var editSeq = ++editPhLoadSeq;
+  var ph = placeholders.find(function(p) { return p.id === phId; });
+  document.getElementById('eph-id').value = phId;
+  document.getElementById('eph-env').value = envName;
+  document.getElementById('eph-path').value = keyPath;
+  document.getElementById('eph-approval').checked = ph ? ph.requiresApproval : false;
+  document.getElementById('eph-ttl').value = ph ? ph.approvalTTL : 1440;
+  document.getElementById('eph-acl').value = '';
+  document.getElementById('eph-acl-templates').replaceChildren();
+  document.getElementById('eph-github-repo-scope').hidden = !(ph && ph.serviceName === 'github');
+  document.getElementById('eph-github-repo-status').textContent = 'Repository list loads for GitHub App installation minters.';
+  document.getElementById('eph-github-repo-list').replaceChildren();
+
+  // Load current permission_config + ACL templates
+  fetch('/api/placeholders/with-approvals?client_id=' + encodeURIComponent(CID), {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(phs) {
+      if (editSeq !== editPhLoadSeq || document.getElementById('eph-id').value !== phId) return;
+      var p = phs.find(function(x) { return x.id === phId; });
+      if (!p) return;
+      document.getElementById('eph-acl').value = p.permission_config || '';
+      if (ph) ph.permissionConfig = p.permission_config || '';
+      loadEditGitHubRepos();
+      loadInheritedACL('eph-acl', 'eph-acl-preview', p.service_id, p.api_key_id || '');
+      renderACLPreview('eph-acl', 'eph-acl-preview');
+      if (p.service_id) {
+        fetch('/api/services/' + encodeURIComponent(p.service_id) + '/acl-templates', {credentials:'same-origin'})
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            if (editSeq !== editPhLoadSeq || document.getElementById('eph-id').value !== phId) return;
+            var container = document.getElementById('eph-acl-templates');
+            var currentACL = document.getElementById('eph-acl').value;
+            (data.templates || []).forEach(function(t) {
+              var isActive = currentACL === t.config;
+              var btn = document.createElement('button');
+              btn.type = 'button';
+              btn.className = 'btn btn-sm' + (isActive ? ' btn-primary' : '');
+              btn.textContent = t.name; btn.title = t.description;
+              btn.addEventListener('click', function() {
+                document.getElementById('eph-acl').value = t.config;
+                renderACLPreview('eph-acl','eph-acl-preview');
+                container.querySelectorAll('.btn').forEach(function(b) { b.classList.remove('btn-primary'); });
+                btn.classList.add('btn-primary');
+              });
+              container.appendChild(btn);
+            });
+          });
+      }
+    });
+
+  DW.modal.open('#edit-ph-modal');
+}
+
+function loadEditGitHubRepos() {
+  var phId = document.getElementById('eph-id').value;
+  var ph = placeholders.find(function(p) { return p.id === phId; });
+  var key = ph ? apiKeys.find(function(k) { return k.id === ph.apiKeyId; }) : null;
+  var status = document.getElementById('eph-github-repo-status');
+  var list = document.getElementById('eph-github-repo-list');
+  if (!ph || ph.serviceName !== 'github') return;
+  if (!key || !key.isMintable) {
+    status.textContent = 'This GitHub token is not a GitHub App installation minter. Edit ACL JSON directly if needed.';
+    list.replaceChildren();
+    return;
+  }
+  var loadSeq = ++editGitHubRepoLoadSeq;
+  status.textContent = 'Loading repositories...';
+  list.replaceChildren();
+  fetch('/api/keys/' + encodeURIComponent(key.id) + '/github-app/repositories', {credentials:'same-origin'})
+    .then(function(r) { return r.json().then(function(j) { return {ok:r.ok, body:j}; }); })
+    .then(function(res) {
+      if (loadSeq !== editGitHubRepoLoadSeq) return;
+      if (!res.ok || res.body.error) throw new Error(res.body.error || 'failed to list repositories');
+      var repos = res.body.repositories || [];
+      if (!repos.length) {
+        status.textContent = 'No repositories returned. Check the GitHub App installation repository access.';
+        return;
+      }
+	  status.textContent = repos.length + ' repositories available. Configure capabilities and save.';
+	  DW.setHTML(list, repoGrantTableHTML(repos, document.getElementById('eph-acl').value || '', res.body.installation_permissions || {}));
+    })
+    .catch(function(err) {
+      if (loadSeq !== editGitHubRepoLoadSeq) return;
+      status.textContent = 'Could not load repositories: ' + err.message + '. Reload or check the GitHub App installation.';
+    });
+}
+
+function saveEditPh() {
+  var id = document.getElementById('eph-id').value;
+  var ph = placeholders.find(function(p) { return p.id === id; });
+  if (ph && ph.serviceName === 'github' && document.getElementById('eph-github-repo-list').childElementCount > 0) {
+    var grants = selectedGitHubRepoGrants('#eph-github-repo-list');
+    if (!grants.length) {
+      showToast('Enable at least one repository', 'error');
+      return;
+    }
+    document.getElementById('eph-acl').value = JSON.stringify(gitACLForRepoGrants(grants));
+  }
+  var acl = document.getElementById('eph-acl').value.trim();
+  if (acl) { try { JSON.parse(acl); } catch(e) { showToast('Invalid ACL JSON: ' + e.message, 'error'); return; } }
+  var body = {
+    env_name: document.getElementById('eph-env').value,
+    key_path: document.getElementById('eph-path').value,
+    requires_approval: document.getElementById('eph-approval').checked,
+    approval_ttl_minutes: parseInt(document.getElementById('eph-ttl').value) || 0,
+    permission_config: acl
+  };
+  return sendJSON('PUT', '/api/placeholders/' + encodeURIComponent(id), body).then(function() {
+    DW.modal.close('#edit-ph-modal');
+    showToast('Phantom token updated', 'success');
+    return refresh();
+  }).catch(function(err) { showToast(err.message, 'error'); });
+}
+
+function onAssignBindTypeChange() {
+  ++assignGitHubRepoLoadSeq;
+  var t = document.querySelector('input[name="assign-bind-type"]:checked').value;
+  var keyRow = document.getElementById('assign-key-row');
+  var grpRow = document.getElementById('assign-group-row');
+  document.getElementById('assign-preview').hidden = true;
+  document.getElementById('assign-github-repo-scope').hidden = true;
+  if (t === 'group') {
+    keyRow.hidden = true;
+    grpRow.hidden = false;
+  } else {
+    keyRow.hidden = false;
+    grpRow.hidden = true;
+  }
+}
+
+function selectedAssignKey() {
+  var sel = document.getElementById('assign-key-select');
+  if (!sel || sel.selectedIndex < 0) return null;
+  var opt = sel.options[sel.selectedIndex];
+  if (!opt || !opt.value) return null;
+  return {
+    id: opt.value,
+    serviceName: opt.dataset.serviceName || '',
+    isMintable: opt.dataset.isMintable === 'true'
+  };
+}
+
+function updateAssignGitHubRepoScope() {
+  var key = selectedAssignKey();
+  var clientId = document.getElementById('assign-client-id').value;
+  var wrap = document.getElementById('assign-github-repo-scope');
+  if (!key || key.serviceName !== 'github' || !key.isMintable) {
+    ++assignGitHubRepoLoadSeq;
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+  var existing = existingMintableAssignment(clientId, key.id);
+  if (existing) {
+	document.getElementById('assign-github-repo-status').textContent = 'Current scope loaded below. Adjust capabilities and assign again to overwrite.';
+  }
+  loadAssignGitHubRepos();
+}
+
+function loadAssignGitHubRepos() {
+  var key = selectedAssignKey();
+  var status = document.getElementById('assign-github-repo-status');
+  var list = document.getElementById('assign-github-repo-list');
+  if (!key || key.serviceName !== 'github' || !key.isMintable) return;
+  var loadSeq = ++assignGitHubRepoLoadSeq;
+  var keyID = key.id;
+  status.textContent = 'Loading repositories...';
+  list.replaceChildren();
+  fetch('/api/keys/' + encodeURIComponent(key.id) + '/github-app/repositories', {credentials:'same-origin'})
+    .then(function(r) { return r.json().then(function(j) { return {ok:r.ok, body:j}; }); })
+    .then(function(res) {
+      var currentKey = selectedAssignKey();
+      if (loadSeq !== assignGitHubRepoLoadSeq || !currentKey || currentKey.id !== keyID) return;
+      if (!res.ok || res.body.error) throw new Error(res.body.error || 'failed to list repositories');
+      var repos = res.body.repositories || [];
+      if (!repos.length) {
+        status.textContent = 'No repositories returned. Check the GitHub App installation repository access.';
+        return;
+      }
+      status.textContent = repos.length + ' repositories available. Select one or more.';
+      var existing = existingMintableAssignment(document.getElementById('assign-client-id').value, keyID);
+	  DW.setHTML(list, repoGrantTableHTML(repos, existing ? existing.permissionConfig : '', res.body.installation_permissions || {}));
+    })
+    .catch(function(err) {
+      var currentKey = selectedAssignKey();
+      if (loadSeq !== assignGitHubRepoLoadSeq || !currentKey || currentKey.id !== keyID) return;
+      status.textContent = 'Could not load repositories: ' + err.message + '. Reload or check the GitHub App installation.';
+    });
+}
+
+function selectedAssignGitHubRepoGrants() {
+  return selectedGitHubRepoGrants('#assign-github-repo-list');
+}
+
+function selectedGitHubRepoGrants(scopeSelector) {
+  var grants = [];
+  document.querySelectorAll(scopeSelector + ' .assign-github-repo-row').forEach(function(row) {
+		if (!row.querySelector('.assign-github-repo-enabled').checked) return;
+		var capabilities = {};
+		row.querySelectorAll('[data-capability]').forEach(function(input) { capabilities[input.dataset.capability] = input.checked; });
+    grants.push({
+      repo: row.dataset.repo,
+			capabilities: capabilities,
+			workflow_allowlist: parsePolicyList(row.querySelector('.github-workflows').value),
+			ref_allowlist: parsePolicyList(row.querySelector('.github-refs').value),
+			environment_allowlist: parsePolicyList(row.querySelector('.github-environments').value)
+    });
+  });
+	return grants.sort(function(a,b) { return a.repo.localeCompare(b.repo); });
+}
+
+function parsePolicyList(value) {
+	return (value || '').split(/[\n,]+/).map(function(v) { return v.trim(); }).filter(Boolean);
+}
+
+function repoGrantTableHTML(repos, configJSON, installationPermissions) {
+  var existingRepos = {};
+  gitGrantsFromACL(configJSON || '').forEach(function(g) {
+    existingRepos[g.repo.toLowerCase()] = g;
+  });
+	var capabilityLabels = {clone:'Clone',push:'Push',issues_read:'Issues read',issues_write:'Issues write',pull_requests_read:'PR read',pull_requests_write:'PR write',releases_read:'Releases read',releases_write:'Releases write',actions_read:'Actions read',workflow_dispatch:'Dispatch',workflow_rerun:'Rerun',workflow_cancel:'Cancel'};
+	installationPermissions = installationPermissions || {};
+  var anyAvailable = githubAnyCapabilityAvailable(installationPermissions);
+  return DW.html`<div class="repo-grant-table">${repos.map(function(repo) {
+      var name = repo.full_name || '';
+      var grant = existingRepos[name.toLowerCase()];
+			var caps = grant ? (grant.capabilities && Object.keys(grant.capabilities).length ? grant.capabilities : githubPresetCapabilities(grant.push ? 'developer' : 'read')) : {};
+			var enabled = !!grant;
+			var checks = Object.keys(capabilityLabels).map(function(cap) {
+				var requirement=githubCapabilityRequirement(cap), available=githubPermissionAllows(installationPermissions, requirement.scope, requirement.level);
+				var reason=available ? '' : 'GitHub App installation permission is insufficient: requires ' + requirement.scope + ':' + requirement.level + '.';
+				return DW.html`<label class="text-sm" ${reason ? DW.html`title="${reason}"` : ''}><input type="checkbox" data-capability="${cap}" ${caps[cap] ? DW.raw('checked') : ''} ${available ? '' : DW.raw('disabled')} data-on-change="onGitHubGrantToggle"> ${capabilityLabels[cap]}</label>`;
+			});
+      return DW.html`<div class="assign-github-repo-row repo-grant-row" data-repo="${name}"><div class="repo-grant-name"><span class="mono text-sm" title="${name}">${name}</span>${repo.private ? DW.raw('<span class="badge badge-gray">private</span>') : ''}<label class="text-sm"><input type="checkbox" class="assign-github-repo-enabled" ${enabled ? DW.raw('checked') : ''} ${anyAvailable ? '' : DW.raw('disabled title="GitHub App installation does not grant any supported repository permission."')}> Enable</label></div><div class="repo-grant-controls"><span class="repo-grant-section-label">Capabilities</span><div class="repo-capability-grid">${checks}</div><div class="repo-policy-lists"><input class="github-workflows" aria-label="Allowed workflows" placeholder="Allowed workflows: ci.yml" value="${(grant && grant.workflow_allowlist || []).join(', ')}"><input class="github-refs" aria-label="Allowed refs" placeholder="Allowed refs: main, release/*" value="${(grant && grant.ref_allowlist || []).join(', ')}"><input class="github-environments" aria-label="Allowed environments" placeholder="Allowed environments: staging" value="${(grant && grant.environment_allowlist || []).join(', ')}"></div></div></div>`;
+    })}</div>`;
+}
+
+function githubCapabilityRequirement(capability) {
+	if (capability.indexOf('issues_') === 0) return {scope:'issues',level:capability.endsWith('_write') ? 'write' : 'read'};
+	if (capability.indexOf('pull_requests_') === 0) return {scope:'pull_requests',level:capability.endsWith('_write') ? 'write' : 'read'};
+	if (capability.indexOf('actions_') === 0 || capability.indexOf('workflow_') === 0) return {scope:'actions',level:capability === 'actions_read' ? 'read' : 'write'};
+	return {scope:'contents',level:(capability === 'push' || capability === 'releases_write') ? 'write' : 'read'};
+}
+
+function githubPermissionAllows(permissions, scope, requiredLevel) {
+	var actual=(permissions[scope] || '').toLowerCase();
+	return actual === 'write' || (requiredLevel === 'read' && actual === 'read');
+}
+
+function githubAnyCapabilityAvailable(permissions) {
+	return ['contents','issues','pull_requests','actions'].some(function(scope) { return githubPermissionAllows(permissions, scope, 'read'); });
+}
+
+function onGitHubGrantToggle(input) {
+  var row = input.closest('.assign-github-repo-row');
+  if (!row) return;
+	row.querySelector('.assign-github-repo-enabled').checked = true;
+	var cap = input.dataset.capability;
+	function set(name, value) { var el=row.querySelector('[data-capability="'+name+'"]'); if (el && !(el.disabled && !value)) el.checked=value; }
+	if (input.checked && cap === 'push') set('clone', true);
+	if (input.checked && cap && cap.indexOf('_write') > 0) set(cap.replace('_write','_read'), true);
+	if (input.checked && ['workflow_dispatch','workflow_rerun','workflow_cancel'].indexOf(cap) >= 0) set('actions_read', true);
+	if (!input.checked && cap === 'clone') set('push', false);
+	if (!input.checked && cap && cap.indexOf('_read') > 0) set(cap.replace('_read','_write'), false);
+	if (!input.checked && cap === 'actions_read') { set('workflow_dispatch',false); set('workflow_rerun',false); set('workflow_cancel',false); }
+}
+
+function buildAssignPreview(svcName) {
+  document.getElementById('assign-svc-name').textContent = svcName;
+  document.getElementById('assign-env-name').textContent = svcEnvMap[svcName] || svcName.toUpperCase() + '_API_KEY';
+  document.getElementById('assign-preview').hidden = false;
+}
+
+function existingMintableAssignment(clientId, apiKeyId) {
+  return placeholders.find(function(ph) {
+    return ph.clientId === clientId && ph.apiKeyId === apiKeyId && ph.serviceName === 'github';
+  }) || null;
+}
+
+function summarizeGitGrants(configJSON) {
+  var grants = gitGrantsFromACL(configJSON);
+  if (!grants.length) return '(no repository scope)';
+  return grants.map(function(g) { return g.repo + ' [' + grantLabel(g) + ']'; }).join(', ');
+}
+
+function openAssignModal(clientId, clientName) {
+  ++assignGitHubRepoLoadSeq;
+  document.getElementById('assign-client-id').value = clientId;
+  document.getElementById('assign-client-name').textContent = clientName;
+  document.getElementById('assign-preview').hidden = true;
+  document.getElementById('assign-github-repo-scope').hidden = true;
+  document.getElementById('assign-github-repo-status').textContent = 'Select a GitHub App installation minter key.';
+  document.getElementById('assign-github-repo-list').replaceChildren();
+
+  // Reset radio to "key"
+  document.querySelectorAll('input[name="assign-bind-type"]').forEach(function(r) {
+    r.checked = (r.value === 'key');
+  });
+  onAssignBindTypeChange();
+
+  // Populate API key dropdown
+  var keySel = document.getElementById('assign-key-select');
+  keySel.replaceChildren();
+  var keyPlaceholder = document.createElement('option');
+  keyPlaceholder.value = '';
+  keyPlaceholder.textContent = 'Select an API key...';
+  keySel.appendChild(keyPlaceholder);
+  apiKeys.forEach(function(k) {
+    var opt = document.createElement('option');
+    opt.value = k.id;
+    var badges = [];
+    if (k.isRefreshable) badges.push('Refreshable');
+    if (k.isMintable) badges.push('Mintable');
+    opt.textContent = k.name + ' (' + k.serviceName + ')' + (badges.length ? ' - ' + badges.join(', ') : '');
+    opt.dataset.serviceId = k.serviceId;
+    opt.dataset.serviceName = k.serviceName;
+    opt.dataset.isRefreshable = k.isRefreshable ? 'true' : 'false';
+    opt.dataset.isMintable = k.isMintable ? 'true' : 'false';
+    keySel.appendChild(opt);
+  });
+  // Populate Key Group dropdown
+  var grpSel = document.getElementById('assign-group-select');
+  grpSel.replaceChildren();
+  var grpPlaceholder = document.createElement('option');
+  grpPlaceholder.value = '';
+  grpPlaceholder.textContent = 'Select a key pool...';
+  grpSel.appendChild(grpPlaceholder);
+  keyGroups.forEach(function(g) {
+    var opt = document.createElement('option');
+    opt.value = g.id;
+    opt.textContent = g.name + ' (' + g.serviceName + ', ' + g.strategy + ', ' + g.memberCount + ' members)';
+    opt.dataset.serviceId = g.serviceId;
+    opt.dataset.serviceName = g.serviceName;
+    grpSel.appendChild(opt);
+  });
+  DW.modal.open('#assign-modal');
+}
+
+function postAssign(body) {
+  return sendJSON('POST', '/api/placeholders', body).then(function(data) {
+    DW.modal.close('#assign-modal');
+    showToast('Phantom token saved: ' + data.env_name, 'success');
+    return refresh();
+  });
+}
+
+function submitAssign() {
+  var clientId = document.getElementById('assign-client-id').value;
+  var bindType = document.querySelector('input[name="assign-bind-type"]:checked').value;
+  var sel = document.getElementById(bindType === 'group' ? 'assign-group-select' : 'assign-key-select');
+  var opt = sel.options[sel.selectedIndex];
+  if (!opt || !opt.value) {
+    showToast(bindType === 'group' ? 'Select a key pool' : 'Select an API key', 'error');
+    return;
+  }
+
+  var body = {
+    service_id: opt.dataset.serviceId,
+    client_id: clientId,
+    requires_approval: document.getElementById('assign-approval').checked
+  };
+  if (bindType === 'group') body.group_id = opt.value;
+  else {
+    body.api_key_id = opt.value;
+    if (opt.dataset.serviceName === 'github' && opt.dataset.isMintable === 'true') {
+      var grants = selectedAssignGitHubRepoGrants();
+      if (!grants.length) {
+        showToast('Enable at least one repository', 'error');
+        return;
+      }
+      body.permission_config = JSON.stringify(gitACLForRepoGrants(grants));
+      var existing = existingMintableAssignment(clientId, opt.value);
+      if (existing) {
+        openDz({title: 'Overwrite existing assignment?', confirmLabel: 'Overwrite', danger: true,
+          body: DW.html`<p>This GitHub mintable token is already assigned to this client. Reassigning overwrites its repository authorization.</p><p class="text-sm">Current: <code>${summarizeGitGrants(existing.permissionConfig)}</code></p><p class="text-sm">New: <code>${summarizeGitGrants(body.permission_config)}</code></p>`,
+          run: function() { return postAssign(body); }});
+        return;
+      }
+    }
+  }
+  return postAssign(body).catch(function(err) { showToast(err.message, 'error'); });
+}
+
+/* ---------- boot ---------- */
+setTab((location.hash || '').replace('#', '') || 'overview', false);
+loadAll().then(function() { renderAll(); }).catch(function(err) {
+  if (err && err.notFound) { showGone(); return; }
+  DW.setHTML(el('cd-overview'), DW.html`<div class="card cd-card"><strong>Could not load client</strong><p class="text-muted text-sm">${err && err.message ? err.message : 'request failed'}</p><button type="button" class="btn" data-action="reloadPage">Retry</button></div>`);
+});
+DW.actions.reloadPage = function() { location.reload(); };
+window.addEventListener('hashchange', function() { var t = (location.hash || '').replace('#', ''); if (tabOrder.indexOf(t) >= 0 && t !== activeTab) setTab(t, false); });
+// Live: refetch when requests or approvals change (deferred while a dialog is open or the tab is hidden).
+DW.live.on('logs', function() { if (activeTab === 'activity') loadActivity(); }, {defer: true});
+DW.live.on('approvals', function() { refresh(true); }, {defer: true});
+DW.live.on('rollouts', function() { refresh(true); }, {defer: true});
+</script>
+{{end}}
+{{end}}
