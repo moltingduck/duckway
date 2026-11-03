@@ -500,11 +500,19 @@ type SessionUsageRow struct {
 // the trailing `sinceHours` hours (0 = all time). Ordered by request
 // volume descending so the busiest agents surface first.
 func (q *RequestLogQueries) SessionUsage(sinceHours int) ([]SessionUsageRow, error) {
+	return q.sessionUsage(sinceHours, nil)
+}
+
+// SessionUsageWindow is SessionUsage over an explicit [Since, Until) window.
+func (q *RequestLogQueries) SessionUsageWindow(w UsageWindow) ([]SessionUsageRow, error) {
+	return q.sessionUsage(0, &w)
+}
+
+func (q *RequestLogQueries) sessionUsage(sinceHours int, w *UsageWindow) ([]SessionUsageRow, error) {
 	where := ""
-	var args []interface{}
-	if sinceHours > 0 {
-		where = "WHERE r.created_at >= datetime('now', ?)"
-		args = append(args, "-"+itoa(sinceHours)+" hours")
+	cond, args := usageCutoffs("r.created_at", sinceHours, w)
+	if cond != "" {
+		where = "WHERE " + cond
 	}
 	query := `
 		SELECT r.client_id,

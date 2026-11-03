@@ -9,10 +9,26 @@
       <button type="button" class="btn" data-action="usRange" data-range="24h" aria-pressed="false">24h</button>
       <button type="button" class="btn" data-action="usRange" data-range="7d" aria-pressed="true">7d</button>
       <button type="button" class="btn" data-action="usRange" data-range="30d" aria-pressed="false">30d</button>
+      <button type="button" class="btn" id="us-custom-btn" data-action="usRange" data-range="custom" aria-pressed="false" aria-expanded="false" aria-controls="us-custom">Custom</button>
     </div>
     <button type="button" class="btn" data-action="usRefresh">Refresh</button>
   </div>
 </div>
+
+<form class="us-custom" id="us-custom" aria-label="Custom date range" data-on-submit="usApply" hidden novalidate>
+  <div class="form-group">
+    <label for="us-from">From (UTC)</label>
+    <input type="date" id="us-from" name="from" aria-describedby="us-custom-msg">
+  </div>
+  <div class="form-group">
+    <label for="us-to">To (UTC, inclusive)</label>
+    <input type="date" id="us-to" name="to" aria-describedby="us-custom-msg">
+  </div>
+  <button type="submit" class="btn btn-primary">Apply</button>
+  <p class="us-custom-help text-sm text-muted">Whole UTC days, up to 90 days, ending today at the latest.</p>
+  <p class="us-custom-msg" id="us-custom-msg" role="alert"></p>
+</form>
+<p class="us-range-note" id="us-range-note" role="status"></p>
 
 <div class="us-terms" id="us-terms">
   <span>Terms:</span>
@@ -143,7 +159,10 @@
   'use strict';
   var RANGES = {'24h': {days: 1, hours: 24, label: 'last 24 hours'}, '7d': {days: 7, hours: 168, label: 'last 7 days'}, '30d': {days: 30, hours: 720, label: 'last 30 days'}};
   var TABS = ['clients', 'keys', 'sessions'];
-  var st = {range: '7d', tab: 'clients', target: ''};
+  var st = {range: '7d', tab: 'clients', target: '', from: '', to: '', note: ''};
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var MAX_CUSTOM_DAYS = 90;
+  var customOpen = false;
   var loaded = {};      // scope -> range key it was loaded for
   var seq = {};         // scope -> request counter (drops stale responses)
   var clientRows = [];
@@ -155,10 +174,52 @@
 
   function $(id) { return document.getElementById(id); }
 
+  /* ---------- custom range (UTC dates, inclusive) ---------- */
+  function utcDay(d) { return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0'); }
+  function todayUTC() { return utcDay(new Date()); }
+  function parseDay(s) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || '');
+    if (!m) return null;
+    var d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    return utcDay(d) === s ? d : null;
+  }
+  // Same rules as the server: valid dates, from <= to, to not in the future, at most 90 days.
+  function validateRange(from, to) {
+    var f = parseDay(from), t = parseDay(to);
+    if (!from) return {field: 'from', msg: 'Choose a start date.'};
+    if (!f) return {field: 'from', msg: 'Start date must be a valid date (YYYY-MM-DD).'};
+    if (!to) return {field: 'to', msg: 'Choose an end date.'};
+    if (!t) return {field: 'to', msg: 'End date must be a valid date (YYYY-MM-DD).'};
+    if (to > todayUTC()) return {field: 'to', msg: 'End date cannot be in the future (UTC).'};
+    if (f > t) return {field: 'from', msg: 'Start date must be on or before the end date.'};
+    if (Math.round((t - f) / 86400000) + 1 > MAX_CUSTOM_DAYS) return {field: 'to', msg: 'The range can span at most ' + MAX_CUSTOM_DAYS + ' days.'};
+    return null;
+  }
+  function fmtDay(s, withYear) {
+    var d = parseDay(s);
+    return MONTHS[d.getUTCMonth()] + ' ' + d.getUTCDate() + (withYear ? ', ' + d.getUTCFullYear() : '');
+  }
+  function customText() {
+    var y = String(new Date().getUTCFullYear()), multi = st.from.slice(0, 4) !== y || st.to.slice(0, 4) !== y;
+    return fmtDay(st.from, multi) + ' – ' + fmtDay(st.to, multi);
+  }
+  function rkey() { return st.range === 'custom' ? 'custom:' + st.from + ':' + st.to : st.range; }
+  function rangeParams(kind) {
+    if (st.range === 'custom') return 'from=' + st.from + '&to=' + st.to;
+    var r = RANGES[st.range];
+    return kind === 'hours' ? 'hours=' + r.hours : 'days=' + r.days;
+  }
+
   /* ---------- URL state ---------- */
   function readURL() {
     var q = new URLSearchParams(window.location.search);
     st.range = RANGES[q.get('range')] ? q.get('range') : '7d';
+    st.note = '';
+    if (q.get('range') === 'custom') {
+      var bad = validateRange(q.get('from'), q.get('to'));
+      if (bad) st.note = 'The custom range in the link is not valid: ' + bad.msg + ' Showing the last 7 days instead.';
+      else { st.range = 'custom'; st.from = q.get('from'); st.to = q.get('to'); }
+    }
     st.tab = TABS.indexOf(q.get('tab')) >= 0 ? q.get('tab') : 'clients';
     st.target = q.get('key_id') ? 'key:' + q.get('key_id') : (q.get('key_group_id') ? 'group:' + q.get('key_group_id') : '');
     if (st.target && !q.get('tab')) st.tab = 'keys';
@@ -166,6 +227,7 @@
   function writeURL(push) {
     var q = new URLSearchParams();
     q.set('range', st.range);
+    if (st.range === 'custom') { q.set('from', st.from); q.set('to', st.to); }
     q.set('tab', st.tab);
     if (st.target) q.set(st.target.indexOf('group:') === 0 ? 'key_group_id' : 'key_id', st.target.slice(st.target.indexOf(':') + 1));
     var url = window.location.pathname + '?' + q.toString();
@@ -219,13 +281,19 @@
       return r.json();
     });
   }
-  function rangeLabel() { return RANGES[st.range].label; }
+  function rangeLabel() { return st.range === 'custom' ? 'range ' + customText() : RANGES[st.range].label; }
 
   /* ---------- tabs / range ---------- */
   function applyChrome() {
     document.querySelectorAll('[data-action="usRange"]').forEach(function (b) {
       b.setAttribute('aria-pressed', b.dataset.range === st.range ? 'true' : 'false');
     });
+    var cb = $('us-custom-btn');
+    cb.textContent = st.range === 'custom' ? customText() : 'Custom';
+    cb.setAttribute('aria-expanded', customOpen ? 'true' : 'false');
+    $('us-custom').hidden = !customOpen;
+    $('us-range-note').textContent = st.note;
+    $('us-range-note').hidden = !st.note;
     TABS.forEach(function (t) {
       var on = t === st.tab;
       var tab = $('us-tab-' + t);
@@ -236,7 +304,7 @@
   }
   function ensureLoaded(force) {
     var scope = st.tab;
-    if (!force && loaded[scope] === st.range) return;
+    if (!force && loaded[scope] === rkey()) return;
     loadScope(scope);
   }
   function loadScope(scope) {
@@ -250,13 +318,49 @@
     ensureLoaded(force);
   }
 
-  DW.actions.usRange = function (el) {
-    if (el.dataset.range === st.range) return;
-    st.range = el.dataset.range;
+  function rangeChanged() {
     // Every scope's data and any in-flight request belong to the old range.
     loaded = {};
     Object.keys(seq).forEach(function (k) { seq[k]++; });
+  }
+  function showCustomMsg(bad) {
+    $('us-custom-msg').textContent = bad ? bad.msg : '';
+    $('us-from').setAttribute('aria-invalid', bad && bad.field === 'from' ? 'true' : 'false');
+    $('us-to').setAttribute('aria-invalid', bad && bad.field === 'to' ? 'true' : 'false');
+  }
+  DW.actions.usRange = function (el) {
+    if (el.dataset.range === 'custom') {
+      customOpen = !customOpen;
+      if (customOpen) {
+        var t = todayUTC(), d = new Date();
+        d.setUTCDate(d.getUTCDate() - 6);
+        $('us-from').value = st.range === 'custom' ? st.from : utcDay(d);
+        $('us-to').value = st.range === 'custom' ? st.to : t;
+        $('us-from').max = t; $('us-to').max = t;
+        showCustomMsg(null);
+      }
+      applyChrome();
+      if (customOpen) $('us-from').focus();
+      return;
+    }
+    customOpen = false;
+    st.note = '';
+    if (el.dataset.range === st.range) { applyChrome(); return; }
+    st.range = el.dataset.range;
+    rangeChanged();
     apply(true, false);
+  };
+  DW.actions.usApply = function () {
+    var from = $('us-from').value, to = $('us-to').value, bad = validateRange(from, to);
+    showCustomMsg(bad);
+    if (bad) { $(bad.field === 'from' ? 'us-from' : 'us-to').focus(); return; }
+    customOpen = false;
+    st.note = '';
+    if (st.range === 'custom' && st.from === from && st.to === to) { applyChrome(); return; }
+    st.range = 'custom'; st.from = from; st.to = to;
+    rangeChanged();
+    apply(true, false);
+    $('us-custom-btn').focus();
   };
   DW.actions.usTab = function (el) {
     if (el.dataset.tab === st.tab) return;
@@ -280,9 +384,10 @@
   });
   window.addEventListener('popstate', function () {
     readURL();
+    customOpen = false;
     applyChrome();
     syncTargetSelect();
-    var stale = loaded[st.tab] !== st.range;
+    var stale = loaded[st.tab] !== rkey();
     ensureLoaded(false);
     if (!stale && st.tab === 'keys') loadDetail();
   });
@@ -307,17 +412,17 @@
 
   /* ---------- Clients ---------- */
   function loadClients() {
-    var n = seq.clients = (seq.clients || 0) + 1, rng = st.range;
+    var n = seq.clients = (seq.clients || 0) + 1, rng = rkey();
     setState('clients', 'loading', 'Loading client usage…');
-    getJSON('/api/usage/clients?days=' + RANGES[rng].days).then(function (rows) {
-      if (n !== seq.clients || rng !== st.range) return;
+    getJSON('/api/usage/clients?' + rangeParams('days')).then(function (rows) {
+      if (n !== seq.clients || rng !== rkey()) return;
       clientRows = Array.isArray(rows) ? rows : [];
       loaded.clients = rng;
       if (!clientRows.length) { setState('clients', 'empty', 'No captured LLM token usage in the ' + rangeLabel() + '.'); return; }
       setState('clients', null);
       renderClients();
     }).catch(function (err) {
-      if (n !== seq.clients || rng !== st.range) return;
+      if (n !== seq.clients || rng !== rkey()) return;
       setState('clients', 'error', 'Could not load client usage. ' + err.message);
     });
   }
@@ -377,13 +482,13 @@
 
   /* ---------- Keys ---------- */
   function loadKeys() {
-    var n = seq.keys = (seq.keys || 0) + 1, rng = st.range;
+    var n = seq.keys = (seq.keys || 0) + 1, rng = rkey();
     setState('keys', 'loading', 'Loading key overview…');
-    getJSON('/api/usage?hours=' + RANGES[rng].hours).then(function (rows) {
-      if (n !== seq.keys || rng !== st.range) return;
+    getJSON('/api/usage?' + rangeParams('hours')).then(function (rows) {
+      if (n !== seq.keys || rng !== rkey()) return;
       keyRows = Array.isArray(rows) ? rows : [];
       return loadGroups().then(function () {
-        if (n !== seq.keys || rng !== st.range) return;
+        if (n !== seq.keys || rng !== rkey()) return;
         loaded.keys = rng;
         buildTargets();
         if (!keyRows.length) setState('keys', 'empty', 'No LLM API keys found.');
@@ -391,7 +496,7 @@
         loadDetail();
       });
     }).catch(function (err) {
-      if (n !== seq.keys || rng !== st.range) return;
+      if (n !== seq.keys || rng !== rkey()) return;
       setState('keys', 'error', 'Could not load key overview. ' + err.message);
       loadDetail();
     });
@@ -436,7 +541,7 @@
   };
 
   function loadDetail() {
-    var n = seq.detail = (seq.detail || 0) + 1, rng = st.range;
+    var n = seq.detail = (seq.detail || 0) + 1, rng = rkey();
     if (!st.target) {
       detail = null;
       setState('detail', 'empty-plain', 'Select a key or key group to view details.');
@@ -445,20 +550,21 @@
     var i = st.target.indexOf(':');
     var param = st.target.slice(0, i) === 'group' ? 'key_group_id' : 'key_id';
     var base = '/api/usage/detail?' + param + '=' + encodeURIComponent(st.target.slice(i + 1));
-    var days = RANGES[rng].days, span = Math.max(days, 7);
+    var custom = st.range === 'custom';
+    var days = custom ? Math.round((parseDay(st.to) - parseDay(st.from)) / 86400000) + 1 : RANGES[rng].days, span = custom ? days : Math.max(days, 7);
     setState('detail', 'loading', 'Loading usage details…');
-    var reqs = [getJSON(base + '&days=' + days)];
+    var reqs = [getJSON(base + '&' + rangeParams('days'))];
     if (span !== days) reqs.push(getJSON(base + '&days=' + span));
     Promise.all(reqs).then(function (res) {
-      if (n !== seq.detail || rng !== st.range) return;
-      detail = {data: norm(res[0]), heat: norm(res[1] || res[0]), span: span};
+      if (n !== seq.detail || rng !== rkey()) return;
+      detail = {data: norm(res[0]), heat: norm(res[1] || res[0]), span: span, custom: custom};
       var empty = !detail.data.clients.length && !detail.data.models.length && !Number(detail.data.summary.total_tokens || 0) && !Number(detail.data.summary.requests || 0);
       if (empty) { setState('detail', 'empty', 'No usage captured for this selection in the ' + rangeLabel() + '.'); return; }
       setState('detail', null);
       renderPicker();
       renderDetail();
     }).catch(function (err) {
-      if (n !== seq.detail || rng !== st.range) return;
+      if (n !== seq.detail || rng !== rkey()) return;
       detail = null;
       setState('detail', 'error', 'Could not load usage details. ' + err.message);
     });
@@ -566,23 +672,33 @@
     var span = detail.span, days = [], now = new Date();
     now.setHours(12, 0, 0, 0);
     for (var i = span - 1; i >= 0; i--) {
-      var dt = new Date(now);
-      dt.setDate(now.getDate() - i);
-      var iso = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
+      var dt, iso, dnum;
+      if (detail.custom) {
+        // One cell per UTC day of the custom range, matching the server's UTC day grouping.
+        dt = parseDay(st.from);
+        dt.setUTCDate(dt.getUTCDate() + (span - 1 - i));
+        iso = utcDay(dt);
+        dnum = String(dt.getUTCDate());
+      } else {
+        dt = new Date(now);
+        dt.setDate(now.getDate() - i);
+        iso = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
+        dnum = String(dt.getDate());
+      }
       var r = byDate[iso] || {};
-      days.push({date: iso, day: String(dt.getDate()), value: metric === 'cost' ? Number(r.cost_usd || r.cost || 0) : Number(r.total_tokens || r.tokens || 0)});
+      days.push({date: iso, day: dnum, value: metric === 'cost' ? Number(r.cost_usd || r.cost || 0) : Number(r.total_tokens || r.tokens || 0)});
     }
     var max = days.reduce(function (n, d) { return Math.max(n, d.value); }, 0);
     function level(v) { return max > 0 && v > 0 ? Math.max(1, Math.ceil(v / max * 4)) : 0; }
     function text(d) { return d.date + ': ' + (metric === 'cost' ? fmtUSD(d.value) : fmtInt(d.value) + ' tokens'); }
-    $('us-heat').setAttribute('aria-label', 'Daily ' + metric + ' for the last ' + span + ' days');
+    $('us-heat').setAttribute('aria-label', detail.custom ? 'Daily ' + metric + ' for ' + customText() : 'Daily ' + metric + ' for the last ' + span + ' days');
     DW.setHTML($('us-heat'), DW.html`${days.map(function (d) {
       return DW.html`<button type="button" class="${'us-heat-cell us-heat-' + level(d.value)}" data-action="usHeatCell" data-text="${text(d)}" tabindex="-1" aria-pressed="false" aria-label="${text(d)}" title="${text(d)}">${d.day}</button>`;
     })}`);
     DW.setHTML($('us-heat-legend'), DW.html`<span>Less</span>${[0, 1, 2, 3, 4].map(function (l) { return DW.html`<i class="${'us-heat-' + l}"></i>`; })}<span>More</span>`);
     $('us-heat-readout').textContent = 'Select a day for its value.';
     var firstCell = $('us-heat').querySelector('.us-heat-cell'); if (firstCell) firstCell.tabIndex = 0;
-    $('us-heat-note').textContent = span === RANGES[st.range].days ? 'Showing the ' + rangeLabel() + '.' : 'Showing the last ' + span + ' days (the daily view needs at least a week to be readable); totals above follow the ' + rangeLabel() + '.';
+    $('us-heat-note').textContent = detail.custom ? 'Showing ' + customText() + ', one cell per UTC day.' : span === RANGES[st.range].days ? 'Showing the ' + rangeLabel() + '.' : 'Showing the last ' + span + ' days (the daily view needs at least a week to be readable); totals above follow the ' + rangeLabel() + '.';
   }
   DW.actions.usHeatCell = function (el) {
     document.querySelectorAll('.us-heat-cell[aria-pressed="true"]').forEach(function (b) { b.setAttribute('aria-pressed', 'false'); });
@@ -615,10 +731,10 @@
 
   /* ---------- Sessions ---------- */
   function loadSessions() {
-    var n = seq.sessions = (seq.sessions || 0) + 1, rng = st.range;
+    var n = seq.sessions = (seq.sessions || 0) + 1, rng = rkey();
     setState('sessions', 'loading', 'Loading sessions…');
-    getJSON('/api/usage/sessions?hours=' + RANGES[rng].hours).then(function (rows) {
-      if (n !== seq.sessions || rng !== st.range) return;
+    getJSON('/api/usage/sessions?' + rangeParams('hours')).then(function (rows) {
+      if (n !== seq.sessions || rng !== rkey()) return;
       loaded.sessions = rng;
       if (!Array.isArray(rows) || !rows.length) { setState('sessions', 'empty', 'No requests in the ' + rangeLabel() + '.'); return; }
       setState('sessions', null);
@@ -627,7 +743,7 @@
         return DW.html`<tr><td>${s.client_name || s.client_id || '(unknown)'}</td><td><span class="badge badge-blue">${s.service_name}</span></td><td>${fmtInt(s.requests)}</td><td>${err}</td><td class="text-sm text-muted">${fmtDate(s.last_seen)}</td></tr>`;
       })}`);
     }).catch(function (err) {
-      if (n !== seq.sessions || rng !== st.range) return;
+      if (n !== seq.sessions || rng !== rkey()) return;
       setState('sessions', 'error', 'Could not load sessions. ' + err.message);
     });
   }

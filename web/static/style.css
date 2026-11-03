@@ -2053,3 +2053,18 @@ textarea.st-mono { white-space: pre; overflow-x: auto; width: 100%; }
 /* services: the locked-version status stays mounted (live region); empty = no gap */
 #p-locked:empty { margin: 0; min-height: 0; }
 .pl-import-h { font-size: 1rem; margin-bottom: 0.75rem; }
+
+/* ---- Usage custom date range ---- */
+.us-custom { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.75rem; margin: 0 0 0.75rem; padding: 0.75rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-input); }
+.us-custom .form-group { margin: 0; flex: 1 1 11rem; min-width: 0; }
+.us-custom input[type="date"] { width: 100%; min-height: 2.75rem; }
+.us-custom input[aria-invalid="true"] { border-color: var(--danger); }
+.us-custom .btn { min-height: 2.75rem; }
+.us-custom-help { flex: 1 1 100%; margin: 0; }
+.us-custom-msg { flex: 1 1 100%; margin: 0; color: var(--danger-text); font-size: 0.8125rem; }
+.us-custom-msg:empty { display: none; }
+.us-range-note { margin: 0 0 0.75rem; color: var(--warn-text); font-size: 0.8125rem; }
+.us-range #us-custom-btn { max-width: 100%; white-space: nowrap; }
+@media (max-width: 480px) {
+  .us-custom .btn { flex: 1 1 100%; }
+}

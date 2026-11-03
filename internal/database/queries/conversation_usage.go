@@ -9,6 +9,25 @@ import (
 	"github.com/hackerduck/duckway/internal/models"
 )
 
+// UsageWindow is an explicit [Since, Until) UTC time window. Both bounds are
+// "2006-01-02 15:04:05" strings computed in Go so the SQL stays portable.
+type UsageWindow struct {
+	Since string
+	Until string
+}
+
+// usageCutoffs builds the created_at predicate for a trailing-hours window or
+// an explicit window (which wins). col is the qualified column name.
+func usageCutoffs(col string, hours int, w *UsageWindow) (string, []interface{}) {
+	if w != nil {
+		return col + " >= ? AND " + col + " < ?", []interface{}{w.Since, w.Until}
+	}
+	if hours > 0 {
+		return col + " >= datetime('now', ?)", []interface{}{"-" + itoa(hours) + " hours"}
+	}
+	return "", nil
+}
+
 type ConversationUsageQueries struct {
 	db *sql.DB
 }
@@ -164,18 +183,31 @@ type MeteredUsageDetailRow struct {
 }
 
 func (q *ConversationUsageQueries) DetailByKey(apiKeyID string, days int) ([]MeteredUsageDetailRow, error) {
-	return q.meteredDetail(`u.api_key_id = ?`, []interface{}{apiKeyID}, days)
+	return q.meteredDetail(`u.api_key_id = ?`, []interface{}{apiKeyID}, days, nil)
+}
+
+// DetailByKeyWindow is DetailByKey over an explicit [Since, Until) window.
+func (q *ConversationUsageQueries) DetailByKeyWindow(apiKeyID string, w UsageWindow) ([]MeteredUsageDetailRow, error) {
+	return q.meteredDetail(`u.api_key_id = ?`, []interface{}{apiKeyID}, 0, &w)
+}
+
+// DetailByKeyGroupWindow is DetailByKeyGroup over an explicit window.
+func (q *ConversationUsageQueries) DetailByKeyGroupWindow(groupID string, w UsageWindow) ([]MeteredUsageDetailRow, error) {
+	return q.meteredDetail(`u.key_group_id = ?`, []interface{}{groupID}, 0, &w)
 }
 
 // DetailByKeyGroup aggregates usage for the group's current member set. Usage
 // rows snapshot the selected API key, so results remain accurate per key; group
 // membership itself is intentionally evaluated at query time.
 func (q *ConversationUsageQueries) DetailByKeyGroup(groupID string, days int) ([]MeteredUsageDetailRow, error) {
-	return q.meteredDetail(`u.key_group_id = ?`, []interface{}{groupID}, days)
+	return q.meteredDetail(`u.key_group_id = ?`, []interface{}{groupID}, days, nil)
 }
 
-func (q *ConversationUsageQueries) meteredDetail(filter string, args []interface{}, days int) ([]MeteredUsageDetailRow, error) {
-	if days > 0 {
+func (q *ConversationUsageQueries) meteredDetail(filter string, args []interface{}, days int, w *UsageWindow) ([]MeteredUsageDetailRow, error) {
+	if w != nil {
+		filter += " AND u.created_at >= ? AND u.created_at < ?"
+		args = append(args, w.Since, w.Until)
+	} else if days > 0 {
 		filter += " AND u.created_at >= datetime('now', ?)"
 		args = append(args, "-"+itoa(days)+" days")
 	}
@@ -217,11 +249,19 @@ func (q *ConversationUsageQueries) meteredDetail(filter string, args []interface
 // trailing sinceHours hours (0 = all time). Map for O(1) lookup when
 // decorating the per-key usage rows.
 func (q *ConversationUsageQueries) TotalsByKey(sinceHours int) (map[string]KeyTokenTotals, error) {
+	return q.totalsByKey(sinceHours, nil)
+}
+
+// TotalsByKeyWindow is TotalsByKey over an explicit [Since, Until) window.
+func (q *ConversationUsageQueries) TotalsByKeyWindow(w UsageWindow) (map[string]KeyTokenTotals, error) {
+	return q.totalsByKey(0, &w)
+}
+
+func (q *ConversationUsageQueries) totalsByKey(sinceHours int, w *UsageWindow) (map[string]KeyTokenTotals, error) {
 	where := ""
-	var args []interface{}
-	if sinceHours > 0 {
-		where = "WHERE created_at >= datetime('now', ?)"
-		args = append(args, "-"+itoa(sinceHours)+" hours")
+	cond, args := usageCutoffs("created_at", sinceHours, w)
+	if cond != "" {
+		where = "WHERE " + cond
 	}
 	rows, err := q.db.Query(`
 		SELECT api_key_id,
@@ -256,11 +296,19 @@ func (q *ConversationUsageQueries) TotalsByKey(sinceHours int) (map[string]KeyTo
 }
 
 func (q *ConversationUsageQueries) ClientKeyUsage(days int) ([]ClientKeyUsageRow, error) {
+	return q.clientKeyUsage(days*24, nil)
+}
+
+// ClientKeyUsageWindow is ClientKeyUsage over an explicit [Since, Until) window.
+func (q *ConversationUsageQueries) ClientKeyUsageWindow(w UsageWindow) ([]ClientKeyUsageRow, error) {
+	return q.clientKeyUsage(0, &w)
+}
+
+func (q *ConversationUsageQueries) clientKeyUsage(hours int, w *UsageWindow) ([]ClientKeyUsageRow, error) {
 	where := ""
-	var args []interface{}
-	if days > 0 {
-		where = "WHERE u.created_at >= datetime('now', ?)"
-		args = append(args, "-"+itoa(days*24)+" hours")
+	cond, args := usageCutoffs("u.created_at", hours, w)
+	if cond != "" {
+		where = "WHERE " + cond
 	}
 	rows, err := q.db.Query(`
 		SELECT COALESCE(u.client_id, ''),
@@ -329,11 +377,20 @@ type ConversationUsageRow struct {
 // cc_channels to surface a human-readable channel name when the
 // conversation id is a claude session bound to a CC channel.
 func (q *ConversationUsageQueries) ByKey(apiKeyID string, sinceHours int) ([]ConversationUsageRow, error) {
+	return q.byKey(apiKeyID, sinceHours, nil)
+}
+
+// ByKeyWindow is ByKey over an explicit [Since, Until) window.
+func (q *ConversationUsageQueries) ByKeyWindow(apiKeyID string, w UsageWindow) ([]ConversationUsageRow, error) {
+	return q.byKey(apiKeyID, 0, &w)
+}
+
+func (q *ConversationUsageQueries) byKey(apiKeyID string, sinceHours int, w *UsageWindow) ([]ConversationUsageRow, error) {
 	where := "WHERE u.api_key_id = ?"
 	args := []interface{}{apiKeyID}
-	if sinceHours > 0 {
-		where += " AND u.created_at >= datetime('now', ?)"
-		args = append(args, "-"+itoa(sinceHours)+" hours")
+	if cond, cargs := usageCutoffs("u.created_at", sinceHours, w); cond != "" {
+		where += " AND " + cond
+		args = append(args, cargs...)
 	}
 	rows, err := q.db.Query(`
 		SELECT u.conversation_id,
