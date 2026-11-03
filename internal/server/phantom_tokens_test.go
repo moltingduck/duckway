@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -320,5 +321,19 @@ func TestOldPlaceholdersURLIsMoved(t *testing.T) {
 	rec := e.do(t, http.MethodGet, "/admin/placeholders", "", true)
 	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `href="/admin/phantom-tokens"`) || rec.Header().Get("Location") != "" {
 		t.Fatalf("status %d location %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestPhantomDetailRequests7dUsesGoCutoff(t *testing.T) {
+	e := newPTEnv(t)
+	now := time.Now().UTC()
+	for _, ts := range []time.Time{now.Add(-1 * time.Hour), now.Add(-6 * 24 * time.Hour), now.Add(-8 * 24 * time.Hour), now.Add(-30 * 24 * time.Hour)} {
+		if _, err := e.s.db.Exec(`INSERT INTO request_log (placeholder_id, client_id, service_name, method, path, status_code, created_at) VALUES ('ph-pt','c-pt','svc','GET','/x',200,?)`, ts.Format("2006-01-02 15:04:05")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := e.do(t, http.MethodGet, "/admin/phantom-tokens/ph-pt", "", true).Body.String()
+	if !strings.Contains(body, `"requests_7d":2`) && !strings.Contains(body, `&#34;requests_7d&#34;:2`) {
+		t.Errorf("expected requests_7d=2 in detail page data")
 	}
 }

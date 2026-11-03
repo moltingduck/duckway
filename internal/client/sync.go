@@ -732,7 +732,7 @@ func syncCodexOAuthCredentials(configDir string, cfg *Config, fallback bool) (co
 		return absent()
 	}
 	if !codexCredentialsHaveIDToken(creds) {
-		log.Printf("Warning: Duckway Codex OAuth credentials are missing tokens.id_token; falling back to API-key proxy config. Re-upload the full Codex auth.json in Refreshable Tokens and confirm this client has an assigned OpenAI refreshable key with Codex OAuth metadata. Ensure sync and Codex use the same CODEX_HOME.")
+		log.Printf("Warning: Duckway Codex OAuth credentials are missing tokens.id_token; falling back to API-key proxy config. Re-upload the full Codex auth.json in Credentials and confirm this client has an assigned OpenAI refreshable key with Codex OAuth metadata. Ensure sync and Codex use the same CODEX_HOME.")
 		return absent()
 	}
 	authPath, err := codexAuthJSONPath()

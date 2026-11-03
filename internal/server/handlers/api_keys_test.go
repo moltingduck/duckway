@@ -222,7 +222,7 @@ func TestAPIKeyUpdateRejectsRefreshableSecretReplacement(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "Refreshable Tokens") {
+	if !strings.Contains(rec.Body.String(), "Credentials") {
 		t.Fatalf("unexpected error: %s", rec.Body.String())
 	}
 	key, err := apiKeyQ.GetByID("key-refreshable-api-edit")

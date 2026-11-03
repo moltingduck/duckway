@@ -307,3 +307,45 @@ func TestCredentialsPageAuthAndMovedEntries(t *testing.T) {
 		}
 	}
 }
+
+// TestServicesAndPhantomEndpointsNeverContainStoredSecrets extends the secret
+// audit to the services impact/stats and phantom token APIs and pages.
+func TestServicesAndPhantomEndpointsNeverContainStoredSecrets(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	seedCredentials(t, s, shared)
+
+	calls := []struct{ method, path, body string }{
+		{http.MethodGet, "/api/services", ""},
+		{http.MethodGet, "/api/services/stats", ""},
+		{http.MethodGet, "/api/services/svc-c/impact", ""},
+		{http.MethodGet, "/api/services/svc-gh/impact", ""},
+		{http.MethodGet, "/api/services/svc-c/pricing", ""},
+		{http.MethodGet, "/api/placeholders", ""},
+		{http.MethodGet, "/api/placeholders/ph1", ""},
+		{http.MethodPost, "/api/placeholders/ph1/acl/test", `{"method":"GET","path":"/v1/x"}`},
+		{http.MethodGet, "/api/clients/c1/impact", ""},
+		{http.MethodGet, "/admin/services", ""},
+		{http.MethodGet, "/admin/credentials", ""},
+		{http.MethodGet, "/admin/phantom-tokens", ""},
+		{http.MethodGet, "/admin/phantom-tokens/ph1", ""},
+		{http.MethodGet, "/admin/key-pools", ""},
+		{http.MethodGet, "/admin/key-bundles", ""},
+	}
+	for _, c := range calls {
+		rec := credAdminRequest(t, s, shared, c.method, c.path, c.body)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s %s: status %d body=%.200s", c.method, c.path, rec.Code, rec.Body.String())
+			continue
+		}
+		if strings.HasPrefix(c.path, "/admin/") {
+			// Page sources legitimately mention field names; check values only.
+			for _, secret := range []string{secretStaticKey, secretAccess, secretRefresh, secretIDToken, secretClientSecr, secretPrivateKey, secretGitHubToken} {
+				if strings.Contains(rec.Body.String(), secret) {
+					t.Errorf("%s leaked stored secret %q", c.path, secret)
+				}
+			}
+			continue
+		}
+		assertNoSecrets(t, c.method+" "+c.path, rec.Body.String())
+	}
+}

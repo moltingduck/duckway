@@ -518,7 +518,7 @@ Duckway refreshes the access token automatically before expiry (background job r
 
 ### Delete a refreshable token
 
-Open the credential in **Credentials** and choose **Delete credential**. Duckway shows every affected key pool, Key Suite, client phantom token, and Control Channel before it deletes anything.
+Open the credential in **Credentials** and choose **Delete credential**. Duckway shows every affected key pool, Key bundle, client phantom token, and Control Channel before it deletes anything.
 
 When you confirm, Duckway removes Key bundle entries that pointed at the token and unassigns the affected client phantom tokens. Control Channels are not deleted; they are disabled and marked in red until you edit the Control Channel and assign a replacement bot token.
 

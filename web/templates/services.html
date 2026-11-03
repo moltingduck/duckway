@@ -242,7 +242,7 @@ function renderList() {
       <td class="sv-c-host mono text-sm" data-label="Host">${s.host_pattern || '—'}</td>
       <td data-label="Auth"><span class="cl-pill cl-pill-info">${s.auth_type}</span></td>
       <td data-label="Delivery">${mode === 'loan_proxy' ? DW.raw('<span class="cl-pill cl-pill-warn">Direct (loan_proxy)</span>') : DW.raw('<span class="cl-pill cl-pill-mute">Gateway (MITM)</span>')}</td>
-      <td data-label="Credentials">${SV.statsOK ? plural(st.credentials, 'credential') : 'Unavailable'}</td>
+      <td data-label="Credentials">${SV.statsOK ? (st.credentials > 0 ? DW.html`<a href="${'/admin/credentials?service=' + encodeURIComponent(s.name)}">${plural(st.credentials, 'credential')}</a>` : plural(st.credentials, 'credential')) : 'Unavailable'}</td>
       <td data-label="Pricing">${pricingCell(s)}</td>
       <td class="cl-c-status" data-label="Status">${s.is_active ? DW.raw('<span class="cl-pill cl-pill-ok">Active</span>') : DW.raw('<span class="cl-pill cl-pill-bad">Inactive</span>')}</td>
     </tr>`;

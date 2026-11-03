@@ -147,7 +147,7 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil {
 		if existing.SuiteID != nil {
-			jsonError(w, "phantom token already exists for this client/service/env from a key suite; edit or remove the suite assignment first", http.StatusConflict)
+			jsonError(w, "phantom token already exists for this client/service/env from a key bundle; edit or remove the bundle assignment first", http.StatusConflict)
 			return
 		}
 		if strings.TrimSpace(existing.Placeholder) == "" || !sameOptionalString(existing.APIKeyID, req.APIKeyID) || !sameOptionalString(existing.GroupID, req.GroupID) {

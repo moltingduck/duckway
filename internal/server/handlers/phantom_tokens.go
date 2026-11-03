@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	svc "github.com/hackerduck/duckway/internal/server/services"
 )
@@ -286,7 +287,8 @@ func (h *AdminHandler) PhantomTokenDetailPage(w http.ResponseWriter, r *http.Req
 	}
 	if h.db != nil {
 		var n int64
-		if err := h.db.QueryRow(`SELECT COUNT(*) FROM request_log WHERE placeholder_id = ? AND created_at >= datetime('now', '-7 days')`, ph.ID).Scan(&n); err == nil {
+		if err := h.db.QueryRow(`SELECT COUNT(*) FROM request_log WHERE placeholder_id = ? AND created_at >= ?`,
+			ph.ID, time.Now().UTC().Add(-7*24*time.Hour).Format("2006-01-02 15:04:05")).Scan(&n); err == nil {
 			d.Requests7d = &n
 		}
 	}
