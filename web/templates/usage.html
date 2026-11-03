@@ -292,8 +292,7 @@
     cb.textContent = st.range === 'custom' ? customText() : 'Custom';
     cb.setAttribute('aria-expanded', customOpen ? 'true' : 'false');
     $('us-custom').hidden = !customOpen;
-    $('us-range-note').textContent = st.note;
-    $('us-range-note').hidden = !st.note;
+    $('us-range-note').textContent = st.note; // stays mounted (live region): only its content changes
     TABS.forEach(function (t) {
       var on = t === st.tab;
       var tab = $('us-tab-' + t);
@@ -350,6 +349,14 @@
     rangeChanged();
     apply(true, false);
   };
+  // Escape closes the custom panel and returns focus to the Custom button.
+  $('us-custom').addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' || !customOpen) return;
+    e.preventDefault(); e.stopPropagation();
+    customOpen = false;
+    applyChrome();
+    $('us-custom-btn').focus();
+  });
   DW.actions.usApply = function () {
     var from = $('us-from').value, to = $('us-to').value, bad = validateRange(from, to);
     showCustomMsg(bad);

@@ -24,10 +24,13 @@
   var DEBOUNCE_MS = 200;
 
   var plat = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || '';
-  var isMac = /Mac|iPhone|iPad/.test(plat);
+  var isMac = /mac|iphone|ipad/i.test(plat); // Chromium on macOS reports "macOS"
   kbds.forEach(function (k) { k.textContent = isMac ? '⌘K' : 'Ctrl K'; });
   var trig = document.getElementById('pal-trigger');
-  if (trig) trig.setAttribute('aria-label', isMac ? 'Search (⌘K)' : 'Search (Ctrl K)');
+  var hintLabel = isMac ? 'Search (⌘K)' : 'Search (Ctrl K)';
+  if (trig) trig.setAttribute('aria-label', hintLabel);
+  var navSearch = document.getElementById('nav-search');
+  if (navSearch) navSearch.setAttribute('aria-label', hintLabel);
 
   function pagesFromNav() {
     var out = [];

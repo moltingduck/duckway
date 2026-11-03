@@ -250,7 +250,7 @@ function renderDetail(a) {
   var info = infoOf(a);
   var open = a.status === 'pending';
   var dash = DW.raw('<span class="text-muted">—</span>');
-  var actions = open ? DW.html`<div class="appr-actions"><button type="button" class="btn btn-primary appr-act" data-action="approveOne" data-id="${a.id}">Approve <kbd class="appr-kbd">A</kbd></button><button type="button" class="btn btn-danger appr-act" data-action="rejectOne" data-id="${a.id}">Reject <kbd class="appr-kbd">R</kbd></button><span class="text-muted text-sm appr-help">Approves this one request only. Next request asks again.</span></div>` : DW.raw('');
+  var actions = open ? DW.html`<div class="appr-actions"><button type="button" class="btn btn-primary appr-act" data-action="approveOne" data-id="${a.id}">Approve <kbd class="appr-kbd">A</kbd></button><button type="button" class="btn btn-danger appr-act" data-action="rejectOne" data-id="${a.id}">Reject <kbd class="appr-kbd">R</kbd></button><span class="text-muted text-sm appr-help">${info.rule ? 'Approving allows that exact request (method, path, query and body) for 24 hours, until it expires.' : 'Approving allows this token\'s requests for 24 hours, until it expires.'}</span></div>` : DW.raw('');
   var bar = open ? DW.html`<div class="appr-bar"><button type="button" class="btn btn-danger appr-act" data-action="rejectOne" data-id="${a.id}">Reject</button><button type="button" class="btn btn-primary appr-act" data-action="approveOne" data-id="${a.id}">Approve</button></div>` : DW.raw('');
   var seen = a.client_last_seen_at ? DW.html`last seen ${fmtAgo(parseTime(a.client_last_seen_at))}` : DW.raw('never seen');
   var ver = a.client_version ? a.client_version : DW.raw('<span class="text-muted">version not reported</span>');

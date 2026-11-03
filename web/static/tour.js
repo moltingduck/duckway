@@ -97,7 +97,6 @@
       target.classList.add('tour-hl');
       st.hl = target;
       DW.setHTML(st.pop, DW.html`<h2 class="tour-title" id="tour-title">${step.title}</h2><p class="tour-text">${step.text}</p><div class="tour-foot"><span class="tour-count">Step ${st.i + 1} of ${n}</span><span class="tour-btns">${st.i > 0 ? DW.html`<button type="button" class="btn" data-action="tourBack">Back</button>` : ''}${last ? DW.html`<button type="button" class="btn btn-primary" data-action="tourDone">Done</button>` : DW.html`<button type="button" class="btn btn-primary" data-action="tourNext">Next</button>`}</span></div>`);
-      st.pop.setAttribute('aria-label', 'Guided tour, step ' + (st.i + 1) + ' of ' + n + ': ' + step.title);
       st.live.textContent = 'Step ' + (st.i + 1) + ' of ' + n + '. ' + step.title + '. ' + step.text;
       st.pop.hidden = false;
       position(target);
@@ -110,6 +109,8 @@
 
   function onKey(e) {
     if (!st) return;
+    // Ctrl/Cmd-K ends the tour first; the palette's own handler then opens it.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'k' || e.key === 'K')) { end(); return; }
     if (e.key === 'Escape') {
       e.preventDefault(); e.stopImmediatePropagation();
       end();
@@ -135,7 +136,7 @@
     pop.className = 'tour-pop';
     pop.setAttribute('role', 'dialog');
     pop.setAttribute('aria-labelledby', 'tour-title');
-    pop.setAttribute('aria-label', 'Guided tour');
+    pop.setAttribute('aria-modal', 'true'); // focus is trapped inside while the tour runs
     pop.hidden = true;
     var live = document.createElement('div');
     live.className = 'sr-only';

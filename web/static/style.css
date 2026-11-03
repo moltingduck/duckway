@@ -2092,3 +2092,4 @@ textarea.st-mono { white-space: pre; overflow-x: auto; width: 100%; }
 @media (max-width: 480px) {
   .us-custom .btn { flex: 1 1 100%; }
 }
+.us-range-note:empty { margin: 0; }
