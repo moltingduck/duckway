@@ -160,6 +160,7 @@
       alertConfigured = !!d.alert_configured;
       $('cn-warn').hidden = alertConfigured;
       renderFleet();
+      if (selected && !$('cn-detail').hidden) renderTokens();
       renderExclude();
     }).catch(function(e) {
       $('cn-fleet-errmsg').textContent = 'Could not load the fleet overview: ' + e.message;
@@ -201,7 +202,7 @@
     var box = $('cn-tokens');
     if (!selTokens.length) {
       var why = alertConfigured ? '' : DW.html`<p class="text-sm cn-inline-warn">No alert email is set, so generating will create nothing.</p>`;
-      DW.setHTML(box, DW.html`<p class="text-sm text-muted">No canary tokens deployed for this client.</p>${why}<div class="cn-btnrow"><button type="button" class="btn btn-primary" data-action="cnGenerate">Generate tokens</button></div>`);
+      DW.setHTML(box, DW.html`<p class="text-sm text-muted">No canary tokens deployed for this client.</p>${why}<div class="cn-btnrow"><button type="button" class="btn btn-primary" data-action="cnGenerate"${alertConfigured ? '' : DW.raw(' disabled aria-describedby="cn-noalert-why"')}>Generate tokens</button></div>`);
       return;
     }
     var rows = selTokens.map(function(t) {
@@ -211,12 +212,12 @@
         : DW.html`<span class="mono text-sm text-muted">${short}</span>`;
       return DW.html`<tr><td><span class="badge badge-blue">${t.token_type}</span></td><td>${link}</td><td class="mono text-sm">~/${t.deploy_path}</td><td class="text-sm text-muted">${t.created_at}</td><td class="cn-act"><button type="button" class="btn btn-sm btn-danger" data-action="cnDeleteToken" data-token-id="${t.id}">Delete<span class="cn-sr"> ${t.token_type}</span></button></td></tr>`;
     });
-    DW.setHTML(box, DW.html`<div class="table-wrap"><table class="cn-table"><thead><tr><th scope="col">Type</th><th scope="col">Token ID</th><th scope="col">Deploy path</th><th scope="col">Created</th><th scope="col"><span class="cn-sr">Action</span></th></tr></thead><tbody>${rows}</tbody></table></div><div class="cn-btnrow"><button type="button" class="btn" data-action="cnRegenAll">Regenerate all</button><button type="button" class="btn btn-danger" data-action="cnDeleteAll">Delete all</button></div>`);
+    DW.setHTML(box, DW.html`<div class="table-wrap"><table class="cn-table"><thead><tr><th scope="col">Type</th><th scope="col">Token ID</th><th scope="col">Deploy path</th><th scope="col">Created</th><th scope="col"><span class="cn-sr">Action</span></th></tr></thead><tbody>${rows}</tbody></table></div><div class="cn-btnrow"><button type="button" class="btn" data-action="cnRegenAll"${alertConfigured ? '' : DW.raw(' disabled aria-describedby="cn-noalert-why"')}>Regenerate all</button><button type="button" class="btn btn-danger" data-action="cnDeleteAll">Delete all</button></div>${alertConfigured ? '' : DW.html`<p class="text-sm cn-inline-warn" id="cn-noalert-why">Regenerate is disabled until an alert email is set under Settings: without it no new tokens could be created, and the current ones are kept. Deleting stays available.</p>`}`);
   }
 
   function setDetailState(msg) { $('cn-detail-state').textContent = msg; }
 
-  DW.actions.cnGenerate = function() { doGenerate(); };
+  DW.actions.cnGenerate = function() { if (alertConfigured) doGenerate(); };
   function doGenerate() {
     var id = selected, c = byId[id]; if (!c) return Promise.resolve();
     setDetailState('Generating tokens… this may take a moment');
@@ -258,7 +259,7 @@
   };
 
   DW.actions.cnRegenAll = function() {
-    var c = byId[selected]; if (!c) return;
+    var c = byId[selected]; if (!c || !alertConfigured) return;
     var n = selTokens.length;
     openConfirm({
       title: 'Regenerate all tokens?',

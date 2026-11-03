@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 
@@ -205,6 +206,14 @@ func (h *CanaryHandler) GenerateForClient(w http.ResponseWriter, r *http.Request
 
 	shortID := r.URL.Query().Get("short_id")
 	if err := h.service.RegenerateForClient(clientID, clientName, shortID); err != nil {
+		if errors.Is(err, services.ErrCanaryNoAlertEmail) {
+			jsonError(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if errors.Is(err, services.ErrCanaryNothingGenerated) {
+			jsonError(w, err.Error(), http.StatusBadGateway)
+			return
+		}
 		jsonError(w, "failed to generate canary tokens: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

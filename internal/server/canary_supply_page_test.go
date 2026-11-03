@@ -139,3 +139,18 @@ func TestSupplyChainErrorPaths(t *testing.T) {
 		t.Fatalf("closed db => %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestRegenerateEndpointRejectsWithoutEmailAndKeepsTokens(t *testing.T) {
+	s, shared := newClientDetailServer(t)
+	seedDetailClient(t, s, "c1", "alpha", "tok1")
+	svcExec(t, s, `INSERT INTO canary_tokens (id, client_id, token_type, canary_token, auth_token, token_value, memo, deploy_path, deploy_content) VALUES ('t1','c1','dns','','','v','m','.x/a','c')`)
+	rec := svcDo(s, shared, http.MethodPost, "/api/canary/clients/c1/generate?name=alpha", "", true)
+	if rec.Code < 400 || rec.Code >= 500 || !strings.Contains(rec.Body.String(), "alert email") {
+		t.Fatalf("regenerate without email => %d %s", rec.Code, rec.Body.String())
+	}
+	var n int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM canary_tokens WHERE client_id='c1'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("tokens=%d, want 1 kept", n)
+	}
+}
