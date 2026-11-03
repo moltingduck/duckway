@@ -68,6 +68,21 @@ func (q *ApprovalQueries) GetPendingScoped(placeholderID, scope string) (*models
 	return &a, nil
 }
 
+// GetPendingTokenWide returns the newest pending token-wide approval (empty
+// scope) for a phantom token, so retries reuse it instead of queueing another.
+func (q *ApprovalQueries) GetPendingTokenWide(placeholderID string) (*models.Approval, error) {
+	var a models.Approval
+	err := q.db.QueryRow(
+		`SELECT id, placeholder_id, status, approved_at, expires_at, request_info, created_at
+		 FROM approvals WHERE placeholder_id = ? AND scope = '' AND status = 'pending' ORDER BY created_at DESC LIMIT 1`,
+		placeholderID,
+	).Scan(&a.ID, &a.PlaceholderID, &a.Status, &a.ApprovedAt, &a.ExpiresAt, &a.RequestInfo, &a.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
 func (q *ApprovalQueries) GetPending(placeholderID string) (*models.Approval, error) {
 	var a models.Approval
 	err := q.db.QueryRow(

@@ -123,3 +123,33 @@ func TestHeldRetriesAndDeniedRepeatsDoNotFloodTheLog(t *testing.T) {
 		t.Fatalf("acl_denied rows=%d, want 1 (coalesced per minute)", denied)
 	}
 }
+
+// Token-wide holds: retries reuse the one pending approval (one notification-worthy
+// approval, one held row) instead of queueing a new approval per attempt.
+func TestTokenWideHoldRetriesReuseThePendingApproval(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	t.Cleanup(up.Close)
+	f := newProxyFixture(t, up.URL)
+	ph, _ := f.placeholderQ.GetByID(f.placeholderID)
+	ph.RequiresApproval = true
+	if err := f.placeholderQ.Update(ph); err != nil {
+		t.Fatal(err)
+	}
+	notif := &countNotifier{}
+	h := newProxyHandler(f).WithApprovalNotifier(notif)
+	for i := 0; i < 8; i++ {
+		if code, _ := doProxy(h, withClient(httptest.NewRequest("GET", "/proxy/anthropic/v1/models", nil), f.client)); code != http.StatusForbidden {
+			t.Fatalf("attempt %d: %d", i, code)
+		}
+	}
+	pending, _ := f.approvalQ.ListPending()
+	held := 0
+	for _, r := range logRows(t, f.rawDB) {
+		if r.decision == "held" {
+			held++
+		}
+	}
+	if len(pending) != 1 || held != 1 || len(notif.all()) != 1 {
+		t.Fatalf("pending=%d held rows=%d notifications=%d, want 1 each", len(pending), held, len(notif.all()))
+	}
+}

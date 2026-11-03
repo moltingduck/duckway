@@ -1882,6 +1882,15 @@ func (h *ProxyHandler) holdForApproval(w http.ResponseWriter, r *http.Request, c
 	var approvalID string
 	var created bool
 	if scope == "" {
+		// Token-wide hold: a retry while an approval is already pending reuses it
+		// (no new approval, no new notification, no new held log row).
+		if p, perr := h.approvals.GetPendingTokenWide(placeholderID); perr == nil {
+			approvalID = p.ID
+		}
+	}
+	if scope == "" && approvalID != "" {
+		// reuse: created stays false
+	} else if scope == "" {
 		id, err := CreatePendingApprovalFor(h.approvals, placeholderID, method, path, query, bodyHash, scope, rule)
 		if err != nil {
 			log.Printf("failed to create approval: %v", err)
