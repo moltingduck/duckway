@@ -2,6 +2,7 @@ package queries
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -179,7 +180,8 @@ func ApprovalExpiry(d time.Duration) string {
 	return time.Now().UTC().Add(d).Format(ApprovalTimeLayout)
 }
 
-// Approve marks an approval granted until expiresAt, a UTC timestamp in
+// Approve marks a PENDING approval granted until expiresAt (anything already
+// decided is left untouched and ErrApprovalNotPending is returned), a UTC timestamp in
 // ApprovalTimeLayout (see ApprovalExpiry). Anything else is an error: the
 // value is stored as text and compared with datetime('now'), so an
 // unrecognised string would sort wrongly and might never expire.
@@ -187,16 +189,40 @@ func (q *ApprovalQueries) Approve(id string, expiresAt string) error {
 	if _, err := time.Parse(ApprovalTimeLayout, expiresAt); err != nil {
 		return fmt.Errorf("approval expiry %q must be a UTC timestamp %q", expiresAt, ApprovalTimeLayout)
 	}
-	_, err := q.db.Exec(
-		"UPDATE approvals SET status = 'approved', approved_at = datetime('now'), expires_at = ? WHERE id = ?",
+	res, err := q.db.Exec(
+		"UPDATE approvals SET status = 'approved', approved_at = datetime('now'), expires_at = ? WHERE id = ? AND status = 'pending'",
 		expiresAt, id,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return requireOneRow(res)
 }
 
+// Reject marks a PENDING approval rejected. Anything already decided
+// (approved, rejected, ignored) is left untouched and ErrApprovalNotPending is
+// returned, so a stale form or chat button cannot overturn a decision.
 func (q *ApprovalQueries) Reject(id string) error {
-	_, err := q.db.Exec("UPDATE approvals SET status = 'rejected' WHERE id = ?", id)
-	return err
+	res, err := q.db.Exec("UPDATE approvals SET status = 'rejected' WHERE id = ? AND status = 'pending'", id)
+	if err != nil {
+		return err
+	}
+	return requireOneRow(res)
+}
+
+// ErrApprovalNotPending means the approval was already decided (approved,
+// rejected or ignored), or does not exist: the decision was not changed.
+var ErrApprovalNotPending = errors.New("approval already decided (approved, rejected or expired)")
+
+func requireOneRow(res sql.Result) error {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrApprovalNotPending
+	}
+	return nil
 }
 
 // MarkExpiredAsIgnored finds all pending approvals older than ttlMinutes and

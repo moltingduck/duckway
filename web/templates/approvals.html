@@ -404,6 +404,8 @@ DW.live.on('approvals', function() { loadApprovals(true); }, {defer: true});
 })();
 
 document.addEventListener('DOMContentLoaded', function() {
+  // Redirect from the no-JS approve/reject form when the request was already decided.
+  try { if (new URLSearchParams(location.search).get('notice') === 'already-decided') showToast('That request was already decided, so nothing changed.', 'error'); } catch (e) { /* ignore */ }
   fetch('/api/clients', {credentials:'same-origin'}).then(function(r) { return r.json(); }).then(function(cs) {
     var sel = el('f-client');
     (cs || []).forEach(function(c) {

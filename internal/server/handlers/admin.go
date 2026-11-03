@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"errors"
 	"html/template"
 	"io/fs"
 	"log"
@@ -402,6 +403,10 @@ func (h *AdminHandler) ApproveAction(w http.ResponseWriter, r *http.Request) {
 		minutes = h.approvals.PlaceholderApprovalMinutes(a.PlaceholderID)
 	}
 	if err := h.approvals.Approve(id, queries.ApprovalExpiry(time.Duration(queries.ClampApprovalMinutes(minutes))*time.Minute)); err != nil {
+		if errors.Is(err, queries.ErrApprovalNotPending) {
+			http.Redirect(w, r, "/admin/approvals?notice=already-decided", http.StatusSeeOther)
+			return
+		}
 		log.Printf("approve %s: %v", id, err)
 	}
 	http.Redirect(w, r, "/admin/approvals", http.StatusSeeOther)
@@ -409,7 +414,13 @@ func (h *AdminHandler) ApproveAction(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminHandler) RejectAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	h.approvals.Reject(id)
+	if err := h.approvals.Reject(id); err != nil {
+		if errors.Is(err, queries.ErrApprovalNotPending) {
+			http.Redirect(w, r, "/admin/approvals?notice=already-decided", http.StatusSeeOther)
+			return
+		}
+		log.Printf("reject %s: %v", id, err)
+	}
 	http.Redirect(w, r, "/admin/approvals", http.StatusSeeOther)
 }
 

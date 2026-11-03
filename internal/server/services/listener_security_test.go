@@ -171,3 +171,37 @@ func TestMdSafeNeutralisesBackticksInPlainFields(t *testing.T) {
 		t.Fatalf("telegram text still has request-controlled backticks: %s", sent)
 	}
 }
+
+// A chat button pressed on an already-decided approval is answered once, with
+// "Already decided", and never claims success.
+func TestTelegramCallbackAlreadyDecidedAnswersOnce(t *testing.T) {
+	var answers []string
+	var edits int
+	p := NewTelegramPoller("1:x", "2", func(string) error { return queries.ErrApprovalNotPending }, func(string) error { return queries.ErrApprovalNotPending })
+	p.client = &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		if strings.Contains(r.URL.Path, "answerCallbackQuery") {
+			answers = append(answers, string(b))
+		}
+		if strings.Contains(r.URL.Path, "editMessageText") {
+			edits++
+		}
+		return okJSON(`{}`), nil
+	})}
+	for _, data := range []string{"approve:a1", "reject:a1"} {
+		answers, edits = nil, 0
+		p.handleCallback(&tgCallbackQuery{ID: "cb1", Data: data})
+		if len(answers) != 1 || !strings.Contains(answers[0], "Already decided") || edits != 0 {
+			t.Fatalf("%s: answers=%v edits=%d", data, answers, edits)
+		}
+	}
+}
+
+func TestDecisionFailureText(t *testing.T) {
+	if decisionFailure(queries.ErrApprovalNotPending) != "Already decided" {
+		t.Fatal("already-decided wording")
+	}
+	if !strings.HasPrefix(decisionFailure(errors.New("disk")), "Failed:") {
+		t.Fatal("other errors keep their text")
+	}
+}

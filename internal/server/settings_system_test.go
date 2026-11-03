@@ -145,3 +145,31 @@ func TestApprovalScopeKeyIsReservedInSettingsAPI(t *testing.T) {
 		t.Fatalf("GET exposes the key: %s", rec.Body.String())
 	}
 }
+
+// The console API and the no-JS form refuse to change a decided approval.
+func TestDecidedApprovalCannotBeRevivedThroughConsole(t *testing.T) {
+	s, shared := newClientDetailServer(t)
+	seedDetailClient(t, s, "c1", "alpha", "tok1")
+	svcExec(t, s, `PRAGMA foreign_keys = OFF`)
+	svcExec(t, s, `INSERT INTO approvals (id, placeholder_id, status, expires_at) VALUES ('ap-rej','ph1','rejected',NULL), ('ap-ok','ph1','approved','2030-01-01 00:00:00')`)
+	rec := svcDo(s, shared, http.MethodPost, "/api/approvals/ap-rej/approve", `{}`, true)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("api approve of a rejected approval => %d %s", rec.Code, rec.Body.String())
+	}
+	rec = svcDo(s, shared, http.MethodPost, "/api/approvals/ap-ok/reject", ``, true)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("api reject of an approved approval => %d", rec.Code)
+	}
+	for _, path := range []string{"/admin/approvals/ap-rej/approve", "/admin/approvals/ap-ok/reject"} {
+		rec = svcDo(s, shared, http.MethodPost, path, ``, true)
+		if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "notice=already-decided") {
+			t.Fatalf("%s => %d Location=%q", path, rec.Code, rec.Header().Get("Location"))
+		}
+	}
+	var st1, st2, exp string
+	_ = s.db.QueryRow(`SELECT status FROM approvals WHERE id='ap-rej'`).Scan(&st1)
+	_ = s.db.QueryRow(`SELECT status, expires_at FROM approvals WHERE id='ap-ok'`).Scan(&st2, &exp)
+	if st1 != "rejected" || st2 != "approved" || exp != "2030-01-01 00:00:00" {
+		t.Fatalf("decisions changed: %q %q %q", st1, st2, exp)
+	}
+}

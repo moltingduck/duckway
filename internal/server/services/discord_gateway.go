@@ -395,6 +395,7 @@ func (g *DiscordGateway) handleCommand(msg messageCreateData) {
 		}
 		if err := g.onReject(approvalID); err != nil {
 			g.react(msg.ChannelID, msg.ID, "❌")
+			g.sendMessage(msg.ChannelID, fmt.Sprintf("Could not reject `%s`: %s", approvalID, decisionFailure(err)))
 		} else {
 			g.react(msg.ChannelID, msg.ID, "🚫")
 			g.sendMessage(msg.ChannelID, fmt.Sprintf("🚫 Rejected `%s` by %s", approvalID, msg.Author.Username))

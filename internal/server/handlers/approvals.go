@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -101,6 +102,10 @@ func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.approvals.Approve(id, queries.ApprovalExpiry(time.Duration(queries.ClampApprovalMinutes(req.DurationMinutes))*time.Minute)); err != nil {
+		if errors.Is(err, queries.ErrApprovalNotPending) {
+			jsonError(w, "approval already decided", http.StatusConflict) // decided concurrently
+			return
+		}
 		jsonError(w, "failed to approve", http.StatusInternalServerError)
 		return
 	}
@@ -121,6 +126,10 @@ func (h *ApprovalHandler) Reject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.approvals.Reject(id); err != nil {
+		if errors.Is(err, queries.ErrApprovalNotPending) {
+			jsonError(w, "approval already decided", http.StatusConflict)
+			return
+		}
 		jsonError(w, "failed to reject", http.StatusInternalServerError)
 		return
 	}

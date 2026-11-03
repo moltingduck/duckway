@@ -104,14 +104,16 @@ type tgCallbackQuery struct {
 }
 
 func (p *TelegramPoller) handleCallback(cb *tgCallbackQuery) {
-	// Answer the callback to remove the loading spinner
-	p.answerCallback(cb.ID, "")
+	// Answer exactly once (Telegram accepts a single answer per callback): empty
+	// on success, a short reason when the decision could not be applied.
+	reply := ""
+	defer func() { p.answerCallback(cb.ID, reply) }()
 
 	data := cb.Data
 	if strings.HasPrefix(data, "approve:") {
 		approvalID := strings.TrimPrefix(data, "approve:")
 		if err := p.onApprove(approvalID); err != nil {
-			p.answerCallback(cb.ID, "Failed: "+err.Error())
+			reply = decisionFailure(err)
 			return
 		}
 		p.editMessage(cb.Message.Chat.ID, cb.Message.MessageID,
@@ -119,11 +121,21 @@ func (p *TelegramPoller) handleCallback(cb *tgCallbackQuery) {
 	} else if strings.HasPrefix(data, "reject:") {
 		approvalID := strings.TrimPrefix(data, "reject:")
 		if err := p.onReject(approvalID); err != nil {
+			reply = decisionFailure(err)
 			return
 		}
 		p.editMessage(cb.Message.Chat.ID, cb.Message.MessageID,
 			fmt.Sprintf("🚫 Rejected `%s` by @%s", approvalID, cb.From.Username))
 	}
+}
+
+// decisionFailure is the short reply for a button press that did not change
+// the approval: "Already decided" when it was decided before, else the error.
+func decisionFailure(err error) string {
+	if strings.Contains(err.Error(), "already decided") {
+		return "Already decided"
+	}
+	return "Failed: " + err.Error()
 }
 
 func (p *TelegramPoller) getUpdates() ([]tgUpdate, error) {

@@ -379,11 +379,11 @@ func TestKeyResolver_Resolve_ApprovalGranted(t *testing.T) {
 	f.insertAPIKey(t, keyID, svcID, realKey)
 	f.insertPlaceholderDirect(t, phID, phToken, svcID, keyID, clientID, true)
 
-	// Insert an approved approval that does not expire.
+	// Insert a pending approval, then approve it (far-future expiry) below.
 	approval := &models.Approval{
 		ID:            "appr-1",
 		PlaceholderID: phID,
-		Status:        "approved",
+		Status:        "pending",
 	}
 	if err := f.approvals.Create(approval); err != nil {
 		t.Fatalf("create approval: %v", err)
