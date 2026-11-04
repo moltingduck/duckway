@@ -189,7 +189,7 @@
       })}</ul>` : DW.html`<p class="text-sm text-muted">No clients use this bundle yet.</p>`}
       <h3>Phantom tokens from this bundle</h3>
       ${phs.length ? DW.html`<div class="table-wrap"><table class="kb-phtable"><thead><tr><th scope="col">Client</th><th scope="col">Service</th><th scope="col">Env name</th><th scope="col">Status</th></tr></thead><tbody>${phs.map(function (p) {
-        return DW.html`<tr><td><a class="nm-clip" title="${p.client_name || p.client_id}" href="/admin/clients/${p.client_id}">${p.client_name || p.client_id}</a></td><td>${p.service_name || p.service_id}</td><td class="mono">${p.env_name}</td><td>${p.is_active ? DW.html`<span class="badge badge-green">active</span>` : DW.html`<span class="badge badge-gray">inactive</span>`}</td></tr>`;
+        return DW.html`<tr><td><a class="nm-clip" title="${p.client_name || p.client_id}" href="/admin/clients/${p.client_id}">${p.client_name || p.client_id}</a></td><td>${p.service_name || p.service_id}</td><td><span class="mono-text env-clip" title="${p.env_name}">${p.env_name}</span></td><td>${p.is_active ? DW.html`<span class="badge badge-green">active</span>` : DW.html`<span class="badge badge-gray">inactive</span>`}</td></tr>`;
       })}</tbody></table></div>` : DW.html`<p class="text-sm text-muted">No phantom tokens generated yet. They appear when a client is assigned this bundle.</p>`}
     </section>`;
   }

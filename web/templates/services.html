@@ -247,7 +247,7 @@ function renderList() {
     var st = statOf(s.id);
     return DW.html`<tr>
       <td class="cl-c-name" data-label="Service"><button type="button" class="cl-name sv-link" data-action="svOpen" data-id="${s.id}">${s.display_name || s.name}</button><span class="cl-id">${s.name}</span></td>
-      <td class="sv-c-host mono text-sm" data-label="Host">${hostSpans(s.host_pattern)}</td>
+      <td class="sv-c-host mono-text text-sm" data-label="Host">${hostSpans(s.host_pattern)}</td>
       <td data-label="Auth"><span class="cl-pill cl-pill-info">${s.auth_type}</span></td>
       <td data-label="Delivery">${mode === 'loan_proxy' ? DW.raw('<span class="cl-pill cl-pill-warn">Direct (loan_proxy)</span>') : DW.raw('<span class="cl-pill cl-pill-mute">Gateway (MITM)</span>')}</td>
       <td data-label="Credentials">${SV.statsOK ? (st.credentials > 0 ? DW.html`<a href="${'/admin/credentials?service=' + encodeURIComponent(s.name)}">${plural(st.credentials, 'credential')}</a>` : plural(st.credentials, 'credential')) : 'Unavailable'}</td>

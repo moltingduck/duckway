@@ -104,7 +104,10 @@ func TestOnboardingHasNoInPageCrumb(t *testing.T) {
 // service host patterns break only at commas.
 func TestClientNamesAndPillsAreClippedEverywhere(t *testing.T) {
 	css := readWeb(t, "static/style.css")
-	mustContain(t, "style.css", css, ".nm-clip { display: inline-block; max-width: 12rem;", ".sv-host { display: inline-block;")
+	mustContain(t, "style.css", css, ".nm-clip { white-space: nowrap; }", ".lg-clip { white-space: nowrap; }", ".sv-host { display: inline-block; white-space: nowrap; }")
+	if strings.Contains(css, "max-width: 12rem; overflow: hidden") || strings.Contains(css, ".lg-clip { display: inline-block; max-width") {
+		t.Error("names must show in full on desktop, not be ellipsised")
+	}
 	for name, want := range map[string][]string{
 		"templates/phantom_tokens.html": {`class="nm-clip" title="{{.ClientName}}"`, `cl-pill cl-pill-info nm-clip`},
 		"templates/approvals.html":      {`appr-client nm-clip`},
@@ -119,4 +122,20 @@ func TestClientNamesAndPillsAreClippedEverywhere(t *testing.T) {
 	} {
 		mustContain(t, name, readWeb(t, name), want...)
 	}
+}
+
+// Env-var names stay on one line, and mono text in a cell is a plain font (no whole-cell slab).
+func TestEnvVarNamesAreNowrapAndMonoCellsHaveNoSlab(t *testing.T) {
+	css := readWeb(t, "static/style.css")
+	mustContain(t, "style.css", css,
+		".mono-text { font-family: var(--mono); font-size: 0.8125rem; }",
+		".env-clip, .pt-env, .cd-env { white-space: nowrap; }")
+	pt := readWeb(t, "templates/phantom_tokens.html")
+	mustContain(t, "phantom_tokens.html", pt, `class="pt-env" title="{{.EnvName}}"`, `<td class="pt-c-token mono-text"`)
+	if strings.Contains(pt, `pt-c-token mono"`) {
+		t.Error("the token cell must not use the .mono slab")
+	}
+	mustContain(t, "services.html", readWeb(t, "templates/services.html"), `<td class="sv-c-host mono-text text-sm"`)
+	mustContain(t, "key_bundles.html", readWeb(t, "templates/key_bundles.html"), `class="mono-text env-clip" title="${p.env_name}"`)
+	mustContain(t, "client_detail.html", readWeb(t, "templates/client_detail.html"), `class="cd-env" title="${p.envName}"`)
 }

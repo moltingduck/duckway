@@ -783,7 +783,7 @@ pre code, pre kbd, pre samp { overflow-wrap: normal; word-break: normal; }
 /* The detail panel exists only while a request is selected; until then the table has the full width. */
 .lg-split.lg-has-detail { grid-template-columns: minmax(0, 1fr) 22rem; }
 .lg-detail:not(.open) { display: none; }
-.lg-clip { display: inline-block; max-width: 11rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.lg-clip { white-space: nowrap; } /* names show in full; wide tables scroll inside their card */
 .lg-req { min-width: 15rem; }
 .lg-req .lg-path { overflow-wrap: anywhere; }
 .lg-list { padding: 0; overflow: hidden; margin-bottom: 0; }
@@ -1263,7 +1263,7 @@ a.ro-stat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .sv-link { background: none; border: 0; padding: 0; min-height: 2.25rem; font: inherit; text-align: left; cursor: pointer; }
 .sv-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .sv-table td.sv-c-host { min-width: 14rem; }
-.sv-host { display: inline-block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+.sv-host { display: inline-block; white-space: nowrap; } /* a host never breaks; the list wraps only between hosts */
 .sv-table { min-width: 56rem; }
 .modal.sv-drawer { max-width: 44rem; overflow-x: hidden; }
 .sv-head-text { min-width: 0; }
@@ -2261,13 +2261,20 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
 .cn-set-sum { margin-left: auto; text-align: right; min-width: 0; overflow-wrap: anywhere; }
 
 /* ---- vp1104b: client names and source pills never break mid-word (cards at phone width may wrap) ---- */
-.nm-clip { display: inline-block; max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.nm-clip { white-space: nowrap; }
 @media (max-width: 900px) {
-  .nm-clip { max-width: 100%; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
-  .sv-host { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+  .nm-clip { white-space: normal; overflow-wrap: anywhere; }
 }
 @media (min-width: 901px) {
   /* Clipped cells need a floor, or auto table layout squeezes them to nothing. */
   .pt-c-client, .pt-c-source { min-width: 8.5rem; }
   .pt-c-source .cl-pill { white-space: nowrap; }
+}
+
+/* ---- vp1104b r2: env-var names stay whole; mono text in table cells has no slab ---- */
+/* The .mono utility paints a background block, which on a <td> fills the whole cell and flips with row hover. */
+.mono-text { font-family: var(--mono); font-size: 0.8125rem; }
+.env-clip, .pt-env, .cd-env { white-space: nowrap; }
+@media (max-width: 900px) {
+  .pt-env, .cd-env, .env-clip { white-space: normal; overflow-wrap: anywhere; }
 }

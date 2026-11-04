@@ -47,13 +47,13 @@
       <tbody id="pt-list">
         {{range .Placeholders.Rows}}
         <tr class="pt-row" id="pt-{{.ID}}" data-id="{{.ID}}" data-client="{{.ClientID}}" data-service="{{.ServiceName}}" data-source="{{.Source}}" data-approval="{{.Approval}}" data-text="{{.EnvName}} {{.ClientName}} {{.Credential}} {{.ServiceName}} {{.BundleName}}">
-          <td class="pt-c-env" data-label="Environment variable"><a class="pt-env" href="/admin/phantom-tokens/{{.ID}}">{{.EnvName}}</a>{{if .Inactive}} <span class="cl-pill cl-pill-mute">Inactive</span>{{end}}</td>
+          <td class="pt-c-env" data-label="Environment variable"><a class="pt-env" title="{{.EnvName}}" href="/admin/phantom-tokens/{{.ID}}">{{.EnvName}}</a>{{if .Inactive}} <span class="cl-pill cl-pill-mute">Inactive</span>{{end}}</td>
           <td class="pt-c-client" data-label="Client"><a class="nm-clip" title="{{.ClientName}}" href="/admin/clients/{{.ClientID}}">{{.ClientName}}</a></td>
           <td class="pt-c-cred" data-label="Credential">{{if .Credential}}{{.Credential}}{{if eq .CredKind "pool"}} <span class="cl-pill cl-pill-info">Pool</span>{{end}}{{else}}<span class="text-muted">None</span>{{end}} <span class="text-muted pt-svc">· {{.ServiceName}}</span></td>
           <td class="pt-c-source" data-label="Source">{{if eq .Source "bundle"}}<span class="cl-pill cl-pill-info nm-clip" title="Bundle{{if .BundleName}}: {{.BundleName}}{{end}}">Bundle{{if .BundleName}}: {{.BundleName}}{{end}}</span>{{else}}<span class="cl-pill cl-pill-mute nm-clip">Manual</span>{{end}}</td>
           <td class="pt-c-approval" data-label="Approval">{{if eq .Approval "required"}}<span class="cl-pill cl-pill-warn">Required</span>{{else}}<span class="cl-pill cl-pill-ok">Not required</span>{{end}}</td>
           <td class="pt-c-rules" data-label="Access rules">{{if eq .RulesKind "none"}}<span class="text-muted">{{.RulesText}}</span>{{else if eq .RulesKind "invalid"}}<span class="cl-pill cl-pill-bad">{{.RulesText}}</span>{{else if eq .RulesKind "custom"}}<span class="cl-pill cl-pill-warn">{{.RulesText}}</span>{{else}}<span class="cl-pill cl-pill-info">{{.RulesText}}</span>{{end}}</td>
-          <td class="pt-c-token mono" data-label="Token">{{.Masked}}</td>
+          <td class="pt-c-token mono-text" data-label="Token">{{.Masked}}</td>
           <td class="pt-c-actions"><div class="pt-rowactions"><a class="btn btn-sm" href="/admin/phantom-tokens/{{.ID}}" aria-label="Open {{.EnvName}}">Open</a><button type="button" class="btn btn-sm btn-dz" data-action="ptAskUnassign" data-id="{{.ID}}" data-env="{{.EnvName}}" data-client="{{.ClientName}}" data-source="{{.Source}}" aria-label="Unassign {{.EnvName}}">Unassign</button></div></td>
         </tr>
         {{end}}
