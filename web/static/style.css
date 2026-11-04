@@ -2297,5 +2297,25 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
   .cn-table td, .cn-table .badge, .sc-table td, .sc-table code, .sc-table .mono { white-space: nowrap; }
   td code, td .mono, td strong, td .nb { white-space: nowrap; }
   /* Client names are unbounded input: a long one is clipped (full name in the title). */
-  .cl-table .cl-c-name .cl-name { display: inline-block; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+  /* The one rule for client names (unbounded user input): nowrap, 32ch cap, ellipsis; the full name is in the title attribute. */
+  .nm-clip, .lg-clip, .cl-table .cl-c-name .cl-name { display: inline-block; max-width: var(--nm-cap, 32ch); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+  /* Prose columns wrap at word boundaries and keep a floor so nowrap neighbours cannot squeeze them. */
+  .sc-table td.sc-notes { white-space: normal; min-width: 22rem; }
+  /* Tight tables use a smaller cap so their headers stay inside the card (full name stays in the title). */
+  .lg-table { --nm-cap: 22ch; }
+  .ov-recent table, .pt-table, .cn-table, .cd-table { --nm-cap: 16ch; }
+  .pt-table td.pt-c-rules { min-width: 10rem; }
+  .pt-table td.pt-c-actions { min-width: 10rem; }
+  .pt-table { --nm-cap: 14ch; }
+  .cd-table th, .cd-table td { padding-inline: 0.4rem; }
+  .cd-table th { white-space: normal; }
+  .cd-side { flex-basis: 18.5rem; min-width: 18.5rem; }
+  .pt-table th, .pt-table td { padding-inline: 0.5rem; }
+  .cd-table td[data-label="Approval"] { white-space: normal; min-width: 9rem; }
+  /* Long literal values that cannot fit a docs column break anywhere (the one allowed mid-word break). */
+  td.prose, td.prose code, td.prose strong { white-space: normal; }
+  td.wrap-ok, td.wrap-ok code { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+  /* Canary: the reference table needs the full width, so the help card moves below. */
+  .cn-layout { grid-template-columns: minmax(0, 1fr); }
+  .cn-help { position: static; }
 }

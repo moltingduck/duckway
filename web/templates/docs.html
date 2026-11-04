@@ -248,8 +248,8 @@ duckway init</code></pre>
   <table>
     <thead><tr><th>Provider</th><th>What to paste</th><th>How to get it</th></tr></thead>
     <tbody>
-      <tr><td>Claude Code</td><td><code>{"claudeAiOauth":{"accessToken":"...","refreshToken":"...","expiresAt":...}}</code></td><td>Run <code>claude login</code>, then copy <code>~/.claude/.credentials.json</code></td></tr>
-      <tr><td>Generic OAuth</td><td><code>{"access_token":"...","refresh_token":"...","expires_in":3600}</code></td><td>Copy the provider token endpoint response or extract with <code>jq</code></td></tr>
+      <tr><td>Claude Code</td><td class="wrap-ok"><code>{"claudeAiOauth":{"accessToken":"...","refreshToken":"...","expiresAt":...}}</code></td><td>Run <code>claude login</code>, then copy <code>~/.claude/.credentials.json</code></td></tr>
+      <tr><td>Generic OAuth</td><td class="wrap-ok"><code>{"access_token":"...","refresh_token":"...","expires_in":3600}</code></td><td>Copy the provider token endpoint response or extract with <code>jq</code></td></tr>
       <tr><td>Manual</td><td>Access token, refresh token, token endpoint, optional Unix-ms expiry</td><td>Copy values from the provider CLI, dashboard, or saved token JSON</td></tr>
     </tbody>
   </table>
@@ -377,9 +377,9 @@ curl https://api.openai.com/v1/chat/completions ...
     <thead><tr><th>Concept</th><th>What it is</th><th>Where it lives</th></tr></thead>
     <tbody>
       <tr><td><strong>Bot token</strong></td><td>The Discord bot's API key</td><td>Encrypted in <code>api_keys</code></td></tr>
-      <tr><td><strong>CC</strong></td><td><code>{bot, guild_id, category_id, client_id, agent_type}</code> — 1:1 with a client</td><td><code>control_channels</code> table</td></tr>
-      <tr><td><strong>Management channel</strong></td><td>Auto-created at CC create, named <code>&lt;client&gt;-control</code>. Accepts <code>!cmd</code>.</td><td><code>cc_channels</code> (kind=management)</td></tr>
-      <tr><td><strong>Task channel</strong></td><td>Created by <code>!new</code> or the MCP <code>discord_create_task_channel</code> tool. One per agent session.</td><td><code>cc_channels</code> (kind=task)</td></tr>
+      <tr><td><strong>CC</strong></td><td class="prose"><code>{bot, guild_id, category_id, client_id, agent_type}</code> — 1:1 with a client</td><td><code>control_channels</code> table</td></tr>
+      <tr><td><strong>Management channel</strong></td><td class="prose">Auto-created at CC create, named <code>&lt;client&gt;-control</code>. Accepts <code>!cmd</code>.</td><td><code>cc_channels</code> (kind=management)</td></tr>
+      <tr><td><strong>Task channel</strong></td><td class="prose">Created by <code>!new</code> or the MCP <code>discord_create_task_channel</code> tool. One per agent session.</td><td><code>cc_channels</code> (kind=task)</td></tr>
       <tr><td><strong>Session id</strong></td><td>The agent's resume/thread handle for the channel; persisted by the daemon</td><td><code>~/.duckway/cc-sessions.json</code> on the agent</td></tr>
       <tr><td><strong>Handle</strong></td><td>Opaque <code>dwch_…</code> id the agent + daemon see</td><td>Maps to real <code>channel_id</code> <span class="nb">server-side</span></td></tr>
     </tbody>

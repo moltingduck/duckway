@@ -162,6 +162,7 @@ func TestDesktopTableCellsNeverBreakWords(t *testing.T) {
 		".pt-table td.pt-c-rules { min-width: 13rem; }",
 		".cn-table td, .cn-table .badge, .sc-table td, .sc-table code, .sc-table .mono { white-space: nowrap; }",
 		"td code, td .mono, td strong, td .nb { white-space: nowrap; }",
-		".cl-table .cl-c-name .cl-name { display: inline-block; max-width: 32ch;")
+		".nm-clip, .lg-clip, .cl-table .cl-c-name .cl-name { display: inline-block; max-width: var(--nm-cap, 32ch);",
+		".sc-table td.sc-notes { white-space: normal; min-width: 22rem; }")
 	mustContain(t, "clients.html", readWeb(t, "templates/clients.html"), `class="cl-name" title="${c.name}"`)
 }
