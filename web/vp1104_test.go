@@ -193,3 +193,15 @@ func TestRemainingTablesAreCardsAtPhoneWidth(t *testing.T) {
 	mustContain(t, "logs.html", readWeb(t, "templates/logs.html"), `lg-c-time`, `lg-c-client`, `lg-c-svc`, `lg-c-dec`, `lg-c-st`, `lg-c-ms`, `data-action="openRow"`)
 	mustContain(t, "supplychain.html", readWeb(t, "templates/supplychain.html"), `class="sc-row"`, `sc-c-switch`, `sc-c-config`, `sc-c-writes`, `sc-notes`)
 }
+
+// Top-bar controls never wrap, the approvals item keeps its service, and client filters are capped.
+func TestTopBarApprovalsItemAndFilterCaps(t *testing.T) {
+	css := readWeb(t, "static/style.css")
+	mustContain(t, "style.css", css,
+		".topbar .menu-btn, .topbar .pal-trigger, .topbar .crumb-back, .live-status { flex: none; white-space: nowrap; }",
+		".crumbs li.crumb-current { overflow: hidden; text-overflow: ellipsis; }",
+		".appr-arrow { white-space: nowrap; overflow: visible; }",
+		".appr-row-top { flex-wrap: wrap; row-gap: 4px; }",
+		"#pt-f-client, #pt-f-service, #pt-f-source, #pt-f-approval, #f-client, #f-service, #f-credential, #f-status, #us-target { max-width: 14rem; text-overflow: ellipsis; }",
+		"#pt-f-client, #f-client { max-width: 11rem; }")
+}

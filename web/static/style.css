@@ -2383,3 +2383,29 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
   /* Free-text request paths are unbounded: capped with an ellipsis, full path in the title. */
   .ov-path, .lg-req .lg-path { display: inline-block; max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 }
+
+/* ---- vp1104e: top bar controls never wrap; approvals list item keeps its service; filter selects are capped ---- */
+.topbar .menu-btn, .topbar .pal-trigger, .topbar .crumb-back, .live-status { flex: none; white-space: nowrap; }
+.crumbs { flex: 1 1 0; min-width: 0; }
+.crumbs ol { flex-wrap: nowrap; }
+.crumbs li.crumb-current { overflow: hidden; text-overflow: ellipsis; }
+
+/* Approvals list item: the name gives way (ellipsis), the service and the pill never do. */
+.appr-client { flex: 1 1 0; min-width: 0; }
+.appr-arrow, .appr-row-top .ov-pill, .appr-row-top .cl-pill, .appr-row-top .badge, .appr-row-top .appr-pill { flex: none; max-width: none; }
+.appr-arrow { white-space: nowrap; overflow: visible; }
+@media (max-width: 900px) {
+  /* client name wraps on line 1; "-> service" and the pill share line 2; method and path are line 3 */
+  .appr-row-top { flex-wrap: wrap; row-gap: 4px; }
+  .appr-client { flex: 1 1 100%; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+  .appr-arrow { flex: 0 1 auto; }
+}
+
+/* Filters that list client names stay one row at desktop width. */
+@media (min-width: 901px) {
+  #pt-f-client, #pt-f-service, #pt-f-source, #pt-f-approval, #f-client, #f-service, #f-credential, #f-status, #us-target { max-width: 14rem; text-overflow: ellipsis; }
+  /* The client filter lists unbounded names: tighter, so the row keeps the search box and every other filter. */
+  #pt-f-client, #f-client { max-width: 11rem; }
+  .cl-filters .search-bar { flex-basis: 14rem; }
+  .lg-search { flex-basis: 200px; }
+}
