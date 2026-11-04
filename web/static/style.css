@@ -2328,9 +2328,58 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
   .cn-fleet tr { display: flex; flex-direction: column; gap: 0.3rem; padding: 0.875rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
   .cn-fleet tr:hover td, .cn-fleet tr:hover th { background: transparent; }
   .cn-fleet td, .cn-fleet th[scope="row"] { display: block; padding: 0; border: 0; background: transparent; white-space: normal; font-size: 0.8125rem; }
+  .cn-fleet td, .cn-fleet td.text-sm { white-space: normal; overflow-wrap: anywhere; min-width: 0; }
   .cn-fleet th[scope="row"] { font-size: 0.95rem; overflow-wrap: anywhere; }
   .cn-fleet th[scope="row"] .nm-clip { display: inline; white-space: normal; overflow-wrap: anywhere; max-width: none; }
   .cn-fleet td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 0.75rem; }
   .cn-fleet td.cn-act { margin-top: 0.25rem; }
   .cn-fleet td.cn-act .btn { min-height: 44px; }
+}
+
+/* ---- vp1104d: Overview recent requests, Request log and Supply chain become stacked cards at phone width ---- */
+@media (max-width: 900px) {
+  /* shared card shell */
+  .ov-recent table, .lg-table, .sc-table, .table-wrap .sc-table { min-width: 0; display: block; }
+  .sc-table td:last-child, .sc-table td:nth-child(4) { min-width: 0; white-space: normal; }
+  .ov-req .lg-clip, .lg-tr .lg-clip { display: inline; white-space: normal; overflow-wrap: anywhere; max-width: none; }
+  .ov-recent thead, .lg-table thead, .sc-table thead { display: none; }
+  .ov-recent tbody, .lg-table tbody, .sc-table tbody { display: flex; flex-direction: column; gap: 0.625rem; padding: 0.625rem; }
+  .ov-recent .table-wrap, .lg-list .table-wrap, .sc-table-wrap { overflow-x: visible; }
+  .ov-req, .lg-tr, .sc-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.3rem 0.75rem; align-items: center; padding: 0.75rem 0.875rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); min-width: 0; }
+  .ov-req td, .lg-tr td, .sc-row td, .sc-row th { display: block; padding: 0; border: 0; background: transparent; min-width: 0; white-space: normal; overflow-wrap: anywhere; font-size: 0.8125rem; }
+  .ov-req:hover td, .lg-tr:hover td, .sc-row:hover td, .sc-row:hover th { background: transparent; }
+
+  /* Overview recent: client + time / method + path + status / service */
+  .ov-c-client { grid-area: 1 / 1; font-weight: 600; font-size: 0.9375rem; }
+  .ov-c-time { grid-area: 1 / 2; text-align: right; }
+  .ov-c-path { grid-area: 2 / 1; }
+  .ov-c-status { grid-area: 2 / 2; text-align: right; }
+  .ov-c-svc { grid-area: 3 / 1 / auto / -1; color: var(--muted); }
+
+  /* Request log: client + time / method + path + status / service . credential / decision + latency; the whole card opens the detail */
+  .lg-tr { cursor: pointer; min-height: 44px; }
+  .lg-c-client { grid-area: 1 / 1; font-weight: 600; font-size: 0.9375rem; }
+  .lg-c-time { grid-area: 1 / 2; text-align: right; }
+  .lg-req { grid-area: 2 / 1; min-width: 0; }
+  .lg-c-st { grid-area: 2 / 2; text-align: right; }
+  .lg-c-svc { grid-area: 3 / 1 / auto / -1; color: var(--muted); }
+  .lg-c-dec { grid-area: 4 / 1; }
+  .lg-c-ms { grid-area: 4 / 2; text-align: right; }
+  .lg-tr .lg-rowbtn { min-height: 44px; }
+  .lg-req .lg-path { overflow-wrap: anywhere; }
+
+  /* Supply chain: manager + switch / config file / writes as tags / notes */
+  .sc-row th[scope="row"] { grid-area: 1 / 1; font-size: 0.9375rem; }
+  .sc-c-switch { grid-area: 1 / 2; }
+  .sc-c-config { grid-area: 2 / 1 / auto / -1; }
+  .sc-c-writes { grid-area: 3 / 1 / auto / -1; display: flex; flex-wrap: wrap; gap: 0.3rem; }
+  .sc-c-writes br { display: none; }
+  .sc-c-writes code { white-space: normal; overflow-wrap: anywhere; }
+  .sc-row td.sc-notes { grid-area: 4 / 1 / auto / -1; min-width: 0; color: var(--muted); }
+  .sc-row .sc-switch { min-height: 44px; }
+}
+
+@media (min-width: 901px) {
+  /* Free-text request paths are unbounded: capped with an ellipsis, full path in the title. */
+  .ov-path, .lg-req .lg-path { display: inline-block; max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 }

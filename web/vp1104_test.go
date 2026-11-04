@@ -176,3 +176,20 @@ func TestCanaryFleetIsCardsAtPhoneWidth(t *testing.T) {
 		".cn-fleet tr:hover td, .cn-fleet tr:hover th { background: transparent; }",
 		".cn-fleet td[data-label]::before { content: attr(data-label)")
 }
+
+// Overview recent requests, the Request log and Supply chain mitigations are stacked cards at phone width.
+func TestRemainingTablesAreCardsAtPhoneWidth(t *testing.T) {
+	css := readWeb(t, "static/style.css")
+	mustContain(t, "style.css", css,
+		".ov-recent thead, .lg-table thead, .sc-table thead { display: none; }",
+		".ov-req, .lg-tr, .sc-row { display: grid;",
+		".ov-c-client { grid-area: 1 / 1;", ".lg-c-client { grid-area: 1 / 1;", ".sc-c-writes { grid-area: 3 / 1 / auto / -1;",
+		".lg-tr { cursor: pointer; min-height: 44px; }")
+	d := readWeb(t, "templates/dashboard.html")
+	if n := strings.Count(d, `class="ov-req"`); n != 2 {
+		t.Errorf("dashboard: want server and live rows to share the ov-req card class, got %d", n)
+	}
+	mustContain(t, "dashboard.html", d, `ov-c-time`, `ov-c-client`, `ov-c-path`, `ov-c-status`, `ov-c-svc`)
+	mustContain(t, "logs.html", readWeb(t, "templates/logs.html"), `lg-c-time`, `lg-c-client`, `lg-c-svc`, `lg-c-dec`, `lg-c-st`, `lg-c-ms`, `data-action="openRow"`)
+	mustContain(t, "supplychain.html", readWeb(t, "templates/supplychain.html"), `class="sc-row"`, `sc-c-switch`, `sc-c-config`, `sc-c-writes`, `sc-notes`)
+}

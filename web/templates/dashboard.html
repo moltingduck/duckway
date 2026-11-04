@@ -54,12 +54,12 @@
       </thead>
       <tbody id="recent-body">
         {{range .RecentLogs}}
-        <tr>
-          <td class="text-muted text-sm">{{.CreatedAt}}</td>
-          <td>{{if .ClientName}}<span class="lg-clip" title="{{.ClientName}}">{{.ClientName}}</span>{{else}}<span class="text-muted">—</span>{{end}}</td>
-          <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
-          <td><span class="badge badge-blue">{{.Method}}</span> <span class="mono text-sm">{{.Path}}</span></td>
-          <td>{{if eq .Decision "held"}}<span class="ov-pill ov-pill-info">held</span>{{else if eq .Decision "acl_denied"}}<span class="ov-pill ov-pill-bad">403 ACL</span>{{else if .StatusCode}}<span class="badge {{if lt (deref .StatusCode) 400}}badge-green{{else}}badge-red{{end}}">{{deref .StatusCode}}</span>{{end}}</td>
+        <tr class="ov-req">
+          <td class="text-muted text-sm ov-c-time">{{.CreatedAt}}</td>
+          <td class="ov-c-client">{{if .ClientName}}<span class="lg-clip" title="{{.ClientName}}">{{.ClientName}}</span>{{else}}<span class="text-muted">—</span>{{end}}</td>
+          <td class="ov-c-svc"><span class="badge badge-blue">{{.ServiceName}}</span></td>
+          <td class="ov-c-path"><span class="badge badge-blue">{{.Method}}</span> <span class="mono-text text-sm ov-path" title="{{.Path}}">{{.Path}}</span></td>
+          <td class="ov-c-status">{{if eq .Decision "held"}}<span class="ov-pill ov-pill-info">held</span>{{else if eq .Decision "acl_denied"}}<span class="ov-pill ov-pill-bad">403 ACL</span>{{else if .StatusCode}}<span class="badge {{if lt (deref .StatusCode) 400}}badge-green{{else}}badge-red{{end}}">{{deref .StatusCode}}</span>{{end}}</td>
         </tr>
         {{else}}
         <tr><td colspan="5" class="text-muted">No requests yet</td></tr>
@@ -99,7 +99,7 @@
       var status = code ? DW.html`<span class="badge ${code < 400 ? 'badge-green' : 'badge-red'}">${code}</span>` : '';
       if (l.decision === 'held') status = DW.raw('<span class="ov-pill ov-pill-info">held</span>');
       else if (l.decision === 'acl_denied') status = DW.raw('<span class="ov-pill ov-pill-bad">403 ACL</span>');
-      return DW.html`<tr><td class="text-muted text-sm">${l.created_at}</td><td>${l.client_name ? DW.html`<span class="lg-clip" title="${l.client_name}">${l.client_name}</span>` : dash}</td><td><span class="badge badge-blue">${l.service_name}</span></td><td><span class="badge badge-blue">${l.method}</span> <span class="mono text-sm">${l.path}</span></td><td>${status}</td></tr>`;
+      return DW.html`<tr class="ov-req"><td class="text-muted text-sm ov-c-time">${l.created_at}</td><td class="ov-c-client">${l.client_name ? DW.html`<span class="lg-clip" title="${l.client_name}">${l.client_name}</span>` : dash}</td><td class="ov-c-svc"><span class="badge badge-blue">${l.service_name}</span></td><td class="ov-c-path"><span class="badge badge-blue">${l.method}</span> <span class="mono-text text-sm ov-path" title="${l.path}">${l.path}</span></td><td class="ov-c-status">${status}</td></tr>`;
     })}`);
   }
 
