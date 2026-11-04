@@ -2319,3 +2319,18 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
   .cn-layout { grid-template-columns: minmax(0, 1fr); }
   .cn-help { position: static; }
 }
+
+/* ---- vp1104c r3: canary fleet becomes cards at phone width (same pattern as the other list tables) ---- */
+@media (max-width: 900px) {
+  .table-wrap .cn-fleet, .cn-fleet { min-width: 0; display: block; }
+  .cn-fleet thead { display: none; }
+  .cn-fleet tbody { display: flex; flex-direction: column; gap: 0.625rem; }
+  .cn-fleet tr { display: flex; flex-direction: column; gap: 0.3rem; padding: 0.875rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+  .cn-fleet tr:hover td, .cn-fleet tr:hover th { background: transparent; }
+  .cn-fleet td, .cn-fleet th[scope="row"] { display: block; padding: 0; border: 0; background: transparent; white-space: normal; font-size: 0.8125rem; }
+  .cn-fleet th[scope="row"] { font-size: 0.95rem; overflow-wrap: anywhere; }
+  .cn-fleet th[scope="row"] .nm-clip { display: inline; white-space: normal; overflow-wrap: anywhere; max-width: none; }
+  .cn-fleet td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 0.75rem; }
+  .cn-fleet td.cn-act { margin-top: 0.25rem; }
+  .cn-fleet td.cn-act .btn { min-height: 44px; }
+}

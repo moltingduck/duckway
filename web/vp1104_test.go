@@ -166,3 +166,13 @@ func TestDesktopTableCellsNeverBreakWords(t *testing.T) {
 		".sc-table td.sc-notes { white-space: normal; min-width: 22rem; }")
 	mustContain(t, "clients.html", readWeb(t, "templates/clients.html"), `class="cl-name" title="${c.name}"`)
 }
+
+// The canary fleet is a card list at phone width, with a labelled row per column.
+func TestCanaryFleetIsCardsAtPhoneWidth(t *testing.T) {
+	cn := readWeb(t, "templates/canary.html")
+	mustContain(t, "canary.html", cn, `class="cn-table cn-fleet"`, `data-label="Canary"`, `data-label="Tokens"`, `data-label="Last generated"`, `data-label="Last triggered"`)
+	mustContain(t, "style.css", readWeb(t, "static/style.css"),
+		".cn-fleet thead { display: none; }",
+		".cn-fleet tr:hover td, .cn-fleet tr:hover th { background: transparent; }",
+		".cn-fleet td[data-label]::before { content: attr(data-label)")
+}

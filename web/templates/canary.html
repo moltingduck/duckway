@@ -29,7 +29,7 @@
         <button type="button" class="btn btn-sm" data-action="cnRetryFleet">Retry</button>
       </div>
       <div class="table-wrap">
-        <table class="cn-table">
+        <table class="cn-table cn-fleet">
           <thead><tr><th scope="col">Client</th><th scope="col">Canary</th><th scope="col">Tokens</th><th scope="col">Last generated</th><th scope="col">Last triggered</th><th scope="col"><span class="cn-sr">Action</span></th></tr></thead>
           <tbody id="cn-fleet-body"><tr><td colspan="6" class="text-muted">Loading…</td></tr></tbody>
         </table>
@@ -86,7 +86,7 @@
     <details>
       <summary>Token types and paths</summary>
       <div class="table-wrap">
-        <table class="cn-table cn-reftable">
+        <table class="cn-table cn-reftable cn-fleet">
           <thead><tr><th scope="col">Type</th><th scope="col">Category</th><th scope="col">Deploy path</th></tr></thead>
           <tbody id="cn-types-ref"></tbody>
         </table>
@@ -154,7 +154,7 @@
       else if (!c.canary_enabled) state = DW.html`<span class="cn-pill cn-muted">Disabled</span>`;
       else state = DW.html`<span class="cn-pill cn-warnpill">Not deployed</span>`;
       var cur = c.client_id === selected ? DW.raw(' aria-current="true"') : '';
-      return DW.html`<tr><th scope="row" class="cn-name"><span class="nm-clip" title="${c.name}">${c.name}</span></th><td>${state}</td><td>${c.token_count}</td><td class="text-sm">${when(c.last_created_at)}</td><td class="text-sm text-muted">Not recorded</td><td class="cn-act"><button type="button" class="btn btn-sm" data-action="cnSelect" data-client-id="${c.client_id}"${cur}>${c.client_id === selected ? 'Selected' : 'Manage'}<span class="cn-sr"> ${c.name}</span></button></td></tr>`;
+      return DW.html`<tr><th scope="row" class="cn-name"><span class="nm-clip" title="${c.name}">${c.name}</span></th><td data-label="Canary">${state}</td><td data-label="Tokens">${c.token_count}</td><td class="text-sm" data-label="Last generated">${when(c.last_created_at)}</td><td class="text-sm text-muted" data-label="Last triggered">Not recorded</td><td class="cn-act"><button type="button" class="btn btn-sm" data-action="cnSelect" data-client-id="${c.client_id}"${cur}>${c.client_id === selected ? 'Selected' : 'Manage'}<span class="cn-sr"> ${c.name}</span></button></td></tr>`;
     });
     DW.setHTML(body, DW.html`${rows}`);
   }
@@ -227,9 +227,9 @@
       var link = t.manage_url
         ? DW.html`<a href="${safeURL(t.manage_url)}" target="_blank" rel="noopener noreferrer" class="mono text-sm">${short}</a>`
         : DW.html`<span class="mono text-sm text-muted">${short}</span>`;
-      return DW.html`<tr><td><span class="badge badge-blue">${t.token_type}</span></td><td>${link}</td><td class="mono text-sm">~/${t.deploy_path}</td><td class="text-sm text-muted">${t.created_at}</td><td class="cn-act"><button type="button" class="btn btn-sm btn-danger" data-action="cnDeleteToken" data-token-id="${t.id}">Delete<span class="cn-sr"> ${t.token_type}</span></button></td></tr>`;
+      return DW.html`<tr><td><span class="badge badge-blue">${t.token_type}</span></td><td data-label="Token ID">${link}</td><td class="mono-text text-sm" data-label="Deploy path">~/${t.deploy_path}</td><td class="text-sm text-muted" data-label="Created">${t.created_at}</td><td class="cn-act"><button type="button" class="btn btn-sm btn-danger" data-action="cnDeleteToken" data-token-id="${t.id}">Delete<span class="cn-sr"> ${t.token_type}</span></button></td></tr>`;
     });
-    DW.setHTML(box, DW.html`<div class="table-wrap"><table class="cn-table"><thead><tr><th scope="col">Type</th><th scope="col">Token ID</th><th scope="col">Deploy path</th><th scope="col">Created</th><th scope="col"><span class="cn-sr">Action</span></th></tr></thead><tbody>${rows}</tbody></table></div><div class="cn-btnrow"><button type="button" class="btn" data-action="cnRegenAll"${canAct ? '' : DW.raw(' disabled aria-describedby="cn-noalert-why"')}>Regenerate all</button><button type="button" class="btn btn-danger" data-action="cnDeleteAll">Delete all</button></div>${canAct ? '' : DW.html`<p class="text-sm cn-inline-warn" id="cn-noalert-why">Regenerate is disabled until an alert email is set under Settings: without it no new tokens could be created, and the current ones are kept. Deleting stays available.</p>`}`);
+    DW.setHTML(box, DW.html`<div class="table-wrap"><table class="cn-table cn-fleet"><thead><tr><th scope="col">Type</th><th scope="col">Token ID</th><th scope="col">Deploy path</th><th scope="col">Created</th><th scope="col"><span class="cn-sr">Action</span></th></tr></thead><tbody>${rows}</tbody></table></div><div class="cn-btnrow"><button type="button" class="btn" data-action="cnRegenAll"${canAct ? '' : DW.raw(' disabled aria-describedby="cn-noalert-why"')}>Regenerate all</button><button type="button" class="btn btn-danger" data-action="cnDeleteAll">Delete all</button></div>${canAct ? '' : DW.html`<p class="text-sm cn-inline-warn" id="cn-noalert-why">Regenerate is disabled until an alert email is set under Settings: without it no new tokens could be created, and the current ones are kept. Deleting stays available.</p>`}`);
   }
 
   function setDetailState(msg) { $('cn-detail-state').textContent = msg; }
@@ -362,7 +362,7 @@
     DW.setHTML(apiBox, DW.html`${apiT.map(one)}`);
     DW.setHTML(localBox, DW.html`${locT.map(one)}`);
     DW.setHTML($('cn-types-ref'), DW.html`${allTypes.map(function(t) {
-      return DW.html`<tr><td><span class="badge badge-blue">${t.type}</span></td><td><span class="badge ${t.category === 'api' ? 'badge-green' : 'badge-gray'}">${t.category}</span></td><td class="mono text-sm">~/${t.deploy_path || ''}</td></tr>`;
+      return DW.html`<tr><td><span class="badge badge-blue">${t.type}</span></td><td data-label="Category"><span class="badge ${t.category === 'api' ? 'badge-green' : 'badge-gray'}">${t.category}</span></td><td class="mono-text text-sm" data-label="Deploy path">~/${t.deploy_path || ''}</td></tr>`;
     })}`);
   }
 
