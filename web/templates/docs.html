@@ -381,7 +381,7 @@ curl https://api.openai.com/v1/chat/completions ...
       <tr><td><strong>Management channel</strong></td><td>Auto-created at CC create, named <code>&lt;client&gt;-control</code>. Accepts <code>!cmd</code>.</td><td><code>cc_channels</code> (kind=management)</td></tr>
       <tr><td><strong>Task channel</strong></td><td>Created by <code>!new</code> or the MCP <code>discord_create_task_channel</code> tool. One per agent session.</td><td><code>cc_channels</code> (kind=task)</td></tr>
       <tr><td><strong>Session id</strong></td><td>The agent's resume/thread handle for the channel; persisted by the daemon</td><td><code>~/.duckway/cc-sessions.json</code> on the agent</td></tr>
-      <tr><td><strong>Handle</strong></td><td>Opaque <code>dwch_…</code> id the agent + daemon see</td><td>Maps to real <code>channel_id</code> server-side</td></tr>
+      <tr><td><strong>Handle</strong></td><td>Opaque <code>dwch_…</code> id the agent + daemon see</td><td>Maps to real <code>channel_id</code> <span class="nb">server-side</span></td></tr>
     </tbody>
   </table>
   </div>

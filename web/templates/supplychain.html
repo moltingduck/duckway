@@ -83,7 +83,7 @@
       DW.setHTML($('sc-rows'), DW.html`${sup.map(function(m) {
         var lines = (m.example_lines || []).filter(function(l) { return l.trim() !== '' && l.trim().charAt(0) !== '#'; });
         var writes = lines.length ? DW.html`${lines.map(function(l, i) { return DW.html`${i ? DW.raw('<br>') : ''}<code class="sc-cfg-line">${l}</code>`; })}` : DW.raw('—');
-        return DW.html`<tr><td><button type="button" class="sc-switch" role="switch" aria-checked="${m.enabled ? 'true' : 'false'}" aria-label="${m.name}" data-action="scToggle" data-id="${m.id}"><span class="sc-track" aria-hidden="true"><span class="sc-knob"></span></span><span class="sc-state">${m.enabled ? 'On' : 'Off'}</span></button></td><th scope="row" class="sc-name">${m.name}</th><td><code>~/${m.rc_path}</code></td><td>${writes}</td><td class="text-sm text-muted">${m.description}</td></tr>`;
+        return DW.html`<tr><td><button type="button" class="sc-switch" role="switch" aria-checked="${m.enabled ? 'true' : 'false'}" aria-label="${m.name}" data-action="scToggle" data-id="${m.id}"><span class="sc-track" aria-hidden="true"><span class="sc-knob"></span></span><span class="sc-state">${m.enabled ? 'On' : 'Off'}</span></button></td><th scope="row" class="sc-name">${m.name}</th><td><code>~/${m.rc_path}</code></td><td>${writes}</td><td class="text-sm text-muted sc-notes">${m.description}</td></tr>`;
       })}`);
     }
     $('sc-unsup-card').hidden = !uns.length;

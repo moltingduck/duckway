@@ -153,3 +153,15 @@ func TestCredentialAndServiceNameCellsDoNotWrap(t *testing.T) {
 		".sv-table td.cl-c-name .cl-name { white-space: nowrap; }",
 		`.pt-svc::before { content: " · "; }`)
 }
+
+// Desktop table cells never break a word; wide tables scroll inside their card.
+func TestDesktopTableCellsNeverBreakWords(t *testing.T) {
+	css := readWeb(t, "static/style.css")
+	mustContain(t, "style.css", css,
+		"td, th, td .mono, td code { overflow-wrap: normal; word-break: normal; }",
+		".pt-table td.pt-c-rules { min-width: 13rem; }",
+		".cn-table td, .cn-table .badge, .sc-table td, .sc-table code, .sc-table .mono { white-space: nowrap; }",
+		"td code, td .mono, td strong, td .nb { white-space: nowrap; }",
+		".cl-table .cl-c-name .cl-name { display: inline-block; max-width: 32ch;")
+	mustContain(t, "clients.html", readWeb(t, "templates/clients.html"), `class="cl-name" title="${c.name}"`)
+}

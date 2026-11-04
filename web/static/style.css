@@ -2288,3 +2288,14 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
   .pt-svc { font-family: inherit; font-size: inherit; }
   .pt-svc::before { content: " · "; }
 }
+
+/* ---- vp1104c: desktop table cells never break a word; tables scroll inside their card (canvas rule) ---- */
+@media (min-width: 901px) {
+  td, th, td .mono, td code { overflow-wrap: normal; word-break: normal; }
+  /* Prose columns keep a floor so nowrap neighbours cannot squeeze them to nothing. */
+  .pt-table td.pt-c-rules { min-width: 13rem; }
+  .cn-table td, .cn-table .badge, .sc-table td, .sc-table code, .sc-table .mono { white-space: nowrap; }
+  td code, td .mono, td strong, td .nb { white-space: nowrap; }
+  /* Client names are unbounded input: a long one is clipped (full name in the title). */
+  .cl-table .cl-c-name .cl-name { display: inline-block; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+}

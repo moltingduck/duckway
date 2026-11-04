@@ -226,7 +226,7 @@ function row(d) {
   var canary = c.canary_enabled ? DW.html`<span class="cl-pill cl-pill-ok">On</span>` : DW.html`<span class="cl-pill cl-pill-mute">Off</span>`;
   var seen = isFinite(d.seen) ? DWInstall.relTime(new Date(d.seen).toISOString()) : 'never';
   return DW.html`<tr data-id="${c.id}">
-    <td class="cl-c-name" data-field="name"><a class="cl-name" href="${'/admin/clients/' + encodeURIComponent(c.id)}">${c.name}</a><span class="cl-id">${c.short_id || c.id}</span></td>
+    <td class="cl-c-name" data-field="name"><a class="cl-name" title="${c.name}" href="${'/admin/clients/' + encodeURIComponent(c.id)}">${c.name}</a><span class="cl-id">${c.short_id || c.id}</span></td>
     <td class="cl-c-status" data-field="status"><span class="cl-pill ${sp[1]}">${sp[0]}</span></td>
     <td class="cl-c-ver" data-label="Version">${verCell}</td>
     <td class="cl-c-creds" data-label="Credentials">${credCell}</td>
