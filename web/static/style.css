@@ -2278,3 +2278,13 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
 @media (max-width: 900px) {
   .pt-env, .cd-env, .env-clip { white-space: normal; overflow-wrap: anywhere; }
 }
+
+/* ---- vp1104b r3: two stacked nowrap lines for credential (name, service slug) and service names ---- */
+.pt-cred-name, .pt-svc { display: block; white-space: nowrap; }
+.pt-svc { color: var(--muted); font-family: var(--mono); font-size: 0.75rem; }
+@media (min-width: 901px) { .sv-table td.cl-c-name .cl-name { white-space: nowrap; } }
+@media (max-width: 900px) {
+  .pt-cred-name, .pt-svc { display: inline; white-space: normal; }
+  .pt-svc { font-family: inherit; font-size: inherit; }
+  .pt-svc::before { content: " · "; }
+}

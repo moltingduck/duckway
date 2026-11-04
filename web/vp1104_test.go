@@ -139,3 +139,17 @@ func TestEnvVarNamesAreNowrapAndMonoCellsHaveNoSlab(t *testing.T) {
 	mustContain(t, "key_bundles.html", readWeb(t, "templates/key_bundles.html"), `class="mono-text env-clip" title="${p.env_name}"`)
 	mustContain(t, "client_detail.html", readWeb(t, "templates/client_detail.html"), `class="cd-env" title="${p.envName}"`)
 }
+
+// Credential cell: name on line one, service slug muted on line two; service display names stay whole.
+func TestCredentialAndServiceNameCellsDoNotWrap(t *testing.T) {
+	pt := readWeb(t, "templates/phantom_tokens.html")
+	mustContain(t, "phantom_tokens.html", pt, `<span class="pt-cred-name">`, `<span class="pt-svc">{{.ServiceName}}</span>`)
+	if strings.Contains(pt, "· {{.ServiceName}}") {
+		t.Error("the middle-dot separator belongs to the card layout CSS only")
+	}
+	css := readWeb(t, "static/style.css")
+	mustContain(t, "style.css", css,
+		".pt-cred-name, .pt-svc { display: block; white-space: nowrap; }",
+		".sv-table td.cl-c-name .cl-name { white-space: nowrap; }",
+		`.pt-svc::before { content: " · "; }`)
+}
