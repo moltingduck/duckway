@@ -154,7 +154,7 @@
       else if (!c.canary_enabled) state = DW.html`<span class="cn-pill cn-muted">Disabled</span>`;
       else state = DW.html`<span class="cn-pill cn-warnpill">Not deployed</span>`;
       var cur = c.client_id === selected ? DW.raw(' aria-current="true"') : '';
-      return DW.html`<tr><th scope="row" class="cn-name">${c.name}</th><td>${state}</td><td>${c.token_count}</td><td class="text-sm">${when(c.last_created_at)}</td><td class="text-sm text-muted">Not recorded</td><td class="cn-act"><button type="button" class="btn btn-sm" data-action="cnSelect" data-client-id="${c.client_id}"${cur}>${c.client_id === selected ? 'Selected' : 'Manage'}<span class="cn-sr"> ${c.name}</span></button></td></tr>`;
+      return DW.html`<tr><th scope="row" class="cn-name"><span class="nm-clip" title="${c.name}">${c.name}</span></th><td>${state}</td><td>${c.token_count}</td><td class="text-sm">${when(c.last_created_at)}</td><td class="text-sm text-muted">Not recorded</td><td class="cn-act"><button type="button" class="btn btn-sm" data-action="cnSelect" data-client-id="${c.client_id}"${cur}>${c.client_id === selected ? 'Selected' : 'Manage'}<span class="cn-sr"> ${c.name}</span></button></td></tr>`;
     });
     DW.setHTML(body, DW.html`${rows}`);
   }

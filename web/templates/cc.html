@@ -129,7 +129,7 @@ function renderList() {
     return DW.html`<tr class="cc-row${selectedId() === c.id ? ' is-selected' : ''}" data-id="${c.id}">
       <td data-label="Name"><button type="button" class="cc-rowbtn" data-action="openCC" data-id="${c.id}"><strong>${c.name}</strong></button></td>
       <td data-label="Agent">${agentLabel(c.agent_type)}${sandboxBadge(sb)}</td>
-      <td data-label="Bound client">${c.client_name || c.client_id || '?'}</td>
+      <td data-label="Bound client"><span class="nm-clip" title="${c.client_name || c.client_id || ''}">${c.client_name || c.client_id || '?'}</span></td>
       <td data-label="Platform">${svc}</td>
       <td data-label="Status">${statusPill(c)}</td>
     </tr>`;

@@ -101,7 +101,12 @@
       const labels = {unknown: 'Not reported', stale: 'Stale report', not_installed: 'Not installed', up_to_date: 'Up to date', different: 'Different version', update_failed: 'Update failed', unpublished: 'Not published'};
       clients.forEach(function (client) {
         const row = element('tr');
-        row.appendChild(element('td', client.client_name || client.client_id));
+        const nameCell = element('td');
+        const nameText = client.client_name || client.client_id;
+        const nameSpan = element('span', nameText, 'nm-clip');
+        nameSpan.title = nameText;
+        nameCell.appendChild(nameSpan);
+        row.appendChild(nameCell);
         [client.installed_version, client.published_version].forEach(function (version) {
           const cell = element('td', version || '—', 'text-sm');
           cell.style.overflowWrap = 'anywhere';

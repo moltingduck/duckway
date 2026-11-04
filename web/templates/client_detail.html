@@ -529,7 +529,7 @@ function approvalCell(p) {
 }
 function credRow(p) {
   var cred = p.apiKeyName ? DW.html`${p.apiKeyName}` : (p.groupId ? DW.raw('Key pool') : DW.raw('—'));
-  var from = p.suiteId ? DW.html`<span class="cl-pill cl-pill-info">${suiteName(p.suiteId)}</span>` : DW.raw('<span class="cl-pill cl-pill-mute">Manual</span>');
+  var from = p.suiteId ? DW.html`<span class="cl-pill cl-pill-info nm-clip" title="${suiteName(p.suiteId)}">${suiteName(p.suiteId)}</span>` : DW.raw('<span class="cl-pill cl-pill-mute">Manual</span>');
   return DW.html`<tr data-id="${p.id}">
     <td class="cd-c-env" data-field="env"><button type="button" class="cd-env" data-action="showPhDetail" data-id="${p.id}" aria-label="${'Details for ' + p.envName}">${p.envName}</button></td>
     <td data-label="Credential">${cred} <span class="cl-muted">· ${p.serviceName}</span></td>

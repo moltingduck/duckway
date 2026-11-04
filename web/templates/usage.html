@@ -452,7 +452,7 @@
       var id = 'us-cd-' + i;
       var services = (c.services || []).map(function (s) { return DW.html`<span class="badge badge-blue">${s}</span> `; });
       return DW.html`<tr class="us-click" data-action="usToggle" data-id="${id}">
-        <td><button type="button" class="us-toggle" data-action="usToggle" data-id="${id}" aria-expanded="false" aria-controls="${id}"><span class="us-caret" aria-hidden="true">▸</span><strong>${c.client_name || c.client_id || '(unknown)'}</strong></button></td>
+        <td><button type="button" class="us-toggle" data-action="usToggle" data-id="${id}" aria-expanded="false" aria-controls="${id}"><span class="us-caret" aria-hidden="true">▸</span><strong class="nm-clip" title="${c.client_name || c.client_id || ''}">${c.client_name || c.client_id || '(unknown)'}</strong></button></td>
         <td>${fmtInt(c.total_tokens)}</td>
         <td>${fmtInt(c.requests)}</td>
         <td>${fmtInt(c.keys_used)}</td>
@@ -747,7 +747,7 @@
       setState('sessions', null);
       DW.setHTML($('us-session-rows'), DW.html`${rows.map(function (s) {
         var err = Number(s.errors) > 0 ? DW.html`<span class="badge badge-red">${fmtInt(s.errors)}</span>` : DW.html`<span class="text-muted">${fmtInt(s.errors)}</span>`;
-        return DW.html`<tr><td>${s.client_name || s.client_id || '(unknown)'}</td><td><span class="badge badge-blue">${s.service_name}</span></td><td>${fmtInt(s.requests)}</td><td>${err}</td><td class="text-sm text-muted">${fmtDate(s.last_seen)}</td></tr>`;
+        return DW.html`<tr><td><span class="nm-clip" title="${s.client_name || s.client_id || ''}">${s.client_name || s.client_id || '(unknown)'}</span></td><td><span class="badge badge-blue">${s.service_name}</span></td><td>${fmtInt(s.requests)}</td><td>${err}</td><td class="text-sm text-muted">${fmtDate(s.last_seen)}</td></tr>`;
       })}`);
     }).catch(function (err) {
       if (n !== seq.sessions || rng !== rkey()) return;

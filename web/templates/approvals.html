@@ -237,7 +237,7 @@ function render() {
   var rows = allApprovals.map(function(a) {
     var info = infoOf(a);
     var cur = a.id === selectedId;
-    return DW.html`<button type="button" class="appr-row${cur ? ' is-selected' : ''}" id="approval-${a.id}" data-action="selectApproval" data-id="${a.id}" ${cur ? DW.raw('aria-current="true"') : ''}><span class="appr-row-top"><span class="appr-client">${a.client_name || dash}</span><span class="text-muted appr-arrow">→ ${a.service_name || '?'}</span>${pill(a)}</span><span class="appr-row-sub"><span class="appr-tag">${info.method || '—'}</span><span class="mono appr-path">${(info.path || '—') + (info.query ? '?' + info.query : '')}</span></span></button>`;
+    return DW.html`<button type="button" class="appr-row${cur ? ' is-selected' : ''}" id="approval-${a.id}" data-action="selectApproval" data-id="${a.id}" ${cur ? DW.raw('aria-current="true"') : ''}><span class="appr-row-top"><span class="appr-client nm-clip" title="${a.client_name || ''}">${a.client_name || dash}</span><span class="text-muted appr-arrow">→ ${a.service_name || '?'}</span>${pill(a)}</span><span class="appr-row-sub"><span class="appr-tag">${info.method || '—'}</span><span class="mono appr-path">${(info.path || '—') + (info.query ? '?' + info.query : '')}</span></span></button>`;
   });
   DW.setHTML(list, DW.html`${rows}`);
   renderDetail(allApprovals[indexOfSelected()]);

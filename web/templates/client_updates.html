@@ -151,7 +151,7 @@ function reasonFor(j) {
 function jobRow(j) {
   var r = reasonFor(j);
   var detail = r.detail && (j.status === 'failed') ? DW.html`<span class="ro-detail mono">${r.detail}</span>` : '';
-  return DW.html`<li class="ro-job"><span class="ro-job-client">${j.client_name || j.client_id}</span>${pill(j.status)}<span class="ro-job-why">${r.head} ${detail}</span></li>`;
+  return DW.html`<li class="ro-job"><span class="ro-job-client nm-clip" title="${j.client_name || j.client_id}">${j.client_name || j.client_id}</span>${pill(j.status)}<span class="ro-job-why">${r.head} ${detail}</span></li>`;
 }
 function splitJobs(rollout) {
   var jobs = rollout.jobs || [];

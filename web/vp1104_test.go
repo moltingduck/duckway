@@ -99,3 +99,24 @@ func TestOnboardingHasNoInPageCrumb(t *testing.T) {
 	}
 	mustContain(t, "onboarding.html", ob, `id="wz-draftnote"`)
 }
+
+// Client names and source pills are clipped with a title everywhere they sit in a table or list;
+// service host patterns break only at commas.
+func TestClientNamesAndPillsAreClippedEverywhere(t *testing.T) {
+	css := readWeb(t, "static/style.css")
+	mustContain(t, "style.css", css, ".nm-clip { display: inline-block; max-width: 12rem;", ".sv-host { display: inline-block;")
+	for name, want := range map[string][]string{
+		"templates/phantom_tokens.html": {`class="nm-clip" title="{{.ClientName}}"`, `cl-pill cl-pill-info nm-clip`},
+		"templates/approvals.html":      {`appr-client nm-clip`},
+		"templates/usage.html":          {`<strong class="nm-clip"`, `<span class="nm-clip" title="${s.client_name`},
+		"templates/canary.html":         {`<span class="nm-clip" title="${c.name}">`},
+		"templates/client_detail.html":  {`cl-pill cl-pill-info nm-clip`},
+		"templates/key_bundles.html":    {`<a class="nm-clip" title="${p.client_name`},
+		"templates/cc.html":             {`<span class="nm-clip" title="${c.client_name`},
+		"templates/client_updates.html": {`ro-job-client nm-clip`},
+		"static/plugins.js":             {`'nm-clip'`},
+		"templates/services.html":       {`function hostSpans(v)`, `<span class="sv-host">`, `<wbr>`, `${hostSpans(s.host_pattern)}`},
+	} {
+		mustContain(t, name, readWeb(t, name), want...)
+	}
+}
