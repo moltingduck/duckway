@@ -12,6 +12,15 @@ source "$ROOT/scripts/container-runtime.sh"
 source "$ROOT/scripts/ducklord-demo-common.sh"
 duckway_init_container_runtime
 RUNTIME="$CONTAINER_RUNTIME"
+NAME_PREFIX="${DUCKLORD_DEMO_NAME_PREFIX:-}"
+case "$NAME_PREFIX" in
+  *[!A-Za-z0-9_.-]*) echo "invalid DUCKLORD_DEMO_NAME_PREFIX=$NAME_PREFIX" >&2; exit 2 ;;
+esac
+if [ -n "$NAME_PREFIX" ]; then NAME_PREFIX="${NAME_PREFIX}-"; fi
+CONTROLLER="${NAME_PREFIX}ducklord-dev"
+CONTAINERS=("$CONTROLLER" "${NAME_PREFIX}ducklion-client-a" "${NAME_PREFIX}ducklion-client-b"
+  "${NAME_PREFIX}ducklion-client-c" "${NAME_PREFIX}ducklion-client-d")
+NET="${NET:-${NAME_PREFIX}ducklord-demo}"
 ORIGINAL_ARGS=("$@")
 AGENTS=(codex claude)
 case "${1:-}" in
@@ -42,29 +51,29 @@ if [ "$credential_kind" != codex ]; then
   }
 fi
 
-for resource in ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c ducklion-client-d; do
+for resource in "${CONTAINERS[@]}"; do
   if "$RUNTIME" container inspect "$resource" >/dev/null 2>&1; then
     echo "[live-tui] refusing to replace existing container $resource" >&2
     exit 1
   fi
 done
-if "$RUNTIME" network inspect ducklord-demo >/dev/null 2>&1; then
-  echo "[live-tui] refusing to replace existing network ducklord-demo" >&2
+if "$RUNTIME" network inspect "$NET" >/dev/null 2>&1; then
+  echo "[live-tui] refusing to replace existing network $NET" >&2
   exit 1
 fi
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
-  "$RUNTIME" rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c ducklion-client-d >/dev/null 2>&1 || true
-  "$RUNTIME" network rm ducklord-demo >/dev/null 2>&1 || true
+  "$RUNTIME" rm -f "${CONTAINERS[@]}" >/dev/null 2>&1 || true
+  "$RUNTIME" network rm "$NET" >/dev/null 2>&1 || true
   exit "$status"
 }
 trap cleanup EXIT INT TERM
 
 DUCKLORD_DEMO_LOCK_HELD=1 DUCKLORD_DEMO_AGENT_CREDENTIALS="$credential_kind" \
-DUCKLORD_DEMO_CREDENTIAL_CLIENTS=client-a CONTAINER_RUNTIME="$RUNTIME" \
-  "$ROOT/scripts/ducklord-podman-demo.sh" >/dev/null
-"$RUNTIME" exec ducklord-dev cp /root/.ducklord/config.yaml /tmp/e2e-inspector.yaml
+DUCKLORD_DEMO_CREDENTIAL_CLIENTS=client-a CONTAINER_RUNTIME="$RUNTIME" NET="$NET" \
+  "$ROOT/scripts/ducklord-podman-demo.sh" --require-owned-network >/dev/null
+"$RUNTIME" exec "$CONTROLLER" cp /root/.ducklord/config.yaml /tmp/e2e-inspector.yaml
 for agent in "${AGENTS[@]}"; do
   for layout in single split; do
     if [ "${DUCKLORD_LIVE_TUI_SPLIT_ONLY:-0}" = 1 ] && [ "$layout" != split ]; then continue; fi
@@ -72,7 +81,7 @@ for agent in "${AGENTS[@]}"; do
     split=0
     if [ "$layout" = split ]; then split=1; fi
     DUCKLORD_AGENT_LIVE_TUI_E2E=1 DUCKLORD_AGENT_LIVE_TUI_SPLIT="$split" DUCKLORD_E2E_RUNTIME="$RUNTIME" \
-    DUCKLORD_E2E_CONTROLLER=ducklord-dev DUCKLORD_E2E_AGENT="$agent" \
+    DUCKLORD_E2E_CONTROLLER="$CONTROLLER" DUCKLORD_E2E_AGENT="$agent" \
       go test -count=1 ./cmd/ducklord -run '^TestDucklordInteractiveAgentLiveTUIContainerE2E$' -v
   done
 done

@@ -307,9 +307,20 @@ func TestDucklordPrefixNavigationContainerE2E(t *testing.T) {
 	// route.detach: this layout is a non-Default Project, so Ctrl-B d detaches
 	// the focused pane directly. The surviving pane must receive a PTY sentinel
 	// immediately, without a confirmation modal or a second focus operation.
-	writePTY(t, terminal, "\x02d")
-	capture.waitCurrent(t, handles[1], 10*time.Second)
-	detachMarker := fmt.Sprintf("DETACH_DIRECT_%x", stamp)
-	writePTY(t, terminal, fmt.Sprintf("printf '%s\\n' '%s' | tee -a \"$DUCKWAY_NAV_LOG\"\r", detachMarker, detachMarker))
+	detachStart := capture.position()
+	detachMarker := fmt.Sprintf("DETACH_DIRECT_b_%x", stamp)
+	detachedLog, otherLog := readLog(0), readLog(2)
+	// Queue the command with the detach, before the replacement lease is ready.
+	// Starting with b exercises the Project shortcut while input is fenced;
+	// that byte must be held and replayed to the surviving shell with the rest.
+	writePTY(t, terminal, fmt.Sprintf("\x02dbuiltin printf '%%s\\n' '%s' | tee -a \"$DUCKWAY_NAV_LOG\"\r", detachMarker))
+	// Both cues must be rendered after the detach: the surviving pane is the
+	// active Session and keyboard focus has returned to its PTY. The Session
+	// list shows the handle at all times, so it is not a readiness signal.
+	capture.waitAfter(t, detachStart, "▣ client-a/"+handles[1], 10*time.Second)
+	capture.waitAfter(t, detachStart, "Session focus: keys go to PTY", 10*time.Second)
 	waitE2E(t, 10*time.Second, func() bool { return strings.Contains(readLog(1), detachMarker+"\n") }, func() string { return "direct detach did not preserve surviving PTY ownership" })
+	if readLog(0) != detachedLog || readLog(2) != otherLog {
+		t.Fatal("direct detach leaked the first command to another PTY")
+	}
 }

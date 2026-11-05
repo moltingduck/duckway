@@ -200,6 +200,57 @@ func TestPaneOutputManagerNewVisibleRequestCancelsSlowPreviousOpen(t *testing.T)
 	}
 }
 
+// A request already canceled by its caller can reach SetVisible after the
+// request that replaced it. It must not cancel that newer request.
+func TestPaneOutputManagerStaleCanceledRequestDoesNotCancelNewerVisibleOpen(t *testing.T) {
+	manager, _, _ := newTestPaneOutputManager(t, 2)
+	a, b := paneSelection("AAA111"), paneSelection("BBB222")
+	started, release := make(chan struct{}), make(chan struct{})
+	manager.opener = func(ctx context.Context, selection TerminalSelection, key OutputKey, revision OutputRevision, _ *TerminalRenderState) (*PooledTerminal, error) {
+		if selection.SessionID == b.SessionID {
+			close(started)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return newPooledTerminal(ctx, OutputStreamMetadata{InstanceID: key.InstanceID, SessionID: key.SessionID,
+			RuntimeGeneration: revision.RuntimeGeneration}, newFakePooledOutput(), PooledTerminalOptions{ExpectedKey: key,
+			ExpectedRevision: revision, Rows: selection.Rows, Cols: selection.Cols, Scrollback: 8, Store: manager.store})
+	}
+	newer := make(chan error, 1)
+	go func() {
+		_, err := manager.SetVisible(context.Background(), b, nil)
+		newer <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("newer visible request did not start")
+	}
+	staleCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := manager.SetVisible(staleCtx, a, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stale request error = %v, want context canceled", err)
+	}
+	close(release)
+	select {
+	case err := <-newer:
+		if err != nil {
+			t.Fatalf("newer request was canceled by the stale one: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("newer visible request did not finish")
+	}
+	if view, err := manager.View(b.key()); err != nil || !view.Ready {
+		t.Fatalf("newer pane view=%+v err=%v", view, err)
+	}
+	if err := manager.SetInputFocus(b.key()); err != nil {
+		t.Fatalf("newer pane is not input-focusable: %v", err)
+	}
+}
+
 func TestPaneOutputManagerOtherHostDisconnectDoesNotCancelVisibleOpen(t *testing.T) {
 	manager, _, _ := newTestPaneOutputManager(t, 2)
 	b := paneSelection("BBB222")

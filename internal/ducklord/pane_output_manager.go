@@ -63,6 +63,16 @@ func NewPaneOutputManager(parent context.Context, capacity int, source TerminalO
 func (m *PaneOutputManager) SetVisible(ctx context.Context, priority TerminalSelection, visible []TerminalSelection) ([]OutputKey, error) {
 	requestCtx, requestEnd := context.WithCancel(ctx)
 	m.requestMu.Lock()
+	// A caller can supersede this request before its goroutine reaches here.
+	// Goroutine scheduling may then run the older request after the newer one
+	// has registered; letting it proceed would cancel the newer request and
+	// leave no visible set. Decide under requestMu so the check is ordered with
+	// every newer registration.
+	if err := ctx.Err(); err != nil {
+		m.requestMu.Unlock()
+		requestEnd()
+		return nil, err
+	}
 	if m.requestEnd != nil {
 		m.requestEnd()
 	}

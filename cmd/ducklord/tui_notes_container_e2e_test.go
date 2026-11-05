@@ -269,9 +269,11 @@ func TestDucklordNotesTUIContainerE2E(t *testing.T) {
 	writePTY(t, terminal, string(workspaceMouse(0, quick.X+1, quick.Y+1, false)))
 	writePTY(t, terminal, string(workspaceMouse(0, quick.X+1, quick.Y+1, true)))
 	capture.waitCurrent(t, "Session list pane:", 10*time.Second)
+	// The search Enter starts an asynchronous PTY activation. Wait for its
+	// completion cue before the focusing Enter: alpha is already listed, so a
+	// name wait cannot order the keys, and an extra Enter that lands after the
+	// activation focuses the pane early and the cue is never rendered.
 	writePTY(t, terminal, "/alpha\r")
-	capture.waitCurrent(t, "alpha @client-a", 10*time.Second)
-	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Active · Enter again to focus", 20*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Session focus: keys go to PTY", 20*time.Second)

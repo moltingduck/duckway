@@ -67,15 +67,175 @@ func TestWorkspaceReplayRoutesThroughUnfocusedNavigation(t *testing.T) {
 
 func TestWorkspaceProjectShortcutBypassesPendingPTYFence(t *testing.T) {
 	state := &tuiState{workspacePreview: true, workspacePlacementInputPending: true}
-	if !shouldRouteWorkspaceProjectInputAsNavigation(state, []byte("b")) {
+	if !shouldRouteWorkspaceProjectInputAsNavigation(state, []byte("b"), false) {
 		t.Fatal("project shortcut should route through workspace navigation while PTY restoration is fenced")
 	}
-	if shouldRouteWorkspaceProjectInputAsNavigation(state, []byte("j")) {
+	if shouldRouteWorkspaceProjectInputAsNavigation(state, []byte("j"), false) {
 		t.Fatal("ordinary shell input must remain behind the PTY fence")
 	}
 	state.focused = true
-	if shouldRouteWorkspaceProjectInputAsNavigation(state, []byte("b")) {
+	if shouldRouteWorkspaceProjectInputAsNavigation(state, []byte("b"), false) {
 		t.Fatal("focused PTY input must not be rerouted as workspace navigation")
+	}
+}
+
+func TestWorkspaceProjectShortcutStaysShellInputWhileFocusedHandoffFenced(t *testing.T) {
+	state := &tuiState{workspacePreview: true, workspacePlacementInputPending: true}
+	if shouldRouteWorkspaceProjectInputAsNavigation(state, []byte("b"), true) {
+		t.Fatal("a b typed into the surviving shell must stay behind the focused-handoff fence")
+	}
+	if !shouldRouteWorkspaceProjectInputAsNavigation(state, []byte("b"), false) {
+		t.Fatal("navigation fences keep the Project shortcut")
+	}
+	state.workspacePlacementInputPending = false
+	if !shouldRouteWorkspaceProjectInputAsNavigation(state, []byte("b"), true) {
+		t.Fatal("a released fence must not suppress the Project shortcut")
+	}
+}
+
+type workspaceReadinessFocus struct {
+	key   ducklord.OutputKey
+	ready bool
+}
+
+func (f *workspaceReadinessFocus) SetInputFocus(key ducklord.OutputKey) error {
+	if !f.ready || key != f.key {
+		return errors.New("visible output lease is not ready for this Session")
+	}
+	return nil
+}
+
+type workspaceInputRecorder struct{ bytes.Buffer }
+
+func (*workspaceInputRecorder) Close() error { return nil }
+
+func TestWorkspaceControlReadinessReplaysFirstInputInOrder(t *testing.T) {
+	for _, order := range []string{"control-before-output", "output-before-control", "occupied-replay-slot"} {
+		t.Run(order, func(t *testing.T) {
+			s, projectID, detached, survivor := workspacePaneTestState(t)
+			identity, _ := ducklord.IdentityFromSession(survivor)
+			if _, err := s.activity().ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+				t.Fatal(err)
+			}
+			nav, err := s.workspaceNavigation()
+			if err != nil || nav.SelectProject(projectID) != nil {
+				t.Fatal("select Project: ", err)
+			}
+			s.focused, s.activeAttachKey = true, sessionKey(detached)
+			if !s.dispatchFocusedPaneCommand("d") {
+				t.Fatal("direct detach was not handled")
+			}
+			if selected, ok := s.activity().ProjectLayout.PaneSession(projectID, nav.CurrentPaneID()); !ok || selected != identity {
+				t.Fatal("direct detach did not select the surviving Session")
+			}
+			// The dispatcher opens the selected writer and fences real input.
+			s.focused, s.activeAttachKey = false, sessionKey(survivor)
+			s.workspacePlacementInputPending = true
+			replay := workspaceInputReplay{input: make(chan []byte, 1), toPTY: true}
+			oldInput, survivorInput := &workspaceInputRecorder{}, &workspaceInputRecorder{}
+			controlFor := func(session ducklord.RemoteSession, input io.WriteCloser) *ducklord.ControlSession {
+				return &ducklord.ControlSession{ClientKey: session.Client, InstanceID: session.InstanceID,
+					SessionID: session.SessionID, RuntimeGeneration: session.RuntimeGeneration,
+					OwnershipEpoch: session.OwnershipEpoch, Stdin: input}
+			}
+			oldControl := controlFor(detached, oldInput)
+			control := controlFor(survivor, survivorInput)
+			key, ok := terminalOutputKey(survivor)
+			if !ok {
+				t.Fatal("surviving Session has no output key")
+			}
+			output := &workspaceReadinessFocus{key: key, ready: order == "output-before-control"}
+			firstControl := control
+			if output.ready {
+				firstControl = nil
+			}
+			if acceptWorkspaceControlInput(s, output, firstControl, survivor, &replay) || s.focused || !s.workspacePlacementInputPending {
+				t.Fatal("one readiness event prematurely released the handoff")
+			}
+			const first = "builtin printf first\\n\r"
+			for _, chunk := range []string{"b", first[1:]} {
+				if !shouldDeferWorkspaceInput(s, false) || shouldRouteWorkspaceProjectInputAsNavigation(s, []byte(chunk), replay.toPTY) {
+					t.Fatal("early shell input escaped the surviving-pane fence")
+				}
+				replay.deferred = append(replay.deferred, chunk...)
+			}
+			output.ready = true
+			if acceptWorkspaceControlInput(s, output, oldControl, survivor, &replay) {
+				t.Fatal("detached Session writer accepted the survivor's bytes")
+			}
+			s.workspacePaneMode, s.workspacePaneStep = true, "notes"
+			if acceptWorkspaceControlInput(s, output, control, survivor, &replay) || s.focused {
+				t.Fatal("background readiness stole input from the Notes modal")
+			}
+			s.workspacePaneMode, s.workspacePaneStep = false, ""
+			fresh := make(chan []byte, 1)
+			const second = "echo second\r"
+			fresh <- []byte(second)
+			if order == "occupied-replay-slot" {
+				replay.input <- []byte("local replay")
+				replay.queued = true
+			}
+			if !acceptWorkspaceControlInput(s, output, control, survivor, &replay) {
+				t.Fatal("both readiness events failed to accept the survivor")
+			}
+			if order == "occupied-replay-slot" {
+				if !s.workspacePlacementInputPending || string(replay.deferred) != first {
+					t.Fatal("occupied replay slot dropped the fence or buffered input")
+				}
+				if got := <-replay.selectInput(fresh); string(got) != "local replay" {
+					t.Fatalf("older local replay was overtaken: %q", got)
+				}
+				replay.queued = false // dispatcher consumed the older local replay
+				replay.retryWorkspacePlacement(s, oldControl)
+				if !s.workspacePlacementInputPending || len(replay.input) != 0 {
+					t.Fatal("stale writer released buffered input on retry")
+				}
+				s.workspacePaneMode = true
+				replay.retryWorkspacePlacement(s, control)
+				if !s.workspacePlacementInputPending || len(replay.input) != 0 {
+					t.Fatal("retry released buffered input while a modal owned the keyboard")
+				}
+				s.workspacePaneMode = false
+				replay.retryWorkspacePlacement(s, control)
+			}
+			if s.workspacePlacementInputPending || !s.focused || replay.navigation || len(replay.deferred) != 0 {
+				t.Fatal("accepted handoff did not retain PTY routing and release its fence")
+			}
+			// Repeated repaint/ticker completion must not enqueue a second copy.
+			acceptWorkspaceControlInput(s, output, control, survivor, &replay)
+			for _, want := range []string{first, second} {
+				select {
+				case got := <-replay.selectInput(fresh):
+					if string(got) != want {
+						t.Fatalf("input order = %q, want %q", got, want)
+					}
+					replay.queued = false
+					writer := focusedPTYWriter(control, nil, s.activePTYSession(), s.ownerName)
+					if writer == nil || focusedPTYWriter(oldControl, nil, s.activePTYSession(), s.ownerName) != nil {
+						t.Fatal("input writer does not belong exclusively to the survivor")
+					}
+					if _, err := writer.Write(got); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					t.Fatalf("input %q was stranded after readiness", want)
+				}
+				acceptWorkspaceControlInput(s, output, control, survivor, &replay)
+				replay.retryWorkspacePlacement(s, control)
+			}
+			if survivorInput.String() != first+second || oldInput.Len() != 0 || len(replay.input) != 0 || len(fresh) != 0 {
+				t.Fatalf("delivery: survivor=%q detached=%q pending=%d/%d", survivorInput.String(), oldInput.String(), len(replay.input), len(fresh))
+			}
+		})
+	}
+}
+
+func TestWorkspaceControlReadinessPreservesNavigationReplay(t *testing.T) {
+	s := &tuiState{workspacePlacementInputPending: true}
+	replay := workspaceInputReplay{input: make(chan []byte, 1), deferred: []byte("b")}
+	replay.releaseWorkspacePlacement(s)
+	if s.workspacePlacementInputPending || !replay.queued || !replay.navigation || string(<-replay.input) != "b" {
+		t.Fatal("navigation handoff no longer replays through workspace navigation")
 	}
 }
 

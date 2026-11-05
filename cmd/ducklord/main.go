@@ -274,6 +274,61 @@ func main() {
 	}
 }
 
+// workspaceInputReplay holds the dispatcher's existing local replay slot and
+// the bytes fenced while a replacement workspace PTY lease becomes ready.
+type workspaceInputReplay struct {
+	input      chan []byte
+	queued     bool
+	deferred   []byte
+	navigation bool
+	toPTY      bool
+}
+
+func (r *workspaceInputReplay) selectInput(input <-chan []byte) <-chan []byte {
+	if r.queued {
+		return r.input
+	}
+	return input
+}
+
+func (r *workspaceInputReplay) releaseWorkspacePlacement(s *tuiState) {
+	if !s.workspacePlacementInputPending {
+		return
+	}
+	if len(r.deferred) != 0 {
+		if r.queued {
+			return // retain the fence until the older local replay is consumed
+		}
+		r.input <- r.deferred
+		r.deferred = nil
+		r.navigation = !r.toPTY
+		r.queued = true
+	}
+	r.toPTY = false
+	s.workspacePlacementInputPending = false
+}
+
+func (r *workspaceInputReplay) retryWorkspacePlacement(s *tuiState, control *ducklord.ControlSession) {
+	if s.workspacePlacementInputPending && s.focused && !s.centralModalOpen() && !s.helpMode && !r.queued && controlMatchesSession(control, s.activePTYSession(), s.ownerName) {
+		r.releaseWorkspacePlacement(s)
+	}
+}
+
+// Every workspace readiness path completes the same handoff: only the exact
+// writer and visible output lease may gain focus and release fenced bytes.
+func acceptWorkspaceControlInput(s *tuiState, output workspaceInputFocusSetter, control *ducklord.ControlSession, session ducklord.RemoteSession, replay *workspaceInputReplay) bool {
+	if !s.workspaceControlMayAccept() || !controlMatchesSession(control, session, s.ownerName) {
+		return false
+	}
+	key, ok := terminalOutputKey(session)
+	if !ok || !setWorkspaceInputFocus(output, key) {
+		return false
+	}
+	s.focused = true
+	replay.releaseWorkspacePlacement(s)
+	return true
+}
+
 func shouldDeferWorkspaceInput(s *tuiState, replayed bool) bool {
 	// A placement fence belongs to the asynchronous PTY handoff. Keep the first
 	// workspace key queued until the replacement control lease is accepted; the
@@ -286,7 +341,16 @@ func shouldDeferWorkspaceInput(s *tuiState, replayed bool) bool {
 // shouldRouteWorkspaceProjectInputAsNavigation identifies the project-focus
 // shortcut while a replacement PTY lease is still fenced. Route this key
 // locally so the user can reach the Project pane during restoration.
-func shouldRouteWorkspaceProjectInputAsNavigation(s *tuiState, input []byte) bool {
+//
+// A fence armed for a focused-PTY handoff (for example a direct Ctrl-B d detach
+// whose surviving pane is still opening its writer) holds typed shell input,
+// not navigation. A "b" inside that command must stay behind the fence;
+// treating it as the Project shortcut drops the lease and sends the rest of the
+// command to the Project pane.
+func shouldRouteWorkspaceProjectInputAsNavigation(s *tuiState, input []byte, fencedForPTY bool) bool {
+	if fencedForPTY && s.workspacePlacementInputPending {
+		return false
+	}
 	return s.workspacePreview && !s.focused && !s.newSessionMode && !s.workspacePaneMode &&
 		s.shortcut("project_focus", string(input))
 }
@@ -2264,6 +2328,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		}
 		return resetWorkspacePaneChange()
 	}
+	replay := workspaceInputReplay{input: make(chan []byte, 1)}
 	acceptWorkspaceControl := func(restored ...ducklord.RemoteSession) bool {
 		// A workspace modal owns input while it is open.  Async output/control
 		// readiness must not reclaim the PTY focus that opening the modal
@@ -2290,11 +2355,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.outputErr = "Session pane or writer changed before PTY control became ready"
 			return false
 		}
-		key, ok := terminalOutputKey(session)
-		if !ok || !setWorkspaceInputFocus(workspaceOutput, key) {
+		if !acceptWorkspaceControlInput(state, workspaceOutput, control, session, &replay) {
 			return false // the visible raw-output lease may still be opening
 		}
-		state.focused = true
 		pendingControlSince = time.Time{}
 		attachCanResize = control.ResizeBarrier != nil
 		if nav, err := state.workspaceNavigation(); err == nil {
@@ -2359,19 +2422,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	selectPooledOutput()
 	go readInput(ctx, input, inputReady)
 	inputPending := false
-	replayInput := make(chan []byte, 1)
-	replayQueued := false
-	var deferredWorkspaceInput []byte
-	deferredWorkspaceReplay := false
-	// Direct pane detach fences user bytes until the surviving pane's PTY
-	// lease is accepted. Those bytes belong to the PTY, unlike deferred
-	// workspace navigation input, so replay them with terminal focus intact.
-	deferredWorkspaceInputToPTY := false
 	clearWorkspacePlacementInput := func() {
 		state.workspacePlacementInputPending = false
-		deferredWorkspaceInput = nil
-		deferredWorkspaceReplay = false
-		deferredWorkspaceInputToPTY = false
+		replay.deferred = nil
+		replay.navigation = false
+		replay.toPTY = false
 	}
 	panePrefixTimer := time.NewTimer(time.Hour)
 	if !panePrefixTimer.Stop() {
@@ -2396,12 +2451,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		}
 	}
 	queuePaneReplay := func() {
-		if replayQueued || len(state.panePrefixReplay) == 0 {
+		if replay.queued || len(state.panePrefixReplay) == 0 {
 			return
 		}
-		replay := state.takePanePrefixReplay()
-		replayInput <- replay
-		replayQueued = true
+		pending := state.takePanePrefixReplay()
+		replay.input <- pending
+		replay.queued = true
 	}
 	defer stopPanePrefixTimer()
 	lastOutputRender := time.Time{}
@@ -2412,10 +2467,14 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		}
 	}
 	for {
+		// An earlier local replay can occupy the single replay slot when a
+		// writer/output completion accepts focus. Retry after that replay is
+		// consumed, before selecting any newer keyboard bytes.
+		replay.retryWorkspacePlacement(state, control)
 		// Inventory placement selects a newly created Session asynchronously. Queue
 		// the same local attach action used by Enter so the selected pane acquires
 		// a PTY control lease before the next user bytes are handled.
-		if state.workspacePlacementFocusPending && !state.workspacePaneFocusRestorePending && !replayQueued {
+		if state.workspacePlacementFocusPending && !state.workspacePaneFocusRestorePending && !replay.queued {
 			state.workspacePlacementFocusPending = false
 			// A quick-shell placement replaces the pane owned by the current
 			// control session. Release that old writer before replaying the local
@@ -2440,27 +2499,24 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			// Session before opening its writer lease, otherwise the lease
 			// completion cannot transfer raw input focus to the new PTY.
 			selectPooledOutput()
-			replayInput <- []byte("\r")
-			replayQueued = true
+			replay.input <- []byte("\r")
+			replay.queued = true
 		}
 		// A prefix command can finish while Help's asynchronous PTY focus lease
 		// is still pending.  Keep it queued until the lease restores terminal
 		// focus; dispatching it immediately would apply the command to the
 		// navigation pane.
-		if state.focused && !state.helpFocusRestorePending && !replayQueued && len(state.panePrefixReplay) != 0 {
-			replayInput <- state.takePanePrefixReplay()
-			replayQueued = true
+		if state.focused && !state.helpFocusRestorePending && !replay.queued && len(state.panePrefixReplay) != 0 {
+			replay.input <- state.takePanePrefixReplay()
+			replay.queued = true
 		}
 		// A continuously producing PTY can keep its output channel ready and
 		// starve keyboard input in a Go select. Once input is queued, temporarily
 		// remove the output case so controls such as Ctrl-C and Ctrl-] run first.
 		attachOutputSelect := attachOutputSource
 		outputEventsSelect := outputEvents
-		inputSelect := (<-chan []byte)(input)
-		if replayQueued {
-			inputSelect = replayInput
-		}
-		if inputPending || len(input) != 0 || replayQueued {
+		inputSelect := replay.selectInput(input)
+		if inputPending || len(input) != 0 || replay.queued {
 			attachOutputSelect = nil
 			outputEventsSelect = nil
 		}
@@ -2471,9 +2527,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.panePrefixPending, state.panePrefixSuffix = false, ""
 				state.panePrefixDeadline = time.Time{}
 				state.dispatchPaneCommand(command)
-				if replay := state.takePanePrefixReplay(); len(replay) != 0 {
-					replayInput <- replay
-					replayQueued = true
+				if pending := state.takePanePrefixReplay(); len(pending) != 0 {
+					replay.input <- pending
+					replay.queued = true
 				}
 				state.render(os.Stdout)
 			}
@@ -2904,32 +2960,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.render(os.Stdout)
 					continue
 				}
-				if state.workspacePlacementInputPending {
-					state.workspacePlacementInputPending = false
-					if len(deferredWorkspaceInput) != 0 && !replayQueued {
-						replayInput <- deferredWorkspaceInput
-						deferredWorkspaceInput = nil
-						deferredWorkspaceReplay = !deferredWorkspaceInputToPTY
-						deferredWorkspaceInputToPTY = false
-						replayQueued = true
-					}
-				}
 				restorePendingFocus()
 				drainNotesPendingInput(state, control)
 				state.render(os.Stdout)
 				continue
 			}
 			state.focused = true
-			if state.workspacePlacementInputPending {
-				state.workspacePlacementInputPending = false
-				if len(deferredWorkspaceInput) != 0 && !replayQueued {
-					replayInput <- deferredWorkspaceInput
-					deferredWorkspaceInput = nil
-					deferredWorkspaceReplay = !deferredWorkspaceInputToPTY
-					deferredWorkspaceInputToPTY = false
-					replayQueued = true
-				}
-			}
+			replay.releaseWorkspacePlacement(state)
 			attachCanResize = control.ResizeBarrier != nil
 			state.outputErr = ""
 			if state.sessionFreshlyDisplayed(state.activePTYSession()) {
@@ -3260,12 +3297,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				renderOutput()
 			}
 		case b := <-inputSelect:
-			replayedInput := replayQueued
-			if replayQueued {
-				replayQueued = false
+			replayedInput := replay.queued
+			if replay.queued {
+				replay.queued = false
 			}
-			workspaceNavigationReplay := deferredWorkspaceReplay
-			deferredWorkspaceReplay = false
+			workspaceNavigationReplay := replay.navigation
+			replay.navigation = false
 			if shouldRouteWorkspaceReplayAsNavigation(workspaceNavigationReplay) {
 				// The replacement lease may have restored focused before the
 				// deferred key arrives; route it through workspace navigation.
@@ -3280,9 +3317,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
-			workspaceProjectNavigation := shouldRouteWorkspaceProjectInputAsNavigation(state, b)
+			workspaceProjectNavigation := shouldRouteWorkspaceProjectInputAsNavigation(state, b, replay.toPTY)
 			if shouldDeferWorkspaceInput(state, replayedInput) && !workspaceProjectNavigation {
-				deferredWorkspaceInput = append(deferredWorkspaceInput, b...)
+				replay.deferred = append(replay.deferred, b...)
 				continue
 			}
 			var selectedActionTarget *ducklord.RemoteSession
@@ -3331,7 +3368,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					// A replacement control really is asynchronous, so fence the
 					// first command only on this path.
 					state.workspacePlacementInputPending = true
-					deferredWorkspaceInput = nil
+					replay.deferred = nil
 					if controlOpenCancel != nil {
 						controlOpenCancel()
 						controlOpenCancel = nil
@@ -3348,7 +3385,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					// directly; routing Esc through Project would consume the user's
 					// first shell command.
 					state.workspacePlacementInputPending = true
-					deferredWorkspaceInput = nil
+					replay.deferred = nil
 					if restoreSession.Client == "" {
 						state.outputErr = "focused Session disappeared before PTY restore"
 						state.workspacePaneFocusRestorePending = false
@@ -3397,7 +3434,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.workspacePaneFocusRestorePending = false
 					state.workspacePaneRestoreFocused = false
 					state.workspacePlacementInputPending = false
-					deferredWorkspaceInput = nil
+					replay.deferred = nil
 					state.beginCreate()
 				}
 				// Esc from a focused detach confirmation is handled by the
@@ -3426,7 +3463,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						// captured Session and keep the first shell command fenced
 						// until that replacement writer is accepted.
 						state.workspacePlacementInputPending = true
-						deferredWorkspaceInput = nil
+						replay.deferred = nil
 						if controlOpenCancel != nil {
 							controlOpenCancel()
 							controlOpenCancel = nil
@@ -3516,9 +3553,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						// when the pending-input gate has just observed the writer as
 						// unavailable; dispatchPaneCommand would leave the selection
 						// in the list and let the next PTY sentinel be consumed there.
-						if state.beginFocusedPaneNavigation(command) && !replayQueued {
-							replayInput <- []byte("\r")
-							replayQueued = true
+						if state.beginFocusedPaneNavigation(command) && !replay.queued {
+							replay.input <- []byte("\r")
+							replay.queued = true
 						}
 					} else if !state.focused && state.helpFocusRestorePending {
 						state.panePrefixReplay = append([]byte(shortcutInput(state.cfg.Shortcut("pane_prefix"))), []byte(command)...)
@@ -3526,15 +3563,15 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						// A direct focused detach bypasses the workspace modal branch.
 						// Run the same lease teardown, then replay Enter so the selected
 						// surviving pane opens its control writer.
-						if resetWorkspacePaneChangeIfNeeded() && state.workspaceAttachFromProject && !replayQueued {
+						if resetWorkspacePaneChangeIfNeeded() && state.workspaceAttachFromProject && !replay.queued {
 							// The surviving pane is selected synchronously, but its
 							// control lease opens asynchronously. Hold real shell input
 							// until that lease has been accepted.
 							state.workspacePlacementInputPending = true
-							deferredWorkspaceInputToPTY = true
-							deferredWorkspaceInput = nil
-							replayInput <- []byte("\r")
-							replayQueued = true
+							replay.toPTY = true
+							replay.deferred = nil
+							replay.input <- []byte("\r")
+							replay.queued = true
 						}
 					} else {
 						state.dispatchPaneCommand(command)
@@ -3753,15 +3790,15 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					}
 				} else {
 					if state.dispatchFocusedPaneCommand(command) {
-						if resetWorkspacePaneChangeIfNeeded() && state.workspaceAttachFromProject && !replayQueued {
+						if resetWorkspacePaneChangeIfNeeded() && state.workspaceAttachFromProject && !replay.queued {
 							// The surviving pane is selected synchronously, but its
 							// control lease opens asynchronously. Hold real shell input
 							// until that lease has been accepted.
 							state.workspacePlacementInputPending = true
-							deferredWorkspaceInputToPTY = true
-							deferredWorkspaceInput = nil
-							replayInput <- []byte("\r")
-							replayQueued = true
+							replay.toPTY = true
+							replay.deferred = nil
+							replay.input <- []byte("\r")
+							replay.queued = true
 						}
 						state.render(os.Stdout)
 						continue
@@ -3946,15 +3983,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						// shell command can be lost.
 						restoreSession := state.activePTYSession()
 						if control != nil && controlMatchesSession(control, restoreSession, state.ownerName) {
-							if acceptWorkspaceControl() {
-								state.workspacePlacementInputPending = false
-								if len(deferredWorkspaceInput) != 0 && !replayQueued {
-									replayInput <- deferredWorkspaceInput
-									deferredWorkspaceInput = nil
-									deferredWorkspaceReplay = true
-									replayQueued = true
-								}
-							}
+							acceptWorkspaceControl()
 						} else {
 							if control != nil {
 								_ = control.Stdin.Close()

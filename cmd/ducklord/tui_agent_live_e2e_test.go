@@ -159,8 +159,12 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		t.Fatalf("read Host hook status before install: %v", beforeInstallErr)
 	}
 	// Install through the same explicit Host confirmation flow operators use.
-	writePTY(t, terminal, "hjjj\r")
-	waitLiveAgentScreen(t, capture, "Agent notification hooks", 10*time.Second)
+	writePTY(t, terminal, "h")
+	waitLiveAgentScreen(t, capture, "› client-a · connected", 10*time.Second)
+	writePTY(t, terminal, "\r") // select client-a from the Host list.
+	waitLiveAgentScreen(t, capture, "Host actions · client-a", 10*time.Second)
+	writePTY(t, terminal, "jjj\r") // Agent notification hooks is action index 3.
+	waitLiveAgentScreen(t, capture, "Install Codex Stop hook", 15*time.Second)
 	if agent == "claude" {
 		writePTY(t, terminal, "jj")
 	}
@@ -200,7 +204,9 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	precheck := "SHELL_INPUT_" + stamp
 	writePTY(t, terminal, "printf 'SHELL_%s_"+stamp+"\\n' INPUT\r")
 	waitLiveAgentScreen(t, capture, precheck, 10*time.Second)
-	launch := "codex --no-alt-screen --sandbox read-only\r"
+	// Newer Codex versions can bypass native background-server startup;
+	// older fixture versions do not recognize --no-daemon.
+	launch := "if codex --help | grep -q -- '--no-daemon'; then codex --no-daemon --no-alt-screen --sandbox read-only; else codex --no-alt-screen --sandbox read-only; fi\r"
 	ready := "OpenAI Codex"
 	if agent == "claude" {
 		// Keep this three-turn fixture synchronous. Claude can otherwise
@@ -242,7 +248,9 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 			waitLiveAgentScreen(t, capture, "Hooks need review", 20*time.Second)
 			waitLiveAgentScreen(t, capture, "Trust all and continue", 20*time.Second)
 			time.Sleep(250 * time.Millisecond) // Let the interactive choice become input-ready.
-			writePTY(t, terminal, "\x1b[B\r")  // Trust all and continue.
+			writePTY(t, terminal, "\x1b[B")    // Select Trust all and continue.
+			time.Sleep(250 * time.Millisecond)
+			writePTY(t, terminal, "\r")
 			waitE2E(t, 20*time.Second, func() bool {
 				screen := capture.currentText()
 				return strings.Contains(screen, "Codex") && strings.Contains(screen, "Session focus:") && !strings.Contains(screen, "Hooks need review")
