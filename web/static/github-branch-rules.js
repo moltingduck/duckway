@@ -390,7 +390,7 @@
       <div class="gbr-tpls"><span class="gbr-sub">Start from:</span>${tplButtons}</div>
       <ul class="gbr-rules" aria-label="Branch rules, most specific first">${st.rules.map(function (r, i) { return ruleView(inst, r, i); })}</ul>
       <div class="gbr-add">
-        <input type="text" class="mono" data-gbr-draft data-on-change="gbrDraft" aria-label="New branch pattern" placeholder="e.g. release/**" value="${st.draft}" spellcheck="false" autocomplete="off" autocapitalize="off">
+        <input type="text" class="mono" data-gbr-draft data-gbr-fk="draft" data-on-change="gbrDraft" aria-label="New branch pattern" placeholder="e.g. release/**" value="${st.draft}" spellcheck="false" autocomplete="off" autocapitalize="off">
         <button type="button" class="btn" data-action="gbrAdd" data-gbr-fk="add">Add branch rule</button>
         <span class="gbr-sub">* one level &middot; ** any depth</span>
       </div>

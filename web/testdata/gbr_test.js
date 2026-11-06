@@ -256,6 +256,34 @@ check('presets throw without the branch-rules script', () => {
     sb.window.DW.actions.gbrDraft({ closest: () => h, value: 'agent/x' });
     assert(!html.includes('gbr-add-error'), 'error not cleared by the next edit');
   });
+  // The draft input has a stable focus key, so render hands focus back to it after the
+  // Enter path replaces the DOM (invalid: error shown; valid: rule added, draft cleared).
+  check('focus returns to the add-rule draft input after Enter', () => {
+    const listeners = {};
+    let html = '', focused = [];
+    const draftEl = { disabled: false, focus() { focused.push('draft'); }, getAttribute: (n) => (n === 'data-gbr-fk' ? 'draft' : null) };
+    const h = {
+      hidden: false, attrs: {}, isConnected: true,
+      get innerHTML() { return html; }, set innerHTML(v) { html = v; },
+      contains: (el) => el === draftEl, setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; },
+      querySelector: (sel) => (sel === '[data-gbr-fk="draft"]' ? draftEl : null), addEventListener(t, f) { listeners[t] = f; }
+    };
+    const inst = g.create({ ctx: { push: true, prWrite: true, dispatch: false } });
+    g.mount(h, inst);
+    assert(html.includes('data-gbr-draft data-gbr-fk="draft"'), 'draft input has no focus key');
+    const press = (value) => {
+      sb.document.activeElement = draftEl; // the input has focus when Enter is pressed
+      focused = [];
+      listeners.keydown({ key: 'Enter', preventDefault() {}, target: { value, closest: () => h, matches: () => true, hasAttribute: (n) => n === 'data-gbr-draft' } });
+      sb.document.activeElement = null;
+    };
+    press('a b');
+    assert(html.includes('gbr-add-error'));
+    assert.deepStrictEqual(focused, ['draft'], 'focus not restored after an invalid Enter');
+    press('agent/new');
+    assert(!html.includes('gbr-add-error') && html.includes('agent/new'));
+    assert.deepStrictEqual(focused, ['draft'], 'focus not restored after a valid Enter');
+  });
   check('render requested from inside render is deferred, not nested', () => {
     let depth = 0, maxDepth = 0, sets = 0, html = '', hook = null;
     const h = {

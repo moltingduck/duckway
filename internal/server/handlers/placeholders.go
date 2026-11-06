@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -93,6 +94,10 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	if req.PermissionConfig != nil {
 		if err := svc.ValidatePermissionConfig(*req.PermissionConfig); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := requireGitHubForBranchPolicies(*req.PermissionConfig, service.Name); err != nil {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -325,6 +330,13 @@ func (h *PlaceholderHandler) Update(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if service, serr := h.services.GetByID(ph.ServiceID); serr != nil {
+			jsonError(w, "service not found", http.StatusNotFound)
+			return
+		} else if err := requireGitHubForBranchPolicies(*req.PermissionConfig, service.Name); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		normalized, nerr := svc.NormalizePermissionConfigPolicies(*req.PermissionConfig)
 		if nerr != nil {
 			jsonError(w, nerr.Error(), http.StatusBadRequest)
@@ -382,4 +394,17 @@ func defaultEnvName(serviceName string) string {
 	default:
 		return strings.ToUpper(serviceName) + "_API_KEY"
 	}
+}
+
+// requireGitHubForBranchPolicies rejects a permission config that carries a
+// branch policy on a placeholder whose service is not GitHub: the proxy only
+// enforces policies for the github service, so elsewhere it would be ignored.
+func requireGitHubForBranchPolicies(cfg, serviceName string) error {
+	if serviceName == "github" {
+		return nil
+	}
+	if pols, _ := svc.ParseGitHubBranchPolicies(cfg); len(pols) > 0 {
+		return errors.New("branch rules are only supported on GitHub placeholders")
+	}
+	return nil
 }
