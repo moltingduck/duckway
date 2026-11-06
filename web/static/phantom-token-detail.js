@@ -139,6 +139,7 @@
 
   /* ---------- state sync ---------- */
   function rebuildJSON() {
+    ghSyncPolicies();
     S.jsonText = PTACL.build({ version: S.version, provider: S.provider, rules: S.rules, extra: S.extra, v2: S.v2 });
     S.jsonErr = '';
     $('pt-json').value = S.jsonText;
@@ -151,7 +152,7 @@
     $('pt-json').setAttribute('aria-invalid', S.jsonErr ? 'true' : 'false');
     $('pt-json-ok').hidden = !!S.jsonErr;
   }
-  function refresh() {
+  function refresh(skipGitHub) {
     var dirty = isDirty(), probs = ruleProblems();
     $('pt-dirty').hidden = !dirty;
     var canSave = dirty && !S.jsonErr && !probs && !S.saving && !approvalProblem() && !ghProblem();
@@ -166,7 +167,7 @@
     $('pt-test-go').disabled = !!S.jsonErr || S.testing > 0;
     $('pt-test-blocked').hidden = !S.jsonErr;
     renderLayers();
-    renderGitHub();
+    if (!skipGitHub) renderGitHub();
   }
   // A repository row with every capability set to None grants nothing: block
   // saving until it is given access or removed (it would silently deny all).
@@ -176,7 +177,8 @@
       var row = caps[r] || {};
       return ['contents', 'pull_requests', 'issues', 'actions'].every(function (k) { return !row[k] || row[k] === 'none'; });
     });
-    if (!bad.length) return '';
+    var bp = ghInstances().map(function (e) { var p = GBR.problems(e.inst); return p.length ? e.repo + ' branch rules: ' + p[0] : ''; }).filter(Boolean);
+    if (!bad.length) return bp[0] || '';
     return (bad.length === 1 ? bad[0] + ' has' : bad.length + ' repositories have') + ' no access. Give ' + (bad.length === 1 ? 'it' : 'them') + ' a capability or remove ' + (bad.length === 1 ? 'it' : 'them') + ' to save.';
   }
   function approvalProblem() {
@@ -184,6 +186,8 @@
     return '';
   }
   function edited() { S.hit = -1; PTACL.settle(S.rules); clearTest(); rebuildJSON(); refresh(); }
+  // A branch-rule edit re-renders only its own panel, so focus stays where it is.
+  function editedLight() { S.hit = -1; clearTest(); rebuildJSON(); refresh(true); renderRules(); }
 
   /* ---------- rule actions ---------- */
   DW.actions.ptAddRule = function () {
@@ -402,7 +406,7 @@
   function ghRow(repo, caps) {
     var row = caps[repo] || {}, defs = PTACL.ghCapabilities();
     var any = defs.some(function (c) { return row[c.key] === 'read' || row[c.key] === 'write'; });
-    return DW.html`<li class="pt-gh-row"><div class="pt-gh-head"><span class="mono pt-repo">${repo}</span>${any ? '' : DW.html`<span class="pt-cap pt-cap-none">no access</span>`}<button type="button" class="btn btn-sm btn-dz" data-action="ptGhRemove" data-repo="${repo}" data-fk="${'g:' + repo + ':rm'}" aria-label="${'Remove ' + repo}">Remove</button></div><div class="pt-gh-caps">${defs.map(function (c) { return capSelect(repo, c, row[c.key] || 'none'); })}</div></li>`;
+    return DW.html`<li class="pt-gh-row" data-repo-row="${repo.toLowerCase()}"><div class="pt-gh-head"><span class="mono pt-repo">${repo}</span>${any ? '' : DW.html`<span class="pt-cap pt-cap-none">no access</span>`}<button type="button" class="btn btn-sm btn-dz" data-action="ptGhRemove" data-repo="${repo}" data-fk="${'g:' + repo + ':rm'}" aria-label="${'Remove ' + repo}">Remove</button></div><div class="pt-gh-caps">${defs.map(function (c) { return capSelect(repo, c, row[c.key] || 'none'); })}</div><div class="gbr-host" data-gbr-repo="${repo.toLowerCase()}"></div></li>`;
   }
   function renderGitHub() {
     var card = $('pt-github');
@@ -424,7 +428,15 @@
       var caps = ghCaps(), repos = Object.keys(caps).sort(function (a, b) { return a.toLowerCase() < b.toLowerCase() ? -1 : 1; });
       v2box.hidden = true; form.hidden = false;
       if (!repos.length) DW.setHTML(rows, DW.html`<p class="text-muted text-sm">No repositories yet. Without rows, this token's GitHub requests are limited only by the rules above and the service and credential layers.</p>`);
-      else DW.setHTML(rows, DW.html`<ul class="pt-gh-list" aria-label="Repository capabilities">${repos.map(function (r) { return ghRow(r, caps); })}</ul>`);
+      else {
+        DW.setHTML(rows, DW.html`<ul class="pt-gh-list" aria-label="Repository capabilities">${repos.map(function (r) { return ghRow(r, caps); })}</ul>`);
+        var byKey = {};
+        ghInstances().forEach(function (e) { byKey[e.k] = e.inst; });
+        Array.prototype.forEach.call(rows.querySelectorAll('[data-gbr-repo]'), function (host) {
+          var inst = byKey[host.dataset.gbrRepo];
+          if (inst) GBR.mount(host, inst);
+        });
+      }
       if (active && active.indexOf('g:') === 0) {
         var el = rows.querySelector('[data-fk="' + active.replace(/"/g, '') + '"]');
         if (el && !el.disabled) el.focus();
@@ -438,6 +450,44 @@
     var cur = grants.find(function (g) { return g.repo === repo; }) || grants[0];
     var canPush = !!(cur && cur.push);
     $('pt-gh-cmds').textContent = ['duckway git list', 'duckway git setup', '', '# pick a repository from `duckway git list`:', 'duckway git clone ' + repo, '', 'cd ' + repo.split('/').pop(), canPush ? 'git pull --ff-only && git push' : 'git pull --ff-only'].join('\n');
+  }
+  /* Branch rules (spec section 5): one editor per repository, stored on the generated rule as
+     github_branch_policies[lower-case repo]. A repository without an entry keeps legacy behaviour. */
+  var gbrInst = {};
+  function ghCtx(row) {
+    row = row || {};
+    return { push: row.contents === 'write', prWrite: row.pull_requests === 'write', dispatch: row.actions === 'write', builder: true, requireRun: false };
+  }
+  function ghInstances() {
+    var r = ghRule(), out = [];
+    if (!r || S.jsonErr || S.v2) return out;
+    var live = {};
+    Object.keys(r.caps).forEach(function (repo) {
+      var k = repo.toLowerCase(), stored = r.bp[k] || null, sig = JSON.stringify(stored), ctx = ghCtx(r.caps[repo]);
+      var e = gbrInst[k];
+      live[k] = 1;
+      if (!e || e.sig !== sig) {
+        e = gbrInst[k] = {
+          sig: sig,
+          inst: GBR.create({ ctx: ctx, policy: stored, legacy: stored ? null : { ref_allowlist: [] }, onChange: function (inst) { ghBranchChanged(k, inst); } })
+        };
+      } else GBR.setCtx(e.inst, ctx, true);
+      out.push({ repo: repo, k: k, inst: e.inst });
+    });
+    Object.keys(gbrInst).forEach(function (k) { if (!live[k]) delete gbrInst[k]; });
+    return out;
+  }
+  function ghStore(k, inst) {
+    var r = ghRule(), v = GBR.value(inst);
+    if (!r) return;
+    if (v) r.bp[k] = v; else delete r.bp[k];
+    if (gbrInst[k]) gbrInst[k].sig = JSON.stringify(v);
+  }
+  function ghBranchChanged(k, inst) { ghStore(k, inst); editedLight(); }
+  // Keep stored policies consistent with the capability rows (run workflows needs Actions write,
+  // merge and approve need pull request write) before the config text is rebuilt.
+  function ghSyncPolicies() {
+    ghInstances().forEach(function (e) { if (!e.inst.legacy) ghStore(e.k, e.inst); });
   }
   function ghEnsureRule() {
     var r = ghRule();
@@ -457,7 +507,9 @@
     if (!repo || repo === 'ORG/REPO' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) { ghError('Enter a repository as OWNER/REPO.'); input.focus(); return; }
     var caps = ghCaps();
     if (Object.keys(caps).some(function (k) { return k.toLowerCase() === repo.toLowerCase(); })) { ghError(repo + ' is already listed.'); input.focus(); return; }
-    ghEnsureRule().caps[repo] = { contents: 'read', pull_requests: 'none', issues: 'none', actions: 'none' };
+    var rule = ghEnsureRule();
+    rule.caps[repo] = { contents: 'read', pull_requests: 'none', issues: 'none', actions: 'none' };
+    rule.bp[repo.toLowerCase()] = GBR.defaultValue(ghCtx(rule.caps[repo]));
     input.value = '';
     edited(); renderRules();
     ghStatus(repo + ' added with read access to contents. Save to keep it.');
@@ -473,6 +525,8 @@
     var r = ghRule();
     if (!r) return;
     delete r.caps[el.dataset.repo];
+    delete r.bp[el.dataset.repo.toLowerCase()];
+    delete gbrInst[el.dataset.repo.toLowerCase()];
     ghDropEmpty();
     ghError('');
     ghStatus(el.dataset.repo + ' removed. Use Discard to undo.');
@@ -486,9 +540,10 @@
     DW.modal.close('#pt-v2-modal');
     if (!S.v2) return;
     var level = function (read, write) { return write ? 'write' : (read ? 'read' : 'none'); };
-    var caps = {}, repos = S.v2.repositories || {};
+    var caps = {}, bp = {}, repos = S.v2.repositories || {};
     Object.keys(repos).forEach(function (repo) {
       var c = (repos[repo] || {}).capabilities || {};
+      if ((repos[repo] || {}).branch_policy) bp[repo.toLowerCase()] = { branch_policy: repos[repo].branch_policy, pull_requests_merge: !!c.pull_requests_merge, pull_requests_approve: !!c.pull_requests_approve };
       caps[repo] = {
         contents: level(c.clone || c.releases_read || c.push || c.releases_write, c.push || c.releases_write),
         pull_requests: level(c.pull_requests_read || c.pull_requests_write, c.pull_requests_write),
@@ -499,6 +554,7 @@
     S.version = '1'; S.v2 = null;
     var g = PTACL.newGitHubRule();
     g.caps = caps;
+    g.bp = bp;
     S.rules = [g];
     edited(); renderRules();
     ghStatus('Converted to capability rows. Review them, then save.');

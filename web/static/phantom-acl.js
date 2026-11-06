@@ -33,7 +33,7 @@
 
   var METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
   var RULE_KEYS = { name: 1, endpoints: 1, deny_all_other: 1 };
-  var GH_RULE_KEYS = { name: 1, endpoints: 1, deny_all_other: 1, github_capabilities: 1 };
+  var GH_RULE_KEYS = { name: 1, endpoints: 1, deny_all_other: 1, github_capabilities: 1, github_branch_policies: 1 };
   var EP_KEYS = { method: 1, path: 1, allow: 1, approve: 1 };
   var EFFECTS = ['allow', 'deny', 'approve'];
   var GH_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -104,11 +104,23 @@
     if ('name' in rule && typeof rule.name !== 'string') return null;
     if (rule.deny_all_other !== true || !ghCapsValid(rule.github_capabilities)) return null;
     if (!ghEndpointsMatch(rule.endpoints, ghCompile(rule.github_capabilities))) return null;
-    var caps = {};
+    if ('github_branch_policies' in rule && !isObj(rule.github_branch_policies)) return null;
+    var caps = {}, bp = {};
     Object.keys(rule.github_capabilities).forEach(function (r) { caps[r] = Object.assign({}, rule.github_capabilities[r]); });
-    return { t: 'g', name: 'name' in rule ? rule.name : 'GitHub repositories', caps: caps };
+    var pol = rule.github_branch_policies || {};
+    Object.keys(pol).forEach(function (r) { if (isObj(pol[r])) bp[r.toLowerCase()] = JSON.parse(JSON.stringify(pol[r])); });
+    return { t: 'g', name: 'name' in rule ? rule.name : 'GitHub repositories', caps: caps, bp: bp };
   }
-  function newGitHubRule() { return { t: 'g', name: 'GitHub repositories', caps: {} }; }
+  function newGitHubRule() { return { t: 'g', name: 'GitHub repositories', caps: {}, bp: {} }; }
+  // Branch policies (spec section 5) keyed by lower-case owner/repo, only for repositories in caps.
+  function ghPolicies(r) {
+    var out = {}, bp = r.bp || {};
+    Object.keys(r.caps).forEach(function (repo) {
+      var k = repo.toLowerCase();
+      if (isObj(bp[k])) out[k] = bp[k];
+    });
+    return out;
+  }
 
   // Returns a simple-rule model for an engine rule, or null when it must stay custom.
   function classifyRule(rule) {
@@ -142,7 +154,14 @@
 
   function ruleToEngine(r) {
     if (r.t === 'c') return r.raw;
-    if (r.t === 'g') return { name: r.name, github_capabilities: r.caps, endpoints: ghCompile(r.caps), deny_all_other: true };
+    if (r.t === 'g') {
+      var g = { name: r.name, github_capabilities: r.caps };
+      var pol = ghPolicies(r);
+      if (Object.keys(pol).length) g.github_branch_policies = pol;
+      g.endpoints = ghCompile(r.caps);
+      g.deny_all_other = true;
+      return g;
+    }
     var out = {};
     var name = r.auto ? autoName(r) : r.name;
     if (r.auto || r.hasName) out.name = name;
@@ -319,6 +338,6 @@
     parse: parse, build: build, validate: validate, normalize: normalize, classifyRule: classifyRule,
     ruleProblem: ruleProblem, pathAdvice: pathAdvice, newRule: newRule, describeCustom: describeCustom,
     summarize: summarize, autoName: autoName, endpointEffect: endpointEffect, EFFECTS: EFFECTS,
-    setGitHubTable: setGitHubTable, ghCapabilities: ghCapabilities, ghCompile: ghCompile, newGitHubRule: newGitHubRule, settle: settle
+    setGitHubTable: setGitHubTable, ghPolicies: ghPolicies, ghCapabilities: ghCapabilities, ghCompile: ghCompile, newGitHubRule: newGitHubRule, settle: settle
   };
 })();

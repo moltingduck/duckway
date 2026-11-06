@@ -1148,7 +1148,7 @@ a.ro-stat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .repo-capability-grid { display: grid; grid-template-columns: repeat(3, minmax(9rem, 1fr)); gap: .5rem .75rem; margin: .75rem 0; }
 .repo-capability-grid label { display: flex; align-items: center; gap: 0.35rem; }
 .repo-capability-grid input[type="checkbox"], .repo-grant-name input[type="checkbox"] { width: auto; }
-.repo-policy-lists { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; }
+.repo-policy-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
 @media (max-width: 760px) {
   .repo-policy-lists { grid-template-columns: 1fr; }
   .repo-capability-grid { grid-template-columns: repeat(2, minmax(8rem, 1fr)); }
@@ -2409,3 +2409,72 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
   .cl-filters .search-bar { flex-basis: 14rem; }
   .lg-search { flex-basis: 200px; }
 }
+
+/* GitHub branch rules editor (static/github-branch-rules.js), shared by the
+   client assign dialog and the phantom token builder. */
+.gbr-host { margin: 0.75rem 0; container-type: inline-size; }
+.gbr-host[hidden] { display: none; }
+.gbr { display: flex; flex-direction: column; gap: 0.75rem; padding: 0.8rem; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
+.gbr-h { margin: 0; font-size: 0.9375rem; }
+.gbr-h2 { margin: 0; font-size: 0.8125rem; font-weight: 600; }
+.gbr-sub { color: var(--muted); font-size: 0.8125rem; line-height: 1.5; margin: 0; }
+.gbr-status { color: var(--ok-text); }
+.gbr-tpls, .gbr-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.gbr-tpl, .gbr-chip { min-height: 2.25rem; padding: 0 0.7rem; border: 1px dashed var(--line); border-radius: var(--r-control); background: transparent; color: var(--accent-text); font: 500 0.8125rem var(--font); cursor: pointer; }
+.gbr-chip { font-family: var(--mono); font-size: 0.75rem; border-radius: 999px; }
+.gbr-tpl:hover, .gbr-chip:hover { border-color: var(--accent); }
+.gbr-rules { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r-control); overflow: hidden; }
+.gbr-rule { border-bottom: 1px solid var(--line); }
+.gbr-rule:last-child { border-bottom: 0; }
+.gbr-rule-main { display: grid; grid-template-columns: minmax(7rem, 12rem) auto minmax(0, 1fr) 2.5rem; gap: 0.5rem 0.9rem; align-items: center; padding: 0.6rem 0.8rem; }
+.gbr-rule-name { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.gbr-rule-label { font-weight: 500; overflow-wrap: anywhere; }
+.gbr-seg { display: inline-flex; max-width: 100%; }
+.gbr-seg-btn { min-height: 2.25rem; padding: 0 0.7rem; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: 500 0.8125rem var(--font); cursor: pointer; margin-left: -1px; }
+.gbr-seg-btn:first-child { border-radius: var(--r-control) 0 0 var(--r-control); margin-left: 0; }
+.gbr-seg-btn:last-child { border-radius: 0 var(--r-control) var(--r-control) 0; }
+.gbr-seg-btn:hover { border-color: var(--accent); position: relative; }
+.gbr-seg-on { background: color-mix(in srgb, var(--accent) 20%, var(--surface)); border-color: var(--accent); color: var(--accent-text); position: relative; }
+.gbr-seg-btn:focus-visible, .gbr-tpl:focus-visible, .gbr-chip:focus-visible, .gbr-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; position: relative; }
+.gbr-run { display: flex; align-items: center; gap: 0.5rem; min-height: 2.25rem; font-size: 0.8125rem; }
+.gbr-run input, .gbr-opt input { width: auto; flex: none; }
+.gbr-x { width: 2.25rem; height: 2.25rem; border: 0; border-radius: var(--r-control); background: transparent; color: var(--muted); font-size: 1.1rem; cursor: pointer; }
+.gbr-x:hover { background: var(--track); color: var(--ink); }
+.gbr-warn { margin: 0 0.8rem 0.6rem; padding: 0.5rem 0.75rem; border-radius: var(--r-control); background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn-text); font-size: 0.8125rem; }
+.gbr-add { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.gbr-add input { flex: 1 1 10rem; max-width: 16rem; min-height: 2.25rem; }
+.gbr-add .btn { min-height: 2.25rem; }
+.gbr-group { display: flex; flex-direction: column; gap: 0.5rem; padding-top: 0.75rem; border-top: 1px solid var(--line); }
+.gbr-group input[type="text"] { min-height: 2.25rem; }
+.gbr-tags { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+.gbr-tags input { flex: 1 1 10rem; max-width: 18rem; }
+.gbr-opt { display: flex; gap: 0.6rem; align-items: flex-start; font-size: 0.875rem; }
+.gbr-opt input { margin-top: 0.2rem; }
+.gbr-opt > span { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.gbr-hit { margin: 0; font-size: 0.8125rem; color: var(--muted); }
+.gbr-hit .mono, .gbr-hit strong { color: var(--ink); }
+.gbr-verdicts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.gbr-verdict { display: flex; gap: 0.7rem; align-items: center; padding: 0.4rem 0.7rem; border-radius: var(--r-control); font-size: 0.8125rem; }
+.gbr-verdict-word { min-width: 4.5rem; font-weight: 600; }
+.gbr-ok { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.gbr-ok .gbr-verdict-word { color: var(--ok-text); }
+.gbr-no { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.gbr-no .gbr-verdict-word { color: var(--danger-text); }
+.gbr-matrix { font-size: 0.8125rem; }
+.gbr-matrix summary { cursor: pointer; color: var(--muted); min-height: 2rem; display: flex; align-items: center; }
+.gbr-matrix table { width: 100%; }
+.gbr-problems { margin: 0; padding: 0.6rem 0.8rem 0.6rem 1.8rem; border-radius: var(--r-control); background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger-text); font-size: 0.8125rem; }
+.gbr-notice { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; padding: 0.8rem; border: 1px dashed var(--line); border-radius: var(--r-control); }
+.gbr-diffs { margin: 0; padding-left: 1.2rem; font-size: 0.8125rem; display: flex; flex-direction: column; gap: 0.2rem; }
+.gbr-legacy { background: transparent; }
+.repo-policy-field { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+.repo-policy-field .repo-grant-section-label { margin-bottom: 0; }
+@container (max-width: 34rem) {
+  .gbr-rule-main { grid-template-columns: minmax(0, 1fr) 2.5rem; }
+  .gbr-rule-name { grid-column: 1; }
+  .gbr-x, .gbr-x-gap { grid-column: 2; grid-row: 1; justify-self: end; }
+  .gbr-seg, .gbr-run { grid-column: 1 / -1; }
+  .gbr-seg { display: flex; }
+  .gbr-seg-btn { flex: 1 1 0; padding: 0 0.3rem; }
+}
+@media (max-width: 760px) { .gbr-seg-btn, .gbr-tpl, .gbr-chip, .gbr-x { min-height: 2.75rem; } .gbr-x { min-width: 2.75rem; } }

@@ -43,7 +43,7 @@ func TestPhantomTokensPagesSupportGitHubRepoScopedAssignments(t *testing.T) {
 }
 
 func TestPhantomTokenPagesHaveNoForbiddenDialogsOrInlineStyle(t *testing.T) {
-	for _, f := range []string{"templates/phantom_tokens.html", "templates/phantom_token_detail.html", "static/phantom-tokens.js", "static/phantom-common.js", "static/phantom-token-detail.js", "static/phantom-acl.js"} {
+	for _, f := range []string{"templates/phantom_tokens.html", "templates/phantom_token_detail.html", "static/phantom-tokens.js", "static/phantom-common.js", "static/phantom-token-detail.js", "static/phantom-acl.js", "static/github-branch-rules.js"} {
 		body, err := Content.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -79,7 +79,12 @@ func TestClientDetailTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) 
 		`data-capability`,
 		`repo-grant-section-label">Capabilities`,
 		`github-workflows`,
-		`github-refs`,
+		`Allowed workflows`,
+		`Allowed environments`,
+		`data-gbr-host`,
+		`function mountGrantRows(list)`,
+		`function refreshGrantValidity()`,
+		`/static/github-branch-rules.js`,
 		`installation_permissions`,
 		`function githubCapabilityRequirement(capability)`,
 		`GitHub App installation permission is insufficient: requires `,
@@ -109,6 +114,9 @@ func TestClientDetailTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) 
 		if !strings.Contains(html, want) {
 			t.Fatalf("client detail template missing mintable GitHub repo assignment contract: %s", want)
 		}
+	}
+	if strings.Contains(html, `github-refs`) || strings.Contains(html, `Allowed refs`) {
+		t.Fatal("the legacy Allowed refs field must be gone for new grants")
 	}
 	if strings.Contains(html, `github-policy-preset`) || strings.Contains(html, `<details class="repo-grant-details"`) {
 		t.Fatal("mintable GitHub assignment capabilities should be directly visible without presets")

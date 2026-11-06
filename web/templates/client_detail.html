@@ -189,6 +189,7 @@
         </div>
         <div id="eph-github-repo-status" class="text-sm text-muted mt-1">Repository list loads for GitHub App installation minters.</div>
         <div id="eph-github-repo-list" class="cd-repo-list"></div>
+        <p class="text-sm cl-warn" id="eph-github-problem" role="alert" hidden></p>
       </div>
       <div class="form-group">
         <label class="text-sm">ACL pre-set rules <span class="text-muted">(click to load)</span></label>
@@ -206,7 +207,7 @@
       <div class="modal-actions">
         <button type="button" class="btn btn-sm" data-action="clearEphACL">Clear</button>
         <button type="button" class="btn" data-action="modal-close">Close</button>
-        <button type="submit" class="btn btn-primary">Apply</button>
+        <button type="submit" class="btn btn-primary" id="eph-apply">Apply</button>
       </div>
     </form>
   </div>
@@ -246,13 +247,14 @@
       </div>
       <div id="assign-github-repo-status" class="text-sm text-muted mt-1">Select a GitHub App installation minter key.</div>
       <div id="assign-github-repo-list" class="cd-repo-list"></div>
+      <p class="text-sm cl-warn" id="assign-github-problem" role="alert" hidden></p>
     </div>
     <div class="form-group mt-1">
       <label class="cd-check"><input type="checkbox" id="assign-approval"> Require admin approval on first use</label>
     </div>
     <div class="modal-actions">
       <button type="button" class="btn" data-action="modal-close">Cancel</button>
-      <button type="button" class="btn btn-primary" data-action="submitAssign">Assign &amp; generate phantom token</button>
+      <button type="button" class="btn btn-primary" id="assign-submit" data-action="submitAssign">Assign &amp; generate phantom token</button>
     </div>
   </div>
 </div>
@@ -340,6 +342,7 @@ sudo loginctl enable-linger "$USER"</code></pre>
 </div>
 
 <script nonce="{{$.CSPNonce}}" src="/static/client-install.js"></script>
+<script nonce="{{$.CSPNonce}}" src="/static/github-branch-rules.js"></script>
 <script nonce="{{$.CSPNonce}}">
 var apiKeys = {{.Keys}};
 var keyGroups = {{.Groups}};
@@ -935,6 +938,8 @@ DW.actions.clearEphACL = function() {
   renderACLPreview('eph-acl', 'eph-acl-preview');
 };
 DW.actions.onGitHubGrantToggle = function(el_) { onGitHubGrantToggle(el_); };
+DW.actions.onGitHubRepoEnable = function() { refreshGrantValidity(); };
+DW.actions.onGitHubWorkflowsInput = function(el_) { var row = el_.closest('.assign-github-repo-row'); if (row) syncRowBranchRules(row); };
 DW.actions.saveEditPh = function() { return saveEditPh(); };
 DW.actions.onAssignKeyChange = function() {
   var keySel = el('assign-key-select');
@@ -1050,7 +1055,7 @@ function gitGrantsFromACL(configJSON) {
 	if (cfg.version === '2' && cfg.provider === 'github') {
 		return Object.keys(cfg.repositories || {}).sort().map(function(repo) {
 			var p = cfg.repositories[repo] || {};
-			return {repo: repo, capabilities: p.capabilities || {}, workflow_allowlist: p.workflow_allowlist || [], ref_allowlist: p.ref_allowlist || [], environment_allowlist: p.environment_allowlist || [], pull: !!(p.capabilities || {}).clone, push: !!(p.capabilities || {}).push};
+			return {repo: repo, capabilities: p.capabilities || {}, workflow_allowlist: p.workflow_allowlist || [], ref_allowlist: p.ref_allowlist || [], environment_allowlist: p.environment_allowlist || [], branch_policy: p.branch_policy || null, pull: !!(p.capabilities || {}).clone, push: !!(p.capabilities || {}).push};
 		});
 	}
   var byRepo = {};
@@ -1110,7 +1115,9 @@ function gitACLForRepoGrants(grants) {
 		var caps = grant.capabilities || githubPresetCapabilities(grant.push ? 'developer' : 'read');
 		repositories[grant.repo] = {capabilities: caps};
 		if (grant.workflow_allowlist && grant.workflow_allowlist.length) repositories[grant.repo].workflow_allowlist = grant.workflow_allowlist;
-		if (grant.ref_allowlist && grant.ref_allowlist.length) repositories[grant.repo].ref_allowlist = grant.ref_allowlist;
+		// A repository carries either branch_policy or the legacy ref_allowlist, never both.
+		if (grant.branch_policy) repositories[grant.repo].branch_policy = grant.branch_policy;
+		else if (grant.ref_allowlist && grant.ref_allowlist.length) repositories[grant.repo].ref_allowlist = grant.ref_allowlist;
 		if (grant.environment_allowlist && grant.environment_allowlist.length) repositories[grant.repo].environment_allowlist = grant.environment_allowlist;
   });
 	return {version:'2', provider:'github', repositories:repositories};
@@ -1157,6 +1164,7 @@ function editPh(phId, envName, keyPath) {
   document.getElementById('eph-github-repo-scope').hidden = !(ph && ph.serviceName === 'github');
   document.getElementById('eph-github-repo-status').textContent = 'Repository list loads for GitHub App installation minters.';
   document.getElementById('eph-github-repo-list').replaceChildren();
+  refreshGrantValidity();
 
   // Load current permission_config + ACL templates
   fetch('/api/placeholders/with-approvals?client_id=' + encodeURIComponent(CID), {credentials:'same-origin'})
@@ -1208,11 +1216,13 @@ function loadEditGitHubRepos() {
   if (!key || !key.isMintable) {
     status.textContent = 'This GitHub token is not a GitHub App installation minter. Edit ACL JSON directly if needed.';
     list.replaceChildren();
+    refreshGrantValidity();
     return;
   }
   var loadSeq = ++editGitHubRepoLoadSeq;
   status.textContent = 'Loading repositories...';
   list.replaceChildren();
+  refreshGrantValidity();
   fetch('/api/keys/' + encodeURIComponent(key.id) + '/github-app/repositories', {credentials:'same-origin'})
     .then(function(r) { return r.json().then(function(j) { return {ok:r.ok, body:j}; }); })
     .then(function(res) {
@@ -1225,6 +1235,7 @@ function loadEditGitHubRepos() {
       }
 	  status.textContent = repos.length + ' repositories available. Configure capabilities and save.';
 	  DW.setHTML(list, repoGrantTableHTML(repos, document.getElementById('eph-acl').value || '', res.body.installation_permissions || {}));
+	  mountGrantRows(list);
     })
     .catch(function(err) {
       if (loadSeq !== editGitHubRepoLoadSeq) return;
@@ -1313,6 +1324,7 @@ function loadAssignGitHubRepos() {
   var keyID = key.id;
   status.textContent = 'Loading repositories...';
   list.replaceChildren();
+  refreshGrantValidity();
   fetch('/api/keys/' + encodeURIComponent(key.id) + '/github-app/repositories', {credentials:'same-origin'})
     .then(function(r) { return r.json().then(function(j) { return {ok:r.ok, body:j}; }); })
     .then(function(res) {
@@ -1327,6 +1339,7 @@ function loadAssignGitHubRepos() {
       status.textContent = repos.length + ' repositories available. Select one or more.';
       var existing = existingMintableAssignment(document.getElementById('assign-client-id').value, keyID);
 	  DW.setHTML(list, repoGrantTableHTML(repos, existing ? existing.permissionConfig : '', res.body.installation_permissions || {}));
+	  mountGrantRows(list);
     })
     .catch(function(err) {
       var currentKey = selectedAssignKey();
@@ -1345,15 +1358,72 @@ function selectedGitHubRepoGrants(scopeSelector) {
 		if (!row.querySelector('.assign-github-repo-enabled').checked) return;
 		var capabilities = {};
 		row.querySelectorAll('[data-capability]').forEach(function(input) { capabilities[input.dataset.capability] = input.checked; });
-    grants.push({
+    var inst = GBR.forHost(row.querySelector('[data-gbr-host]'));
+    var value = inst ? GBR.value(inst) : null;
+    var grant = {
       repo: row.dataset.repo,
 			capabilities: capabilities,
 			workflow_allowlist: parsePolicyList(row.querySelector('.github-workflows').value),
-			ref_allowlist: parsePolicyList(row.querySelector('.github-refs').value),
 			environment_allowlist: parsePolicyList(row.querySelector('.github-environments').value)
-    });
+    };
+    if (value) {
+      grant.branch_policy = value.branch_policy;
+      capabilities.pull_requests_merge = value.pull_requests_merge;
+      capabilities.pull_requests_approve = value.pull_requests_approve;
+    } else if (inst && inst.legacy) {
+      grant.ref_allowlist = inst.legacy.refs.slice();
+    }
+    grants.push(grant);
   });
 	return grants.sort(function(a,b) { return a.repo.localeCompare(b.repo); });
+}
+
+// Branch rules editors: one per repository row, created after the rows are rendered.
+function rowBranchCtx(row) {
+  function on(cap) { var box = row.querySelector('[data-capability="' + cap + '"]'); return !!(box && box.checked); }
+  return {
+    push: on('push'), prWrite: on('pull_requests_write'), dispatch: on('workflow_dispatch'),
+    defaultBranch: row.dataset.defaultBranch || null, requireRun: true, builder: false,
+    workflowCount: parsePolicyList(row.querySelector('.github-workflows').value).length
+  };
+}
+
+function mountGrantRows(list) {
+  list.querySelectorAll('.assign-github-repo-row').forEach(function(row) {
+    var init = {};
+    try { init = JSON.parse(row.dataset.gbrInit || '{}'); } catch (e) { init = {}; }
+    var inst = GBR.create({
+      ctx: rowBranchCtx(row),
+      policy: init.mode === 'policy' ? init.policy : null,
+      legacy: init.mode === 'legacy' ? {ref_allowlist: init.refs || []} : null,
+      onChange: function() { refreshGrantValidity(); }
+    });
+    GBR.mount(row.querySelector('[data-gbr-host]'), inst);
+  });
+  refreshGrantValidity();
+}
+
+function syncRowBranchRules(row) {
+  var inst = GBR.forHost(row.querySelector('[data-gbr-host]'));
+  if (!inst) return;
+  GBR.setCtx(inst, rowBranchCtx(row));
+  refreshGrantValidity();
+}
+
+// Save stays disabled, with an inline reason, while an enabled repository has invalid branch rules.
+function refreshGrantValidity() {
+  [['#assign-github-repo-list', 'assign-github-problem', 'assign-submit'], ['#eph-github-repo-list', 'eph-github-problem', 'eph-apply']].forEach(function(t) {
+    var msg = '';
+    document.querySelectorAll(t[0] + ' .assign-github-repo-row').forEach(function(row) {
+      if (msg || !row.querySelector('.assign-github-repo-enabled').checked) return;
+      var inst = GBR.forHost(row.querySelector('[data-gbr-host]'));
+      var probs = inst ? GBR.problems(inst) : [];
+      if (probs.length) msg = row.dataset.repo + ': ' + probs[0];
+    });
+    var box = document.getElementById(t[1]), btn = document.getElementById(t[2]);
+    if (box) { box.textContent = msg ? 'Fix the branch rules to save. ' + msg : ''; box.hidden = !msg; }
+    if (btn) btn.disabled = !!msg;
+  });
 }
 
 function parsePolicyList(value) {
@@ -1378,7 +1448,8 @@ function repoGrantTableHTML(repos, configJSON, installationPermissions) {
 				var reason=available ? '' : 'GitHub App installation permission is insufficient: requires ' + requirement.scope + ':' + requirement.level + '.';
 				return DW.html`<label class="text-sm" ${reason ? DW.html`title="${reason}"` : ''}><input type="checkbox" data-capability="${cap}" ${caps[cap] ? DW.raw('checked') : ''} ${available ? '' : DW.raw('disabled')} data-on-change="onGitHubGrantToggle"> ${capabilityLabels[cap]}</label>`;
 			});
-      return DW.html`<div class="assign-github-repo-row repo-grant-row" data-repo="${name}"><div class="repo-grant-name"><span class="mono text-sm" title="${name}">${name}</span>${repo.private ? DW.raw('<span class="badge badge-gray">private</span>') : ''}<label class="text-sm"><input type="checkbox" class="assign-github-repo-enabled" ${enabled ? DW.raw('checked') : ''} ${anyAvailable ? '' : DW.raw('disabled title="GitHub App installation does not grant any supported repository permission."')}> Enable</label></div><div class="repo-grant-controls"><span class="repo-grant-section-label">Capabilities</span><div class="repo-capability-grid">${checks}</div><div class="repo-policy-lists"><input class="github-workflows" aria-label="Allowed workflows" placeholder="Allowed workflows: ci.yml" value="${(grant && grant.workflow_allowlist || []).join(', ')}"><input class="github-refs" aria-label="Allowed refs" placeholder="Allowed refs: main, release/*" value="${(grant && grant.ref_allowlist || []).join(', ')}"><input class="github-environments" aria-label="Allowed environments" placeholder="Allowed environments: staging" value="${(grant && grant.environment_allowlist || []).join(', ')}"></div></div></div>`;
+      var init = {mode: grant ? (grant.branch_policy ? 'policy' : 'legacy') : 'new', refs: grant && grant.ref_allowlist || [], policy: grant && grant.branch_policy ? {branch_policy: grant.branch_policy, pull_requests_merge: !!caps.pull_requests_merge, pull_requests_approve: !!caps.pull_requests_approve} : null};
+      return DW.html`<div class="assign-github-repo-row repo-grant-row" data-repo="${name}" data-default-branch="${repo.default_branch || ''}" data-gbr-init="${JSON.stringify(init)}"><div class="repo-grant-name"><span class="mono text-sm" title="${name}">${name}</span>${repo.private ? DW.raw('<span class="badge badge-gray">private</span>') : ''}<label class="text-sm"><input type="checkbox" class="assign-github-repo-enabled" ${enabled ? DW.raw('checked') : ''} ${anyAvailable ? '' : DW.raw('disabled title="GitHub App installation does not grant any supported repository permission."')} data-on-change="onGitHubRepoEnable"> Enable</label></div><div class="repo-grant-controls"><span class="repo-grant-section-label">Capabilities</span><div class="repo-capability-grid">${checks}</div><div class="gbr-host" data-gbr-host></div><div class="repo-policy-lists"><label class="repo-policy-field"><span class="repo-grant-section-label">Allowed workflows</span><input class="github-workflows" placeholder="ci.yml, deploy.yml" value="${(grant && grant.workflow_allowlist || []).join(', ')}" data-on-input="onGitHubWorkflowsInput"></label><label class="repo-policy-field"><span class="repo-grant-section-label">Allowed environments</span><input class="github-environments" placeholder="staging" value="${(grant && grant.environment_allowlist || []).join(', ')}"></label></div></div></div>`;
     })}</div>`;
 }
 
@@ -1438,6 +1509,7 @@ function openAssignModal(clientId, clientName) {
   document.getElementById('assign-github-repo-scope').hidden = true;
   document.getElementById('assign-github-repo-status').textContent = 'Select a GitHub App installation minter key.';
   document.getElementById('assign-github-repo-list').replaceChildren();
+  refreshGrantValidity();
 
   // Reset radio to "key"
   document.querySelectorAll('input[name="assign-bind-type"]').forEach(function(r) {
