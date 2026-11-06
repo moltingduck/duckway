@@ -235,7 +235,7 @@ client grants"), because the proxy never enforces policies from those layers.
 - Matching: one shared vector file,
   `internal/server/services/testdata/github_branch_match_vectors.json`,
   consumed by Go and JS tests (`web/testdata/gbr_test.js`, run by
-  `web/gbr_js_test.go`; set `DUCKWAY_REQUIRE_NODE=1` to fail when node is missing).
+  `web/gbr_node_test.go`; set `DUCKWAY_REQUIRE_NODE=1` to fail when node is missing).
 - Validation: limits, invalid globs, `ref_allowlist` + `branch_policy` conflict,
   `run_workflows` without dispatch, merge/approve without PR write.
 - Enforcement: every table row above, allow and refuse, plus fail-closed

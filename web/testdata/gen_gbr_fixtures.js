@@ -2,7 +2,7 @@
 // internal/server/services/github_branch_ui_contract_test.go.
 // Every config goes through the page's real serializer: the client dialog's
 // gitACLForRepoGrants (extracted from client_detail.html), phantom-common.js
-// presets and phantom-acl.js builder. The Go wrapper web/gbr_js_test.go
+// presets and phantom-acl.js builder. The Go wrapper web/gbr_node_test.go
 // regenerates into a temp dir and byte-compares with the committed fixtures.
 // Usage: node gen_gbr_fixtures.js <web/static dir> <out dir> <client_detail.html>
 'use strict';
