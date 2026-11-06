@@ -225,6 +225,11 @@ merge/update-branch and APPROVE reviews are refused unless the matching flag is
 true, and all §3 ref checks apply. `run_workflows: true` requires that repo's
 Actions capability at write level. Repos without an entry keep legacy behaviour.
 
+Branch policies are accepted only in a placeholder's own permission config
+(client grants and phantom tokens). Saving one in a service default ACL or an
+API-key ACL is rejected ("branch rules are only supported on phantom token /
+client grants"), because the proxy never enforces policies from those layers.
+
 ## 6. Tests
 
 - Matching: one shared vector file,
@@ -244,6 +249,8 @@ Actions capability at write level. Repos without an entry keep legacy behaviour.
 
 ## 7. Limitations
 
+- Branch rules exist only on phantom token / client grants; service default ACLs
+  and API-key ACLs reject them (see §5).
 - A bare `ref` in a workflow dispatch (`main`, no `refs/heads/`) is treated as a
   branch name. A tag with the same name as a branch cannot be told apart by the
   proxy, so dispatch is checked against the branch rules only.

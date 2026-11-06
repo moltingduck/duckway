@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -566,6 +567,28 @@ func NormalizePermissionConfigPolicies(configJSON string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// ErrBranchRulesUnsupportedHere is returned for a permission config that
+// carries a branch policy where the proxy never enforces one.
+var ErrBranchRulesUnsupportedHere = errors.New("branch rules are only supported on phantom token / client grants")
+
+// ValidateNoBranchPolicies rejects a config that carries any branch policy
+// (decoded like every other reader, so case-variant keys count). The proxy
+// enforces policies from a placeholder's own config only; one stored in a
+// service default ACL or an API-key ACL would be silently ignored.
+func ValidateNoBranchPolicies(configJSON string) error {
+	if strings.TrimSpace(configJSON) == "" {
+		return nil
+	}
+	pols, err := ParseGitHubBranchPolicies(configJSON)
+	if err != nil {
+		return err
+	}
+	if len(pols) > 0 {
+		return ErrBranchRulesUnsupportedHere
+	}
+	return nil
 }
 
 // ciValues returns the values of every key of m equal to name ignoring case.
