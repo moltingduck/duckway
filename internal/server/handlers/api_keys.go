@@ -201,6 +201,9 @@ type githubInstallationRepositoriesResponse struct {
 		FullName string `json:"full_name"`
 		Private  bool   `json:"private"`
 		HTMLURL  string `json:"html_url"`
+		// DefaultBranch is GitHub's repo object field; the admin editor uses
+		// it to label the default-branch rule row.
+		DefaultBranch string `json:"default_branch"`
 	} `json:"repositories"`
 	TotalCount int `json:"total_count"`
 }
@@ -425,11 +428,15 @@ func listGitHubInstallationRepositories(ctx context.Context, httpClient *http.Cl
 			if repo.FullName == "" {
 				continue
 			}
-			out = append(out, map[string]interface{}{
+			entry := map[string]interface{}{
 				"full_name": repo.FullName,
 				"private":   repo.Private,
 				"html_url":  repo.HTMLURL,
-			})
+			}
+			if repo.DefaultBranch != "" {
+				entry["default_branch"] = repo.DefaultBranch
+			}
+			out = append(out, entry)
 		}
 		if len(parsed.Repositories) < 100 {
 			break

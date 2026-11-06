@@ -528,7 +528,7 @@ func TestAPIKeyListGitHubAppRepositories(t *testing.T) {
 				t.Fatalf("per_page = %q", got)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"total_count":2,"repositories":[{"full_name":"OWNER/REPO","private":true,"html_url":"https://github.com/OWNER/REPO"},{"full_name":"OWNER/PUBLIC","private":false,"html_url":"https://github.com/OWNER/PUBLIC"}]}`))
+			w.Write([]byte(`{"total_count":2,"repositories":[{"full_name":"OWNER/REPO","private":true,"html_url":"https://github.com/OWNER/REPO","default_branch":"trunk"},{"full_name":"OWNER/PUBLIC","private":false,"html_url":"https://github.com/OWNER/PUBLIC"}]}`))
 		default:
 			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
 		}
@@ -581,14 +581,23 @@ func TestAPIKeyListGitHubAppRepositories(t *testing.T) {
 		KeyID        string `json:"key_id"`
 		TotalCount   int    `json:"total_count"`
 		Repositories []struct {
-			FullName string `json:"full_name"`
-			Private  bool   `json:"private"`
-			HTMLURL  string `json:"html_url"`
+			FullName      string  `json:"full_name"`
+			Private       bool    `json:"private"`
+			HTMLURL       string  `json:"html_url"`
+			DefaultBranch *string `json:"default_branch"`
 		} `json:"repositories"`
 		InstallationPermissions map[string]string `json:"installation_permissions"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
+	}
+	if len(resp.Repositories) == 2 {
+		if d := resp.Repositories[0].DefaultBranch; d == nil || *d != "trunk" {
+			t.Fatalf("default_branch of first repo = %v, want trunk", d)
+		}
+		if resp.Repositories[1].DefaultBranch != nil {
+			t.Fatalf("default_branch must be omitted when GitHub sent none: %v", *resp.Repositories[1].DefaultBranch)
+		}
 	}
 	if resp.KeyID != "key-gh-repo-list" || resp.TotalCount != 2 || len(resp.Repositories) != 2 {
 		t.Fatalf("unexpected response: %+v", resp)
