@@ -6,10 +6,16 @@
       "capabilities": {
         "clone": true,
         "push": true,
+        "issues_read": true,
+        "issues_write": true,
         "pull_requests_read": true,
         "pull_requests_write": true,
+        "releases_read": true,
+        "releases_write": false,
         "actions_read": true,
         "workflow_dispatch": true,
+        "workflow_rerun": true,
+        "workflow_cancel": true,
         "pull_requests_merge": false,
         "pull_requests_approve": false
       },

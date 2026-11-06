@@ -1481,6 +1481,8 @@ function onGitHubGrantToggle(input) {
 	if (!input.checked && cap === 'clone') set('push', false);
 	if (!input.checked && cap && cap.indexOf('_read') > 0) set(cap.replace('_read','_write'), false);
 	if (!input.checked && cap === 'actions_read') { set('workflow_dispatch',false); set('workflow_rerun',false); set('workflow_cancel',false); }
+	// Capabilities decide panel visibility, run-workflows enablement and the serialized rules.
+	syncRowBranchRules(row);
 }
 
 function buildAssignPreview(svcName) {

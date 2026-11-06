@@ -96,6 +96,12 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		normalized, nerr := svc.NormalizePermissionConfigPolicies(*req.PermissionConfig)
+		if nerr != nil {
+			jsonError(w, nerr.Error(), http.StatusBadRequest)
+			return
+		}
+		req.PermissionConfig = &normalized
 	}
 
 	// Pick prefix/length: when a specific API key is assigned and we have
@@ -319,6 +325,12 @@ func (h *PlaceholderHandler) Update(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		normalized, nerr := svc.NormalizePermissionConfigPolicies(*req.PermissionConfig)
+		if nerr != nil {
+			jsonError(w, nerr.Error(), http.StatusBadRequest)
+			return
+		}
+		req.PermissionConfig = &normalized
 		if h.isGitHubAppMinterPlaceholder(ph) {
 			if err := svc.ValidateGitHubRepoScopePermissionConfig(*req.PermissionConfig); err != nil {
 				jsonError(w, err.Error(), http.StatusBadRequest)

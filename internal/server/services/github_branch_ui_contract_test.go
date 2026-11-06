@@ -181,10 +181,11 @@ func TestUIInvalidStatesRejected(t *testing.T) {
 // The UI and the server must reject exactly the same pattern characters.
 func TestUIPatternValidationAgrees(t *testing.T) {
 	var cases []struct {
-		Pattern                  string `json:"pattern"`
-		BranchError              bool   `json:"branch_error"`
-		BranchErrorDefaultAllows bool   `json:"branch_error_default_allowed"`
-		TagError                 bool   `json:"tag_error"`
+		Pattern                  string  `json:"pattern"`
+		BranchError              bool    `json:"branch_error"`
+		BranchErrorDefaultAllows bool    `json:"branch_error_default_allowed"`
+		TagError                 bool    `json:"tag_error"`
+		Serialized               *string `json:"serialized"`
 	}
 	if err := json.Unmarshal([]byte(readUIFixture(t, "pattern_validation.json")), &cases); err != nil {
 		t.Fatal(err)
@@ -193,17 +194,36 @@ func TestUIPatternValidationAgrees(t *testing.T) {
 		t.Fatalf("only %d cases", len(cases))
 	}
 	for _, c := range cases {
-		_, err := normalizeGitHubPattern(c.Pattern, "refs/heads/", false)
-		if (err != nil) != c.BranchError {
-			t.Errorf("branch %q: go err=%v, ui error=%v", c.Pattern, err, c.BranchError)
+		if strings.TrimSpace(c.Pattern) != c.Pattern {
+			// The editor trims before serializing, so the raw text never reaches
+			// the server; the server itself stays strict about whitespace.
+			if _, err := normalizeGitHubPattern(c.Pattern, "refs/heads/", false); err == nil {
+				t.Errorf("server accepted untrimmed %q", c.Pattern)
+			}
+		} else {
+			_, err := normalizeGitHubPattern(c.Pattern, "refs/heads/", false)
+			if (err != nil) != c.BranchError {
+				t.Errorf("branch %q: go err=%v, ui error=%v", c.Pattern, err, c.BranchError)
+			}
+			_, err = normalizeGitHubPattern(c.Pattern, "refs/heads/", true)
+			if (err != nil) != c.BranchErrorDefaultAllows {
+				t.Errorf("branch (default allowed) %q: go err=%v, ui error=%v", c.Pattern, err, c.BranchErrorDefaultAllows)
+			}
+			_, err = normalizeGitHubPattern(c.Pattern, "refs/tags/", false)
+			if (err != nil) != c.TagError {
+				t.Errorf("tag %q: go err=%v, ui error=%v", c.Pattern, err, c.TagError)
+			}
 		}
-		_, err = normalizeGitHubPattern(c.Pattern, "refs/heads/", true)
-		if (err != nil) != c.BranchErrorDefaultAllows {
-			t.Errorf("branch (default allowed) %q: go err=%v, ui error=%v", c.Pattern, err, c.BranchErrorDefaultAllows)
-		}
-		_, err = normalizeGitHubPattern(c.Pattern, "refs/tags/", false)
-		if (err != nil) != c.TagError {
-			t.Errorf("tag %q: go err=%v, ui error=%v", c.Pattern, err, c.TagError)
+		// Whatever the UI accepts must serialize to a pattern the server accepts.
+		if !c.BranchError {
+			if c.Serialized == nil {
+				t.Errorf("%q: accepted by the UI but not serialized", c.Pattern)
+				continue
+			}
+			got, err := normalizeGitHubPattern(*c.Serialized, "refs/heads/", false)
+			if err != nil || got != *c.Serialized || *c.Serialized != strings.TrimSpace(*c.Serialized) {
+				t.Errorf("%q serialized as %q: server err=%v", c.Pattern, *c.Serialized, err)
+			}
 		}
 	}
 }

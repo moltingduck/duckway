@@ -2463,6 +2463,7 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
 .gbr-matrix { font-size: 0.8125rem; }
 .gbr-matrix summary { cursor: pointer; color: var(--muted); min-height: 2rem; display: flex; align-items: center; }
 .gbr-matrix table { width: 100%; }
+.gbr-add-error { margin: 0.35rem 0 0; color: var(--danger-text); font-size: 0.8125rem; }
 .gbr-problems { margin: 0; padding: 0.6rem 0.8rem 0.6rem 1.8rem; border-radius: var(--r-control); background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger-text); font-size: 0.8125rem; }
 .gbr-notice { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; padding: 0.8rem; border: 1px dashed var(--line); border-radius: var(--r-control); }
 .gbr-diffs { margin: 0; padding-left: 1.2rem; font-size: 0.8125rem; display: flex; flex-direction: column; gap: 0.2rem; }

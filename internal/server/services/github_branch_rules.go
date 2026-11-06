@@ -22,6 +22,10 @@ const (
 	MaxGitHubBranchRules   = 50
 	MaxGitHubTagPatterns   = 20
 	MaxGitHubPatternLength = 200
+
+	// MaxGitHubMatchNameBytes bounds names handed to the glob matcher (defence
+	// in depth; the proxy refuses names above 255 bytes before matching).
+	MaxGitHubMatchNameBytes = 1024
 )
 
 // GitHubBranchRule is one branch-protection style rule.
@@ -70,6 +74,19 @@ func GitHubRoleCanBeBase(role string) bool {
 	return role == GitHubRoleAgent || role == GitHubRoleProtected
 }
 
+// truncateRunes shortens s to at most n runes without splitting a UTF-8
+// sequence.
+func truncateRunes(s string, n int) string {
+	i := 0
+	for pos := range s {
+		if i == n {
+			return s[:pos]
+		}
+		i++
+	}
+	return s
+}
+
 func stripBranchPrefix(s string) string { return strings.TrimPrefix(s, "refs/heads/") }
 
 // normalizeGitHubPattern validates one branch or tag glob and returns it
@@ -80,7 +97,7 @@ func normalizeGitHubPattern(raw, prefix string, allowDefault bool) (string, erro
 		return "", fmt.Errorf("empty pattern")
 	}
 	if len(p) > MaxGitHubPatternLength {
-		return "", fmt.Errorf("pattern %q is longer than %d characters", p[:20]+"...", MaxGitHubPatternLength)
+		return "", fmt.Errorf("pattern %q is longer than %d characters", truncateRunes(p, 20)+"...", MaxGitHubPatternLength)
 	}
 	if p == GitHubDefaultBranchToken {
 		if !allowDefault {
@@ -107,6 +124,23 @@ func normalizeGitHubPattern(raw, prefix string, allowDefault bool) (string, erro
 // stored form (no refs/heads/ prefix). dispatch says whether the repository has
 // the workflow_dispatch capability, which run_workflows requires.
 func ValidateGitHubBranchPolicy(p *GitHubBranchPolicy, dispatch bool) error {
+	return validateGitHubBranchPolicy(p, dispatch, "the workflow_dispatch capability")
+}
+
+// cloneAndValidate validates a copy of p (so the caller's slices are never
+// rewritten) and returns the normalised copy. runCap names what run_workflows
+// requires, for the error message.
+func (p GitHubBranchPolicy) cloneAndValidate(dispatch bool, runCap string) (GitHubBranchPolicy, error) {
+	bp := p
+	bp.Rules = append([]GitHubBranchRule(nil), p.Rules...)
+	bp.Tags.Create = append([]string(nil), p.Tags.Create...)
+	if err := validateGitHubBranchPolicy(&bp, dispatch, runCap); err != nil {
+		return GitHubBranchPolicy{}, err
+	}
+	return bp, nil
+}
+
+func validateGitHubBranchPolicy(p *GitHubBranchPolicy, dispatch bool, runCap string) error {
 	if len(p.Rules) > MaxGitHubBranchRules {
 		return fmt.Errorf("branch_policy allows at most %d rules", MaxGitHubBranchRules)
 	}
@@ -115,20 +149,20 @@ func ValidateGitHubBranchPolicy(p *GitHubBranchPolicy, dispatch bool) error {
 		r := &p.Rules[i]
 		pat, err := normalizeGitHubPattern(r.Branches, "refs/heads/", true)
 		if err != nil {
-			return fmt.Errorf("branch rule %d: %w", i, err)
+			return fmt.Errorf("branch rule %q: %w", truncateRunes(r.Branches, 40), err)
 		}
 		r.Branches = pat
 		switch r.Role {
 		case GitHubRoleRead, GitHubRoleProtected, GitHubRoleAgent:
 		default:
-			return fmt.Errorf("branch rule %d: invalid role %q", i, r.Role)
+			return fmt.Errorf("branch rule %q: invalid role %q", pat, r.Role)
 		}
 		if seen[pat] {
-			return fmt.Errorf("branch rule %d: duplicate pattern %q", i, pat)
+			return fmt.Errorf("branch rule %q: duplicate pattern", pat)
 		}
 		seen[pat] = true
 		if r.RunWorkflows && !dispatch {
-			return fmt.Errorf("branch rule %d: run_workflows requires the workflow_dispatch capability", i)
+			return fmt.Errorf("branch rule %q: run_workflows requires %s", pat, runCap)
 		}
 	}
 	if len(p.Tags.Create) > MaxGitHubTagPatterns {
@@ -138,10 +172,10 @@ func ValidateGitHubBranchPolicy(p *GitHubBranchPolicy, dispatch bool) error {
 	for i, t := range p.Tags.Create {
 		pat, err := normalizeGitHubPattern(t, "refs/tags/", false)
 		if err != nil {
-			return fmt.Errorf("tag pattern %d: %w", i, err)
+			return fmt.Errorf("tag pattern %q: %w", truncateRunes(t, 40), err)
 		}
 		if seenTags[pat] {
-			return fmt.Errorf("tag pattern %d: duplicate pattern %q", i, pat)
+			return fmt.Errorf("tag pattern %q: duplicate pattern", pat)
 		}
 		seenTags[pat] = true
 		p.Tags.Create[i] = pat
@@ -200,6 +234,9 @@ func compileGitHubGlob(pattern string) []globTok {
 // matches within one `/` segment, `**` matches anything including `/`, every
 // other character (including `?`) is literal.
 func GitHubGlobMatch(pattern, name string) bool {
+	if len(name) > MaxGitHubMatchNameBytes || len(pattern) > MaxGitHubPatternLength*2 {
+		return false
+	}
 	toks := compileGitHubGlob(pattern)
 	// cur[j]: toks[i:] matches name[j:]
 	n := len(name)
@@ -256,7 +293,7 @@ func moreSpecific(a, b GitHubBranchRule) bool {
 // unknown. matched is false when no rule applies (role read, no workflows).
 func (p GitHubBranchPolicy) SelectRule(branch, defaultBranch string) (rule GitHubBranchRule, matched bool) {
 	branch = stripBranchPrefix(branch)
-	if defaultBranch != "" && branch == defaultBranch {
+	if defaultBranch != "" && strings.EqualFold(branch, defaultBranch) {
 		for _, r := range p.Rules {
 			if stripBranchPrefix(r.Branches) != GitHubDefaultBranchToken {
 				continue
@@ -330,10 +367,8 @@ func GitHubBranchPoliciesFromConfig(configJSON string) (map[string]GitHubRepoBra
 			if rp.BranchPolicy == nil {
 				continue
 			}
-			bp := *rp.BranchPolicy
-			bp.Rules = append([]GitHubBranchRule(nil), bp.Rules...)
-			bp.Tags.Create = append([]string(nil), bp.Tags.Create...)
-			if err := ValidateGitHubBranchPolicy(&bp, rp.Capabilities.WorkflowDispatch); err != nil {
+			bp, err := rp.BranchPolicy.cloneAndValidate(rp.Capabilities.WorkflowDispatch, "the workflow_dispatch capability")
+			if err != nil {
 				return nil, fmt.Errorf("repository %s: %w", repo, err)
 			}
 			out[strings.ToLower(repo)] = GitHubRepoBranchPolicy{
@@ -362,11 +397,9 @@ func GitHubBranchPoliciesFromConfig(configJSON string) (map[string]GitHubRepoBra
 				if _, dup := out[key]; dup {
 					return nil, fmt.Errorf("rule %d: duplicate github repository %q", i, repo)
 				}
-				bp := entry.BranchPolicy
-				bp.Rules = append([]GitHubBranchRule(nil), bp.Rules...)
-				bp.Tags.Create = append([]string(nil), bp.Tags.Create...)
 				actionsWrite := githubCapRowLevel(rule.GitHubCapabilityRows, repo, "actions") == GitHubCapWrite
-				if err := ValidateGitHubBranchPolicy(&bp, actionsWrite); err != nil {
+				bp, err := entry.BranchPolicy.cloneAndValidate(actionsWrite, "Actions write")
+				if err != nil {
 					return nil, fmt.Errorf("repository %s: %w", repo, err)
 				}
 				if (entry.PullRequestsMerge || entry.PullRequestsApprove) &&
@@ -379,4 +412,83 @@ func GitHubBranchPoliciesFromConfig(configJSON string) (map[string]GitHubRepoBra
 		}
 	}
 	return out, nil
+}
+
+// NormalizePermissionConfigPolicies returns configJSON with every branch
+// policy stored in normalised form (patterns without refs/heads/ and
+// refs/tags/ prefixes). Configs without a branch policy, and configs that
+// need no rewriting, are returned byte for byte. The config is assumed to
+// have passed ValidatePermissionConfig.
+func NormalizePermissionConfigPolicies(configJSON string) (string, error) {
+	if !strings.Contains(configJSON, "branch_polic") {
+		return configJSON, nil
+	}
+	dec := json.NewDecoder(strings.NewReader(configJSON))
+	dec.UseNumber()
+	var root map[string]interface{}
+	if err := dec.Decode(&root); err != nil {
+		return "", fmt.Errorf("invalid permission config: %w", err)
+	}
+	changed := false
+	normPolicy := func(v interface{}) {
+		pol, ok := v.(map[string]interface{})
+		if !ok {
+			return
+		}
+		fix := func(s, prefix string) string {
+			if t := strings.TrimPrefix(s, prefix); t != s {
+				changed = true
+				return t
+			}
+			return s
+		}
+		if rules, ok := pol["rules"].([]interface{}); ok {
+			for _, rv := range rules {
+				if r, ok := rv.(map[string]interface{}); ok {
+					if b, ok := r["branches"].(string); ok {
+						r["branches"] = fix(b, "refs/heads/")
+					}
+				}
+			}
+		}
+		if tags, ok := pol["tags"].(map[string]interface{}); ok {
+			if cr, ok := tags["create"].([]interface{}); ok {
+				for i, tv := range cr {
+					if t, ok := tv.(string); ok {
+						cr[i] = fix(t, "refs/tags/")
+					}
+				}
+			}
+		}
+	}
+	if repos, ok := root["repositories"].(map[string]interface{}); ok {
+		for _, rv := range repos {
+			if rp, ok := rv.(map[string]interface{}); ok {
+				normPolicy(rp["branch_policy"])
+			}
+		}
+	}
+	if rules, ok := root["rules"].([]interface{}); ok {
+		for _, rv := range rules {
+			rule, ok := rv.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if pols, ok := rule["github_branch_policies"].(map[string]interface{}); ok {
+				for _, ev := range pols {
+					if entry, ok := ev.(map[string]interface{}); ok {
+						normPolicy(entry["branch_policy"])
+					}
+				}
+			}
+		}
+	}
+	if !changed {
+		return configJSON, nil
+	}
+	out, err := json.Marshal(root)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }

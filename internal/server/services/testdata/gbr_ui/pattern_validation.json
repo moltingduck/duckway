@@ -3,138 +3,196 @@
     "pattern": "",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
+  },
+  {
+    "pattern": " ",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "/x",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "a..b",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "a b",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "a~b",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "a^b",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "a:b",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "a?b",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "a[b",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "a\\b",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "a\tb",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "ab",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "a//b",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "a@{b",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     "branch_error": false,
     "branch_error_default_allowed": false,
-    "tag_error": false
+    "tag_error": false,
+    "serialized": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   },
   {
     "pattern": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     "branch_error": true,
     "branch_error_default_allowed": true,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "@default",
     "branch_error": true,
     "branch_error_default_allowed": false,
-    "tag_error": true
+    "tag_error": true,
+    "serialized": null
   },
   {
     "pattern": "refs/heads/agent/**",
     "branch_error": false,
     "branch_error_default_allowed": false,
-    "tag_error": false
+    "tag_error": false,
+    "serialized": "agent/**"
   },
   {
     "pattern": "release/*",
     "branch_error": false,
     "branch_error_default_allowed": false,
-    "tag_error": false
+    "tag_error": false,
+    "serialized": "release/*"
   },
   {
     "pattern": "feature-1",
     "branch_error": false,
     "branch_error_default_allowed": false,
-    "tag_error": false
+    "tag_error": false,
+    "serialized": "feature-1"
   },
   {
     "pattern": "v1.2",
     "branch_error": false,
     "branch_error_default_allowed": false,
-    "tag_error": false
+    "tag_error": false,
+    "serialized": "v1.2"
   },
   {
     "pattern": "**",
     "branch_error": false,
     "branch_error_default_allowed": false,
-    "tag_error": false
+    "tag_error": false,
+    "serialized": "**"
   },
   {
     "pattern": "a/*/b",
     "branch_error": false,
     "branch_error_default_allowed": false,
-    "tag_error": false
+    "tag_error": false,
+    "serialized": "a/*/b"
+  },
+  {
+    "pattern": " main",
+    "branch_error": false,
+    "branch_error_default_allowed": false,
+    "tag_error": false,
+    "serialized": "main"
+  },
+  {
+    "pattern": "main ",
+    "branch_error": false,
+    "branch_error_default_allowed": false,
+    "tag_error": false,
+    "serialized": "main"
+  },
+  {
+    "pattern": "\tmain\n",
+    "branch_error": false,
+    "branch_error_default_allowed": false,
+    "tag_error": false,
+    "serialized": "main"
+  },
+  {
+    "pattern": " refs/heads/dev ",
+    "branch_error": false,
+    "branch_error_default_allowed": false,
+    "tag_error": false,
+    "serialized": "dev"
   }
 ]

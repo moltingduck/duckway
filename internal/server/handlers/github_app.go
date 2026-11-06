@@ -20,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hackerduck/duckway/internal/server/services"
 )
 
 type githubAppCredential struct {
@@ -139,7 +141,7 @@ func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *gi
 	if owner == "" || repo == "" {
 		return "", fmt.Errorf("github app token mint requires a repository-scoped path")
 	}
-	permissions := githubTokenPermissions(method, upstreamPath, rawQuery)
+	permissions := githubMintPermissions(method, upstreamPath, rawQuery, permissionConfig)
 	cacheKey := githubAppCacheKey(cred, owner, repo, permissions, permissionConfig)
 	now := time.Now()
 
@@ -213,7 +215,7 @@ func (h *ProxyHandler) invalidateGitHubInstallationToken(cred *githubAppCredenti
 	if owner == "" || repo == "" {
 		return
 	}
-	cacheKey := githubAppCacheKey(cred, owner, repo, githubTokenPermissions(method, upstreamPath, rawQuery), permissionConfig)
+	cacheKey := githubAppCacheKey(cred, owner, repo, githubMintPermissions(method, upstreamPath, rawQuery, permissionConfig), permissionConfig)
 	h.githubAppMu.Lock()
 	defer h.githubAppMu.Unlock()
 	if cached, ok := h.githubAppTokens[cacheKey]; ok && cached.token == rejectedToken {
@@ -325,6 +327,30 @@ func parseRSAPrivateKey(privateKeyPEM string) (*rsa.PrivateKey, error) {
 		return nil, fmt.Errorf("github app private key must be RSA")
 	}
 	return key, nil
+}
+
+// githubMintPermissions is githubTokenPermissions plus one case: merging a
+// pull request or updating its branch writes the base branch, which GitHub
+// authorises with contents write as well as pull request write. That is minted
+// only when the grant has a branch policy that opens merging
+// (pull_requests_merge); legacy grants mint exactly what they always did.
+func githubMintPermissions(method, upstreamPath, rawQuery, permissionConfig string) map[string]string {
+	perms := githubTokenPermissions(method, upstreamPath, rawQuery)
+	if !strings.EqualFold(method, http.MethodPut) || !strings.Contains(permissionConfig, "branch_polic") {
+		return perms
+	}
+	repo, rest, _, restOK, _ := githubRepoAndRest(method, upstreamPath)
+	if !restOK || classifyGitHubREST(http.MethodPut, rest) != opPullMerge {
+		return perms
+	}
+	policies, err := services.GitHubBranchPoliciesFromConfig(permissionConfig)
+	if err != nil {
+		return perms
+	}
+	if pol, ok := policies[repo]; ok && pol.PullRequestsMerge {
+		return map[string]string{"pull_requests": "write", "contents": "write"}
+	}
+	return perms
 }
 
 func githubTokenPermissions(method, upstreamPath, rawQuery string) map[string]string {

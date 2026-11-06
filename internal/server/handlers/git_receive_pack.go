@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -18,7 +20,13 @@ const (
 	// receivePackMaxDrain bounds how much of a refused push's pack is read and
 	// discarded so the git client sees the rejection instead of a reset.
 	receivePackMaxDrain = 256 << 20
+	// receivePackMaxPktPayload is the largest pkt-line payload (65520 - 4).
+	receivePackMaxPktPayload = 65516
 )
+
+// receivePackDrainTimeout bounds, by wall clock, how long a refused push's
+// remaining body is read. A variable so tests can shorten it.
+var receivePackDrainTimeout = 30 * time.Second
 
 type receivePackCommand struct {
 	Old, New, Ref string
@@ -118,6 +126,53 @@ func parseReceivePackCommands(r io.Reader, maxBytes, maxCommands int) (*receiveP
 	}
 }
 
+// receivePackNgLine builds one "ng" line that always fits a single pkt-line:
+// an over-long ref is echoed truncated and the reason is cut to what is left.
+func receivePackNgLine(ref, reason string) string {
+	const maxRef = 1024
+	if len(ref) > maxRef {
+		ref = ref[:maxRef] + "..."
+	}
+	reason = strings.ReplaceAll(reason, "\n", " ")
+	prefix := "ng " + ref + " duckway: "
+	if room := receivePackMaxPktPayload - len(prefix) - 1; len(reason) > room {
+		cut := room
+		for cut > 0 && !utf8.RuneStart(reason[cut]) {
+			cut--
+		}
+		reason = reason[:cut]
+	}
+	return prefix + reason + "\n"
+}
+
+// drainRefusedBody reads and discards the rest of a refused push, bounded by
+// size and by a wall-clock deadline. A real server connection gets a read
+// deadline; a body that blocks regardless (tests, wrapped readers) is read in
+// a goroutine that is abandoned when the deadline passes.
+func drainRefusedBody(w http.ResponseWriter, body io.Reader) {
+	if body == nil {
+		return
+	}
+	rc := http.NewResponseController(w)
+	deadline := time.Now().Add(receivePackDrainTimeout)
+	if err := rc.SetReadDeadline(deadline); err == nil {
+		defer func() { _ = rc.SetReadDeadline(time.Time{}) }()
+		_, _ = io.CopyN(io.Discard, body, receivePackMaxDrain)
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = io.CopyN(io.Discard, body, receivePackMaxDrain)
+	}()
+	t := time.NewTimer(receivePackDrainTimeout)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+	}
+}
+
 func pktLine(b *bytes.Buffer, s string) {
 	fmt.Fprintf(b, "%04x%s", len(s)+4, s)
 }
@@ -132,7 +187,7 @@ func receivePackRejectionBody(req *receivePackRequest, reasons []string) []byte 
 		if reason == "" {
 			reason = "another ref in this push was refused"
 		}
-		pktLine(&report, "ng "+c.Ref+" duckway: "+strings.ReplaceAll(reason, "\n", " ")+"\n")
+		pktLine(&report, receivePackNgLine(c.Ref, reason))
 	}
 	report.WriteString("0000")
 	if !req.Caps["side-band-64k"] && !req.Caps["side-band"] {
@@ -162,9 +217,7 @@ func receivePackRejectionBody(req *receivePackRequest, reasons []string) []byte 
 // "! [remote rejected]"; anything else gets a plain 403. The rest of the
 // request body is drained (bounded) so the client is not cut off mid-upload.
 func writeReceivePackRefusal(w http.ResponseWriter, body io.Reader, req *receivePackRequest, reasons []string, fallback string) {
-	if body != nil {
-		_, _ = io.CopyN(io.Discard, body, receivePackMaxDrain)
-	}
+	drainRefusedBody(w, body)
 	if req == nil || (!req.Caps["report-status"] && !req.Caps["report-status-v2"]) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusForbidden)

@@ -1,10 +1,13 @@
 package web
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestBranchRulesJS runs the shared match vectors (also consumed by the Go
@@ -36,10 +39,56 @@ func TestBranchRulesJS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(node, "testdata/gbr_test.js", src, vectors, acl, common)
-	out, err := cmd.CombinedOutput()
+	client, err := filepath.Abs("templates/client_detail.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, node, "testdata/gbr_test.js", src, vectors, acl, common, client).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node gbr_test.js failed: %v\n%s", err, out)
 	}
 	t.Logf("%s", out)
+}
+
+// TestBranchRulesFixturesNotStale regenerates the UI-serialized fixtures with
+// the page's own serializers and compares them byte for byte with the files the
+// Go contract test reads.
+func TestBranchRulesFixturesNotStale(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		if os.Getenv("DUCKWAY_REQUIRE_NODE") != "" {
+			t.Fatal("node is required but not installed")
+		}
+		t.Skip("node not installed; skipping fixture staleness check")
+	}
+	static, _ := filepath.Abs("static")
+	client, _ := filepath.Abs("templates/client_detail.html")
+	committed, _ := filepath.Abs("../internal/server/services/testdata/gbr_ui")
+	out := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if b, err := exec.CommandContext(ctx, node, "testdata/gen_gbr_fixtures.js", static, out, client).CombinedOutput(); err != nil {
+		t.Fatalf("generator failed: %v\n%s", err, b)
+	}
+	entries, err := os.ReadDir(out)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("generator wrote nothing: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		seen[e.Name()] = true
+		got, _ := os.ReadFile(filepath.Join(out, e.Name()))
+		want, err := os.ReadFile(filepath.Join(committed, e.Name()))
+		if err != nil || !bytes.Equal(got, want) {
+			t.Errorf("fixture %s is stale: run node web/testdata/gen_gbr_fixtures.js web/static internal/server/services/testdata/gbr_ui web/templates/client_detail.html", e.Name())
+		}
+	}
+	files, _ := os.ReadDir(committed)
+	for _, f := range files {
+		if !seen[f.Name()] {
+			t.Errorf("committed fixture %s is no longer generated", f.Name())
+		}
+	}
 }

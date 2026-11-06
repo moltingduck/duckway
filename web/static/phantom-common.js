@@ -54,9 +54,10 @@
   //   cicd -> default branch plus each listed branch: protected, may run workflows
   //   deploy -> no write capability, so no branch policy is needed
   function presetBranchPolicy(preset, grant) {
+    if (preset !== 'dev' && preset !== 'cicd') return null;
     var G = window.GBR;
-    if (preset === 'dev') return G ? G.defaultValue({ push: true, prWrite: true, dispatch: false }) : null;
-    if (preset !== 'cicd') return null;
+    if (!G) throw new Error('github-branch-rules.js must load before phantom-common.js presets are used');
+    if (preset === 'dev') return G.defaultValue({ push: true, prWrite: true, dispatch: false });
     var rules = [{ branches: '@default', role: 'protected', run_workflows: true }], seen = { '@default': 1, '**': 1 };
     (grant.ref_allowlist || []).forEach(function (ref) {
       var b = String(ref).trim().replace(/^refs\/heads\//, '');

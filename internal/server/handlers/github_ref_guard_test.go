@@ -303,24 +303,24 @@ func TestReceivePackRejectionBody(t *testing.T) {
 }
 
 func TestGuardRESTPathClassification(t *testing.T) {
-	repo, rest, rp, ok := githubRepoAndRest("PUT", "/repos/Acme/Api/contents/x/y")
+	repo, rest, rp, ok, _ := githubRepoAndRest("PUT", "/repos/Acme/Api/contents/x/y")
 	if repo != "acme/api" || rp || !ok || len(rest) != 3 {
 		t.Fatalf("%q %v %v %v", repo, rest, rp, ok)
 	}
-	repo, _, rp, _ = githubRepoAndRest("POST", "/Acme/Api.git/git-receive-pack")
+	repo, _, rp, _, _ = githubRepoAndRest("POST", "/Acme/Api.git/git-receive-pack")
 	if repo != "acme/api" || !rp {
 		t.Fatalf("receive-pack %q %v", repo, rp)
 	}
-	if _, _, _, ok := githubRepoAndRest("PUT", "/repos/a/b/contents//x"); ok {
+	if _, _, _, ok, _ := githubRepoAndRest("PUT", "/repos/a/b/contents//x"); ok {
 		t.Fatal("empty segment accepted")
 	}
-	if _, _, _, ok := githubRepoAndRest("PUT", "/repos/a/b/contents/../x"); ok {
+	if _, _, _, ok, _ := githubRepoAndRest("PUT", "/repos/a/b/contents/../x"); ok {
 		t.Fatal("dot-dot accepted")
 	}
-	if g, err := newGitHubGuard(`{"version":"2","provider":"github","repositories":{"acme/api":{"capabilities":{"clone":true}}}}`, "POST", "/repos/acme/api/git/refs"); g != nil || err != nil {
+	if g, err := newGitHubGuard(`{"version":"2","provider":"github","repositories":{"acme/api":{"capabilities":{"clone":true}}}}`, "POST", "/repos/acme/api/git/refs", ""); g != nil || err != nil {
 		t.Fatalf("legacy repo must have no guard: %v %v", g, err)
 	}
-	if g, _ := newGitHubGuard(`{"version":"2","provider":"github","repositories":{"acme/api":{"capabilities":{"clone":true},"branch_policy":{"rules":[]}}}}`, "GET", "/repos/acme/api/git/refs"); g != nil {
+	if g, _ := newGitHubGuard(`{"version":"2","provider":"github","repositories":{"acme/api":{"capabilities":{"clone":true},"branch_policy":{"rules":[]}}}}`, "GET", "/repos/acme/api/git/refs", ""); g != nil {
 		t.Fatal("GET must not be guarded")
 	}
 }

@@ -3,6 +3,7 @@ package handlers_test
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,11 +17,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/server/handlers"
 	"github.com/hackerduck/duckway/internal/server/services"
 )
+
+// gitTestTimeout bounds every git process the real-git tests start.
+const gitTestTimeout = 60 * time.Second
 
 const brPlaceholder = "github_pat_dw_fake"
 
@@ -46,8 +51,10 @@ type brEnv struct {
 	f        *proxyFixture
 	bare     string
 	mu       sync.Mutex
-	requests []string          // "METHOD path" seen by the fake upstream
-	bodies   map[string][]byte // last body per "METHOD path"
+	requests []string               // "METHOD path" seen by the fake upstream
+	bodies   map[string][]byte      // last body per "METHOD path"
+	headers  map[string]http.Header // last headers per "METHOD path"
+	queries  map[string]string      // last raw query per "METHOD path"
 	lookups  int32
 	apiFail  atomic.Bool
 }
@@ -66,7 +73,9 @@ func (e *brEnv) saw(prefix string) int {
 
 func gitRun(t *testing.T, dir string, env []string, args ...string) (string, error) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), gitTestTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append([]string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
@@ -81,7 +90,7 @@ func newBrEnv(t *testing.T, config string) *brEnv {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
-	e := &brEnv{t: t, bodies: map[string][]byte{}}
+	e := &brEnv{t: t, bodies: map[string][]byte{}, headers: map[string]http.Header{}, queries: map[string]string{}}
 	e.bare = filepath.Join(t.TempDir(), "upstream.git")
 	if out, err := gitRun(t, filepath.Dir(e.bare), nil, "init", "--bare", "-q", e.bare); err != nil {
 		t.Fatalf("init bare: %v %s", err, out)
@@ -92,6 +101,8 @@ func newBrEnv(t *testing.T, config string) *brEnv {
 		e.mu.Lock()
 		e.requests = append(e.requests, key)
 		e.bodies[key] = body
+		e.headers[key] = r.Header.Clone()
+		e.queries[key] = r.URL.RawQuery
 		e.mu.Unlock()
 		switch {
 		case r.Method == "GET" && strings.EqualFold(r.URL.Path, "/repos/owner/repo"):
@@ -103,7 +114,7 @@ func newBrEnv(t *testing.T, config string) *brEnv {
 			_, _ = io.WriteString(w, `{"default_branch":"main"}`)
 		case strings.HasSuffix(r.URL.Path, ".git/info/refs"):
 			svc := r.URL.Query().Get("service")
-			cmd := exec.Command("git", strings.TrimPrefix(svc, "git-"), "--stateless-rpc", "--advertise-refs", e.bare)
+			cmd := exec.CommandContext(r.Context(), "git", strings.TrimPrefix(svc, "git-"), "--stateless-rpc", "--advertise-refs", e.bare)
 			out, err := cmd.Output()
 			if err != nil {
 				http.Error(w, err.Error(), 500)
@@ -114,7 +125,9 @@ func newBrEnv(t *testing.T, config string) *brEnv {
 			fmt.Fprintf(w, "%04x%s0000", len(pl)+4, pl)
 			_, _ = w.Write(out)
 		case strings.HasSuffix(r.URL.Path, ".git/git-receive-pack"):
-			cmd := exec.Command("git", "receive-pack", "--stateless-rpc", e.bare)
+			gctx, gcancel := context.WithTimeout(r.Context(), gitTestTimeout)
+			defer gcancel()
+			cmd := exec.CommandContext(gctx, "git", "receive-pack", "--stateless-rpc", e.bare)
 			cmd.Stdin = bytes.NewReader(body)
 			out, _ := cmd.Output()
 			w.Header().Set("Content-Type", "application/x-git-receive-pack-result")

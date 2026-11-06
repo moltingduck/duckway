@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 )
 
 type branchVectorFile struct {
@@ -217,5 +219,105 @@ func TestBranchPolicyRejectsInvalidRefCharacters(t *testing.T) {
 	// The matcher still treats ? as a literal.
 	if !GitHubGlobMatch("a?b", "a?b") || GitHubGlobMatch("a?b", "axb") {
 		t.Error("matcher must treat ? literally")
+	}
+}
+
+func TestGlobMatchBoundsName(t *testing.T) {
+	big := strings.Repeat("a", 1<<20)
+	start := time.Now()
+	if GitHubGlobMatch("**", big) || GitHubGlobMatch("a*a*a*b", big) {
+		t.Fatal("oversize name matched")
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("took %v", d)
+	}
+	if !GitHubGlobMatch("**", strings.Repeat("a", MaxGitHubMatchNameBytes)) {
+		t.Fatal("name at the limit refused")
+	}
+}
+
+func TestSelectRuleDefaultBranchCaseInsensitive(t *testing.T) {
+	p := GitHubBranchPolicy{Rules: []GitHubBranchRule{{Branches: "@default", Role: GitHubRoleProtected}, {Branches: "**", Role: GitHubRoleAgent}}}
+	for _, b := range []string{"main", "MAIN", "Main", "refs/heads/MAIN"} {
+		if r, ok := p.SelectRule(b, "main"); !ok || r.Role != GitHubRoleProtected {
+			t.Errorf("%q selected %+v", b, r)
+		}
+	}
+}
+
+func TestBranchPolicyMessagesNameThePattern(t *testing.T) {
+	bp := GitHubBranchPolicy{Rules: []GitHubBranchRule{{Branches: "ok", Role: "read"}, {Branches: "agent/**", Role: "agent", RunWorkflows: true}}}
+	err := ValidateGitHubBranchPolicy(&bp, false)
+	if err == nil || !strings.Contains(err.Error(), `branch rule "agent/**"`) || strings.Contains(err.Error(), "rule 1") {
+		t.Fatalf("message %v", err)
+	}
+	bad := GitHubBranchPolicy{Rules: []GitHubBranchRule{{Branches: "a?b", Role: "read"}}}
+	if err := ValidateGitHubBranchPolicy(&bad, false); err == nil || !strings.Contains(err.Error(), `branch rule "a?b"`) {
+		t.Fatalf("message %v", err)
+	}
+	// Builder wording names Actions write, not the v2 capability.
+	cfg := `{"version":"1","provider":"github","rules":[{"name":"x","deny_all_other":true,"endpoints":[{"method":"GET","path":"/repos/acme/api","allow":true}],
+	 "github_capabilities":{"acme/api":{"contents":"write","actions":"read"}},
+	 "github_branch_policies":{"acme/api":{"branch_policy":{"rules":[{"branches":"ci/**","role":"agent","run_workflows":true}]}}}}]}`
+	if err := ValidatePermissionConfig(cfg); err == nil || !strings.Contains(err.Error(), "Actions write") || strings.Contains(err.Error(), "workflow_dispatch") {
+		t.Fatalf("builder message %v", err)
+	}
+	v2 := `{"version":"2","provider":"github","repositories":{"acme/api":{"capabilities":{"clone":true,"push":true},"branch_policy":{"rules":[{"branches":"x","role":"agent","run_workflows":true}]}}}}`
+	if err := ValidatePermissionConfig(v2); err == nil || !strings.Contains(err.Error(), "workflow_dispatch") {
+		t.Fatalf("v2 message %v", err)
+	}
+}
+
+func TestTruncateRunesKeepsUTF8(t *testing.T) {
+	s := strings.Repeat("é", 300)
+	if got := truncateRunes(s, 20); got != strings.Repeat("é", 20) {
+		t.Fatalf("got %q", got)
+	}
+	if got := truncateRunes("abc", 20); got != "abc" {
+		t.Fatalf("got %q", got)
+	}
+	bp := GitHubBranchPolicy{Rules: []GitHubBranchRule{{Branches: strings.Repeat("é", 150), Role: "read"}}}
+	err := ValidateGitHubBranchPolicy(&bp, false)
+	if err == nil || !utf8.ValidString(err.Error()) {
+		t.Fatalf("error not valid UTF-8: %v", err)
+	}
+}
+
+func TestCloneAndValidateDoesNotMutateInput(t *testing.T) {
+	in := GitHubBranchPolicy{Rules: []GitHubBranchRule{{Branches: "refs/heads/a", Role: "read"}}, Tags: GitHubTagPolicy{Create: []string{"refs/tags/v*"}}}
+	out, err := in.cloneAndValidate(false, "x")
+	if err != nil || out.Rules[0].Branches != "a" || out.Tags.Create[0] != "v*" {
+		t.Fatalf("%+v %v", out, err)
+	}
+	if in.Rules[0].Branches != "refs/heads/a" || in.Tags.Create[0] != "refs/tags/v*" {
+		t.Fatalf("input rewritten: %+v", in)
+	}
+}
+
+func TestNormalizePermissionConfigPolicies(t *testing.T) {
+	v2 := `{"version":"2","provider":"github","repositories":{"acme/api":{"capabilities":{"clone":true,"push":true},"branch_policy":{"rules":[{"branches":"refs/heads/agent/**","role":"agent","run_workflows":false}],"tags":{"create":["refs/tags/v*","rel-*"]}}}}}`
+	got, err := NormalizePermissionConfigPolicies(v2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "refs/") || !strings.Contains(got, `"agent/**"`) || !strings.Contains(got, `"v*"`) || !strings.Contains(got, `"rel-*"`) {
+		t.Fatalf("v2 not normalised: %s", got)
+	}
+	if err := ValidatePermissionConfig(got); err != nil {
+		t.Fatal(err)
+	}
+	builder := `{"version":"1","provider":"github","rules":[{"name":"x","deny_all_other":true,"endpoints":[{"method":"GET","path":"/repos/acme/api","allow":true}],
+	 "github_capabilities":{"acme/api":{"contents":"write"}},
+	 "github_branch_policies":{"acme/api":{"branch_policy":{"rules":[{"branches":"refs/heads/x","role":"read"}],"tags":{"create":["refs/tags/t"]}}}}}]}`
+	got, err = NormalizePermissionConfigPolicies(builder)
+	if err != nil || strings.Contains(got, "refs/heads/") || strings.Contains(got, "refs/tags/") || !strings.Contains(got, `"endpoints"`) {
+		t.Fatalf("builder: %v %s", err, got)
+	}
+	// Already-normal and legacy configs come back byte for byte.
+	clean := strings.Replace(strings.Replace(v2, "refs/heads/", "", 1), "refs/tags/", "", 1)
+	for _, c := range []string{clean, `{"version":"1","provider":"x","rules":[]}`, ""} {
+		if out, err := NormalizePermissionConfigPolicies(c); err != nil || out != c {
+			t.Errorf("config rewritten: %v %q", err, out)
+		}
 	}
 }

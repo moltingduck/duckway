@@ -251,10 +251,8 @@ func appendGitHubCapabilityEndpoints(dst []EndpointRule, repo string, p GitHubRe
 		if len(p.RefAllowlist) > 0 {
 			return nil, fmt.Errorf("ref_allowlist and branch_policy are mutually exclusive")
 		}
-		bp := *p.BranchPolicy
-		bp.Rules = append([]GitHubBranchRule(nil), bp.Rules...)
-		bp.Tags.Create = append([]string(nil), bp.Tags.Create...)
-		if err := ValidateGitHubBranchPolicy(&bp, c.WorkflowDispatch); err != nil {
+		bp, err := p.BranchPolicy.cloneAndValidate(c.WorkflowDispatch, "the workflow_dispatch capability")
+		if err != nil {
 			return nil, err
 		}
 		if c.WorkflowDispatch && (len(p.WorkflowAllowlist) == 0 || !bp.HasRunWorkflowsRule()) {

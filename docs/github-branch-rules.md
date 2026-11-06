@@ -102,6 +102,45 @@ request log like other ACL denials.
 Event matching is case-insensitive. JSON bodies that fail to parse on these
 endpoints are refused.
 
+Hardening rules (all refusals use the 403 / `ng` forms above):
+
+- Names are bounded before matching: a branch, tag, ref or dispatch name longer
+  than 255 bytes is refused, and the glob matcher itself returns no match above
+  1024 bytes.
+- Branch names taken from a request body are refused when they start with
+  `heads/`, `tags/` or `remotes/`, contain `..`, `@{` or `//`, or start or end
+  with `/`; GitHub could resolve such a name to a different ref than the one
+  the rules were evaluated for.
+- `@default` is compared case-insensitively: a name that equals the default
+  branch ignoring case is treated as the default branch (the fail-closed
+  direction).
+- Default deny: for a repository with a branch policy, every non-GET request is
+  refused (`duckway: endpoint not allowed under branch rules`) unless it is in
+  the table above or in this list: `issues/**`; `pulls/**` except merge and
+  update-branch; `POST git/blobs|trees|commits|tags`; `releases/{id}/assets/**`
+  and `DELETE releases/{id}`; `actions/runs/**`. This closes endpoints that
+  move a ref without being listed (branch rename, merge-upstream, ...).
+- When any repository of the placeholder's config has a branch policy, non-GET
+  `/graphql` and every `/repositories/**` path are refused (neither can be
+  attributed to a repository policy).
+- Method override: `X-HTTP-Method-Override`, `X-HTTP-Method` and
+  `X-Method-Override` are removed from every forwarded GitHub request, and a
+  request with a `_method` query parameter is refused for a repository with a
+  policy.
+- Smart-HTTP paths (`.git/git-receive-pack`, `.git/git-upload-pack`,
+  `.git/info/refs`) are recognised before the `/repos/` prefix with the same
+  repository split as the ACL, so `/repos/x.git/git-receive-pack` is the push
+  endpoint of repository `repos/x`.
+- A refusal that does not depend on the default branch is decided before an
+  approval rule can hold the request, so a definitely refused request never
+  creates an approval. Decisions that need `@default` keep the order
+  ACL, approval hold, upstream credential, default lookup, guard.
+- App-backed grants: merge and update-branch mint
+  `{pull_requests: write, contents: write}` when the policy opens merging
+  (`pull_requests_merge`); every other request mints what it always did.
+- Policies are stored normalised (no `refs/heads/` or `refs/tags/` prefixes).
+- The editor serialises trimmed patterns; the server rejects whitespace.
+
 ### receive-pack details
 
 - Read and parse only the command section (bounded, e.g. 1 MiB / 1000
@@ -185,3 +224,22 @@ Actions capability at write level. Repos without an entry keep legacy behaviour.
   and that allowed pushes still stream the pack.
 - Legacy configs: unchanged behaviour (existing tests stay green).
 - UI: template tests for both pages, conversion, and the tester.
+
+## 7. Limitations
+
+- A bare `ref` in a workflow dispatch (`main`, no `refs/heads/`) is treated as a
+  branch name. A tag with the same name as a branch cannot be told apart by the
+  proxy, so dispatch is checked against the branch rules only.
+- Pushes with more than 1000 commands are refused; a command section the proxy
+  cannot parse gets a plain 403 instead of a report-status rejection.
+- Branch rules do not stop `on: push` or `on: pull_request` workflows that a
+  permitted push or pull request triggers. Treat any branch an agent may write
+  as able to run the workflows triggered by pushes to it.
+- JSON requests the guard must read are capped at 16 MiB (413 above that,
+  recorded as an ACL denial).
+- A refused push drains at most 256 MiB of the client's pack, for at most 30
+  seconds, so the client sees the rejection instead of a connection reset.
+- Approval-held requests whose decision needs `@default` are held before the
+  guard can refuse them.
+- The request log records only that a request was refused, not the ref or the
+  reason.

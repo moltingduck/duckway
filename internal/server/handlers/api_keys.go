@@ -595,6 +595,12 @@ func (h *APIKeyHandler) SetACL(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	normalizedACL, nerr := svc.NormalizePermissionConfigPolicies(req.ACL)
+	if nerr != nil {
+		jsonError(w, nerr.Error(), http.StatusBadRequest)
+		return
+	}
+	req.ACL = normalizedACL
 	if err := h.apiKeys.UpdateACL(id, req.ACL); err != nil {
 		jsonError(w, "failed to update ACL", http.StatusInternalServerError)
 		return

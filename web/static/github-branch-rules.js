@@ -68,7 +68,7 @@
     var b = stripHeads(branch);
     var best = null, bestSpec = null;
     var i, r, p;
-    if (defaultBranch && b === stripHeads(defaultBranch)) {
+    if (defaultBranch && b.toLowerCase() === stripHeads(defaultBranch).toLowerCase()) {
       for (i = 0; i < rules.length; i++) {
         r = rules[i];
         if (r.branches !== DEFAULT) continue;
@@ -227,7 +227,8 @@
   // Rules as enforced given the current capabilities: run_workflows needs dispatch.
   function effectiveRules(st, ctx) {
     return st.rules.map(function (r) {
-      return { branches: r.branches, role: r.role, run_workflows: !!(r.run_workflows && ctx.dispatch) };
+      // Patterns are serialised trimmed and without refs/heads/, so a stray space never reaches the server.
+      return { branches: r.branches === DEFAULT ? DEFAULT : stripHeads(r.branches), role: r.role, run_workflows: !!(r.run_workflows && ctx.dispatch) };
     });
   }
   function stateProblems(st, ctx) {
@@ -393,6 +394,7 @@
         <button type="button" class="btn" data-action="gbrAdd" data-gbr-fk="add">Add branch rule</button>
         <span class="gbr-sub">* one level &middot; ** any depth</span>
       </div>
+      ${inst.addError ? dw.html`<p class="gbr-add-error" role="alert">${inst.addError}</p>` : ''}
       <div class="gbr-group">
         <h5 class="gbr-h2">Tags and releases</h5>
         <div class="gbr-tags">
@@ -468,7 +470,8 @@
     var err = patternError(p, false);
     if (!err && p === OTHER) err = '"**" already has the last row (All other branches).';
     if (!err && inst.st.rules.some(function (r) { return stripHeads(r.branches) === p; })) err = '"' + p + '" is already a rule.';
-    if (err) { inst.st.draft = p; inst.status = ''; render(inst); changed(inst); return; }
+    if (err) { inst.st.draft = p; inst.status = ''; inst.addError = err; render(inst); changed(inst); return; }
+    inst.addError = '';
     inst.st.rules.splice(inst.st.rules.length - 1, 0, rule(p, 'protected', false));
     inst.st.draft = '';
     inst.status = '';
@@ -509,7 +512,10 @@
     };
     dw.actions.gbrDraft = function (el) {
       var inst = instOf(el);
-      if (inst) inst.st.draft = el.value;
+      if (!inst) return;
+      inst.st.draft = el.value;
+      // The message belongs to the draft that produced it.
+      if (inst.addError) { inst.addError = ''; render(inst); }
     };
     dw.actions.gbrAdd = function (el) {
       var inst = instOf(el);

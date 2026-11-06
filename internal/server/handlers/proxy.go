@@ -608,50 +608,6 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if approveLayer != "" && h.approvals != nil {
-		// The approval covers this exact request, body included, so the body
-		// must be in hand (and replayed from memory) even if no rule inspected it.
-		if !bodyRequired && r.Body != nil {
-			var rerr error
-			bodyBytes, rerr = io.ReadAll(http.MaxBytesReader(w, r.Body, maxInspectableRequestBodyBytes))
-			r.Body.Close()
-			if rerr != nil {
-				jsonError(w, "request body too large or unreadable for approval", http.StatusRequestEntityTooLarge)
-				return
-			}
-			bodyRequired = true
-		}
-		akey, kerr := h.approvalKey()
-		if kerr != nil {
-			log.Printf("approval key unavailable: %v", kerr)
-			w.Header().Set("Retry-After", "2")
-			jsonError(w, "approval service temporarily unavailable; retry", http.StatusServiceUnavailable)
-			return
-		}
-		scope := ruleApprovalScope(akey, aclMethod, aclPath, r.URL.RawQuery, bodyBytes)
-		if _, err := h.approvals.GetValidScopedApproval(result.PlaceholderID, scope); err != nil {
-			if err != sql.ErrNoRows {
-				log.Printf("check rule approval for %s: %v", result.PlaceholderID, err)
-				jsonError(w, "failed to check approval", http.StatusInternalServerError)
-				return
-			}
-			// Secret-looking parameter values never reach request_info or the
-			// notification channels; the scope above used the real query.
-			query := redactApprovalQuery(r.URL.RawQuery)
-			if len(query) > 300 {
-				query = query[:300] + "..."
-			}
-			if !h.holdForApproval(w, r, client, serviceName, result.PlaceholderID, aclMethod, aclPath, query, approvalBodyHash(akey, bodyBytes), scope, approveRule+" ("+approveLayer+")") {
-				return
-			}
-		}
-		forwardDecision = queries.DecisionApprovedForward
-	} else if approveLayer != "" {
-		// No approval store wired: never forward an approve-gated request.
-		jsonError(w, "permission denied ("+approveLayer+"): approval required", http.StatusForbidden)
-		return
-	}
-
 	// GitHub branch rules: only for repositories that carry a branch policy.
 	// Body-dependent checks need the JSON body (or the receive-pack command
 	// section) in hand now; the decision itself runs once the upstream
@@ -659,7 +615,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	var ghGuard *githubGuard
 	var ghStreamPrefix []byte
 	if serviceName == "github" {
-		g, gerr := newGitHubGuard(result.PermissionConfig, r.Method, upstreamPath)
+		g, gerr := newGitHubGuard(result.PermissionConfig, r.Method, upstreamPath, r.URL.RawQuery)
 		if gerr != nil {
 			log.Printf("github branch policy invalid for placeholder %s: %v", result.PlaceholderID, gerr)
 			h.logGatewayDecision(client, result.PlaceholderID, serviceName, r.Method, upstreamPath, queries.DecisionACLDenied, "", false)
@@ -670,6 +626,9 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if ghGuard != nil {
 		switch {
+		case ghGuard.deny != "":
+			h.refuseGitHubRequest(w, nil, nil, client, result.PlaceholderID, r.Method, upstreamPath, nil, ghGuard.deny)
+			return
 		case ghGuard.receivePack:
 			if enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc != "" && enc != "identity" {
 				h.refuseGitHubRequest(w, nil, nil, client, result.PlaceholderID, r.Method, upstreamPath, nil, "pushes with a Content-Encoding cannot be checked against branch rules")
@@ -702,6 +661,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				bodyBytes, rerr = io.ReadAll(http.MaxBytesReader(w, r.Body, maxInspectableRequestBodyBytes))
 				r.Body.Close()
 				if rerr != nil {
+					h.logGatewayDecision(client, result.PlaceholderID, serviceName, r.Method, upstreamPath, queries.DecisionACLDenied, "", false)
 					jsonError(w, "request body too large or unreadable for branch rule check", http.StatusRequestEntityTooLarge)
 					return
 				}
@@ -709,6 +669,65 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 			ghGuard.body = bodyBytes
 		}
+	}
+	// A refusal that does not depend on the default branch is final: decide it
+	// before an approval rule can hold the request for an admin.
+	if ghGuard != nil && ghGuard.deny == "" {
+		if definite, msg, reasons := ghGuard.precheck(); definite {
+			var drain io.Reader
+			if ghGuard.receivePack && !bodyRequired {
+				drain = r.Body
+			}
+			h.refuseGitHubRequest(w, drain, ghGuard.rp, client, result.PlaceholderID, r.Method, upstreamPath, reasons, msg)
+			return
+		}
+	}
+
+	if approveLayer != "" && h.approvals != nil {
+		// The approval covers this exact request, body included, so the body
+		// must be in hand (and replayed from memory) even if no rule inspected it.
+		if !bodyRequired && r.Body != nil {
+			rest, rerr := io.ReadAll(http.MaxBytesReader(w, r.Body, maxInspectableRequestBodyBytes))
+			r.Body.Close()
+			if rerr != nil {
+				jsonError(w, "request body too large or unreadable for approval", http.StatusRequestEntityTooLarge)
+				return
+			}
+			// A receive-pack command section the guard already consumed is
+			// part of the body the approval covers.
+			bodyBytes = append(append([]byte(nil), ghStreamPrefix...), rest...)
+			ghStreamPrefix = nil
+			bodyRequired = true
+		}
+		akey, kerr := h.approvalKey()
+		if kerr != nil {
+			log.Printf("approval key unavailable: %v", kerr)
+			w.Header().Set("Retry-After", "2")
+			jsonError(w, "approval service temporarily unavailable; retry", http.StatusServiceUnavailable)
+			return
+		}
+		scope := ruleApprovalScope(akey, aclMethod, aclPath, r.URL.RawQuery, bodyBytes)
+		if _, err := h.approvals.GetValidScopedApproval(result.PlaceholderID, scope); err != nil {
+			if err != sql.ErrNoRows {
+				log.Printf("check rule approval for %s: %v", result.PlaceholderID, err)
+				jsonError(w, "failed to check approval", http.StatusInternalServerError)
+				return
+			}
+			// Secret-looking parameter values never reach request_info or the
+			// notification channels; the scope above used the real query.
+			query := redactApprovalQuery(r.URL.RawQuery)
+			if len(query) > 300 {
+				query = query[:300] + "..."
+			}
+			if !h.holdForApproval(w, r, client, serviceName, result.PlaceholderID, aclMethod, aclPath, query, approvalBodyHash(akey, bodyBytes), scope, approveRule+" ("+approveLayer+")") {
+				return
+			}
+		}
+		forwardDecision = queries.DecisionApprovedForward
+	} else if approveLayer != "" {
+		// No approval store wired: never forward an approve-gated request.
+		jsonError(w, "permission denied ("+approveLayer+"): approval required", http.StatusForbidden)
+		return
 	}
 
 	// Build upstream URL
@@ -749,6 +768,13 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, v := range values {
 			upstreamReq.Header.Add(key, v)
+		}
+	}
+	if serviceName == "github" {
+		// GitHub honours these on POST; they would turn a checked request into
+		// another verb the branch rules never saw.
+		for _, hn := range []string{"X-HTTP-Method-Override", "X-HTTP-Method", "X-Method-Override"} {
+			upstreamReq.Header.Del(hn)
 		}
 	}
 	if codexSourceAccountID != "" && strings.TrimSpace(upstreamReq.Header.Get("ChatGPT-Account-Id")) == "duckway-account" {
@@ -1961,27 +1987,6 @@ func resolveScopedApproval(ops scopedApprovalOps) (id string, created, forward b
 // Volume control: ACL denials are coalesced per client, token, method and path
 // within a minute, and a held retry is recorded only if the approval has no held
 // row in the last 60 seconds (created=true, a brand-new approval, always logs).
-// refuseGitHubRequest records a branch-rule refusal like any ACL denial and
-// answers it: a report-status rejection for receive-pack (rp != nil with
-// reasons per command), 403 JSON for everything else.
-func (h *ProxyHandler) refuseGitHubRequest(w http.ResponseWriter, drain io.Reader, rp *receivePackRequest, client *models.Client, placeholderID, method, path string, reasons []string, reason string) {
-	h.logGatewayDecision(client, placeholderID, "github", method, path, queries.DecisionACLDenied, "", false)
-	if strings.EqualFold(method, http.MethodPost) && strings.HasSuffix(path, ".git/git-receive-pack") {
-		writeReceivePackRefusal(w, drain, rp, reasons, reason)
-		return
-	}
-	jsonError(w, "duckway: "+reason, http.StatusForbidden)
-}
-
-func firstReason(reasons []string) string {
-	for _, r := range reasons {
-		if r != "" {
-			return r
-		}
-	}
-	return "push refused"
-}
-
 func (h *ProxyHandler) logGatewayDecision(client *models.Client, placeholderID, serviceName, method, path, decision, approvalID string, created bool) {
 	if h.requestLog == nil || client == nil {
 		return
@@ -2346,4 +2351,25 @@ func shouldStripHeader(name string) bool {
 		return true
 	}
 	return false
+}
+
+// refuseGitHubRequest records a branch-rule refusal like any ACL denial and
+// answers it: a report-status rejection for receive-pack (rp != nil with
+// reasons per command), 403 JSON for everything else.
+func (h *ProxyHandler) refuseGitHubRequest(w http.ResponseWriter, drain io.Reader, rp *receivePackRequest, client *models.Client, placeholderID, method, path string, reasons []string, reason string) {
+	h.logGatewayDecision(client, placeholderID, "github", method, path, queries.DecisionACLDenied, "", false)
+	if strings.EqualFold(method, http.MethodPost) && strings.HasSuffix(path, ".git/git-receive-pack") {
+		writeReceivePackRefusal(w, drain, rp, reasons, reason)
+		return
+	}
+	jsonError(w, "duckway: "+reason, http.StatusForbidden)
+}
+
+func firstReason(reasons []string) string {
+	for _, r := range reasons {
+		if r != "" {
+			return r
+		}
+	}
+	return "push refused"
 }

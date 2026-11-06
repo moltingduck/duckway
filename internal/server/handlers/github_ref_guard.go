@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -116,9 +117,12 @@ func newGitHubDefaultBranchCache() *githubDefaultBranchCache {
 
 func (c *githubDefaultBranchCache) get(ctx context.Context, key string, fetch func(context.Context) (string, error)) (string, error) {
 	c.mu.Lock()
-	if e, ok := c.entries[key]; ok && c.now().Before(e.expires) {
-		c.mu.Unlock()
-		return e.branch, nil
+	if e, ok := c.entries[key]; ok {
+		if c.now().Before(e.expires) {
+			c.mu.Unlock()
+			return e.branch, nil
+		}
+		delete(c.entries, key)
 	}
 	call, inflight := c.calls[key]
 	if !inflight {
@@ -131,7 +135,15 @@ func (c *githubDefaultBranchCache) get(ctx context.Context, key string, fetch fu
 			c.mu.Lock()
 			call.branch, call.err = branch, err
 			if err == nil && branch != "" {
-				c.entries[key] = githubDefaultBranchEntry{branch: branch, expires: c.now().Add(githubDefaultBranchTTL)}
+				// Sweep expired entries on insertion so the map stays bounded by
+				// the number of live credential+repo pairs.
+				now := c.now()
+				for k, e := range c.entries {
+					if !now.Before(e.expires) {
+						delete(c.entries, k)
+					}
+				}
+				c.entries[key] = githubDefaultBranchEntry{branch: branch, expires: now.Add(githubDefaultBranchTTL)}
 			}
 			delete(c.calls, key)
 			c.mu.Unlock()
@@ -169,6 +181,9 @@ func (h *ProxyHandler) githubDefaultBranchFor(ctx context.Context, req GitHubDef
 type githubGuard struct {
 	repo   string // lower-case owner/repo
 	policy services.GitHubRepoBranchPolicy
+	// deny is a request-independent refusal reason (set when the request can
+	// never be checked against the branch rules).
+	deny string
 	// REST
 	method string
 	rest   []string
@@ -179,14 +194,41 @@ type githubGuard struct {
 	rp          *receivePackRequest
 }
 
+const (
+	githubSuffixReceivePack = ".git/git-receive-pack"
+	githubSuffixUploadPack  = ".git/git-upload-pack"
+	githubSuffixInfoRefs    = ".git/info/refs"
+)
+
 // githubRepoAndRest splits a proxied upstream path into the repository and
-// the REST segments after it, or flags smart-HTTP receive-pack.
-func githubRepoAndRest(method, upstreamPath string) (repo string, rest []string, receivePack, restOK bool) {
+// the REST segments after it. Git smart-HTTP suffixes are checked before the
+// /repos/ prefix, with the same repository split the ACL uses
+// (githubRepoFromScopedEndpoint), so `/repos/x.git/git-receive-pack` is the
+// receive-pack of repository "repos/x". smartRead marks read-only smart-HTTP
+// paths (upload-pack, info/refs), which move no ref.
+func githubRepoAndRest(method, upstreamPath string) (repo string, rest []string, receivePack, restOK, smartRead bool) {
+	post := strings.EqualFold(method, http.MethodPost)
+	smartRepo := func(suffix string) string {
+		return strings.ToLower(strings.TrimPrefix(strings.TrimSuffix(upstreamPath, suffix), "/"))
+	}
+	switch {
+	case strings.HasSuffix(upstreamPath, githubSuffixReceivePack):
+		r := smartRepo(githubSuffixReceivePack)
+		if post && strings.Count(r, "/") == 1 {
+			return r, nil, true, true, false
+		}
+		// Any other method on a receive-pack path cannot be classified.
+		return r, nil, false, false, false
+	case strings.HasSuffix(upstreamPath, githubSuffixUploadPack):
+		return smartRepo(githubSuffixUploadPack), nil, false, post, true
+	case strings.HasSuffix(upstreamPath, githubSuffixInfoRefs):
+		return smartRepo(githubSuffixInfoRefs), nil, false, strings.EqualFold(method, http.MethodGet), true
+	}
 	if strings.HasPrefix(upstreamPath, "/repos/") {
 		trimmed := strings.TrimSuffix(strings.TrimPrefix(upstreamPath, "/repos/"), "/")
 		parts := strings.Split(trimmed, "/")
 		if len(parts) < 2 {
-			return "", nil, false, false
+			return "", nil, false, false, false
 		}
 		restOK = true
 		for _, p := range parts {
@@ -194,37 +236,69 @@ func githubRepoAndRest(method, upstreamPath string) (repo string, rest []string,
 				restOK = false
 			}
 		}
-		return strings.ToLower(parts[0] + "/" + parts[1]), parts[2:], false, restOK
+		return strings.ToLower(parts[0] + "/" + parts[1]), parts[2:], false, restOK, false
 	}
-	if strings.EqualFold(method, http.MethodPost) && strings.HasSuffix(upstreamPath, ".git/git-receive-pack") {
-		repo := strings.TrimPrefix(strings.TrimSuffix(upstreamPath, ".git/git-receive-pack"), "/")
-		if strings.Count(repo, "/") == 1 {
-			return strings.ToLower(repo), nil, true, true
+	return "", nil, false, false, false
+}
+
+func hasMethodOverrideQuery(rawQuery string) bool {
+	if rawQuery == "" {
+		return false
+	}
+	vals, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return strings.Contains(strings.ToLower(rawQuery), "_method")
+	}
+	for k := range vals {
+		if strings.EqualFold(k, "_method") {
+			return true
 		}
 	}
-	return "", nil, false, false
+	return false
 }
 
 // newGitHubGuard returns nil when the request needs no branch-rule
 // enforcement. A non-nil error means the policy itself is unusable (fail
 // closed).
-func newGitHubGuard(permissionConfig, method, upstreamPath string) (*githubGuard, error) {
-	if strings.TrimSpace(permissionConfig) == "" {
+func newGitHubGuard(permissionConfig, method, upstreamPath, rawQuery string) (*githubGuard, error) {
+	if !strings.Contains(permissionConfig, "branch_polic") {
 		return nil, nil
 	}
-	repo, rest, receivePack, restOK := githubRepoAndRest(method, upstreamPath)
-	if repo == "" {
-		return nil, nil
-	}
-	if !receivePack && (method == http.MethodGet || method == http.MethodHead) {
-		return nil, nil
+	readOnly := strings.EqualFold(method, http.MethodGet) || strings.EqualFold(method, http.MethodHead)
+	lower := strings.ToLower(strings.TrimRight(upstreamPath, "/"))
+	graphql := lower == "/graphql" && !readOnly
+	repositories := lower == "/repositories" || strings.HasPrefix(lower, "/repositories/")
+	override := hasMethodOverrideQuery(rawQuery)
+	repo, rest, receivePack, restOK, smartRead := githubRepoAndRest(method, upstreamPath)
+	if !graphql && !repositories {
+		if repo == "" || (readOnly && !receivePack && !override) {
+			return nil, nil
+		}
 	}
 	policies, err := services.GitHubBranchPoliciesFromConfig(permissionConfig)
 	if err != nil {
 		return nil, err
 	}
+	if len(policies) == 0 {
+		return nil, nil
+	}
+	switch {
+	case graphql:
+		return &githubGuard{deny: "GraphQL writes cannot be checked against branch rules"}, nil
+	case repositories:
+		return &githubGuard{deny: "repository-id paths cannot be checked against branch rules"}, nil
+	}
 	pol, ok := policies[repo]
 	if !ok {
+		return nil, nil
+	}
+	if override {
+		return &githubGuard{repo: repo, policy: pol, deny: "method override parameters are not allowed under branch rules"}, nil
+	}
+	if smartRead {
+		if !restOK {
+			return &githubGuard{repo: repo, policy: pol, deny: "request cannot be checked against branch rules"}, nil
+		}
 		return nil, nil
 	}
 	return &githubGuard{repo: repo, policy: pol, method: strings.ToUpper(method), rest: rest, restOK: restOK, receivePack: receivePack}, nil
@@ -311,6 +385,44 @@ func classifyGitHubREST(method string, rest []string) githubRESTOp {
 	return opNone
 }
 
+// safeUnclassifiedWrite is the explicit list of writes that move no ref and
+// open nothing the rules cover, allowed under a branch policy although the
+// table in the spec does not classify them. Every other write is refused.
+func safeUnclassifiedWrite(method string, rest []string) bool {
+	if len(rest) == 0 {
+		return false
+	}
+	seg := func(i int) string {
+		if i < len(rest) {
+			return strings.ToLower(rest[i])
+		}
+		return ""
+	}
+	switch seg(0) {
+	case "issues":
+		return true
+	case "pulls":
+		// merge and update-branch are classified (PUT) or refused (anything else).
+		return seg(2) != "merge" && seg(2) != "update-branch"
+	case "git":
+		if method != http.MethodPost || len(rest) != 2 {
+			return false
+		}
+		switch seg(1) {
+		case "blobs", "trees", "commits", "tags":
+			return true
+		}
+	case "releases":
+		if len(rest) >= 3 && seg(2) == "assets" && seg(1) != "assets" {
+			return true
+		}
+		return method == http.MethodDelete && len(rest) == 2 && seg(1) != "assets"
+	case "actions":
+		return seg(1) == "runs" && len(rest) >= 3
+	}
+	return false
+}
+
 // needsJSONBody reports whether the guard must read a JSON request body.
 func (g *githubGuard) needsJSONBody() bool {
 	return !g.receivePack && g.restOK && classifyGitHubREST(g.method, g.rest).needsBody()
@@ -324,6 +436,10 @@ type guardEval struct {
 	cached string
 	err    error
 	have   bool
+	// unknownDefault makes checkBranch decide without the default branch: a
+	// candidate is refused when it is refused whether or not it is the default
+	// branch, allowed when it is allowed either way, and otherwise undecided.
+	unknownDefault bool
 }
 
 func (e *guardEval) defaultBranch() (string, error) {
@@ -340,7 +456,7 @@ func (e *guardEval) defaultBranch() (string, error) {
 	return e.cached, nil
 }
 
-// roleOf returns the rule governing one branch name.
+// ruleOf returns the rule governing one branch name.
 func (e *guardEval) ruleOf(branch string) (services.GitHubBranchRule, string, error) {
 	def := ""
 	if e.policy.BranchPolicy.HasDefaultRule() {
@@ -357,9 +473,41 @@ func (e *guardEval) ruleOf(branch string) (services.GitHubBranchRule, string, er
 	return rule, rule.Role, nil
 }
 
+// maxGitHubRefNameBytes bounds any branch, tag, ref or dispatch name before
+// it reaches the matcher (git itself limits ref names to 255-byte components;
+// GitHub refuses anything near this size).
+const maxGitHubRefNameBytes = 255
+
+// invalidBranchName rejects names that GitHub could resolve to something other
+// than the branch the rules were evaluated for.
+func invalidBranchName(name string) string {
+	if len(name) > maxGitHubRefNameBytes {
+		return fmt.Sprintf("name is longer than %d bytes", maxGitHubRefNameBytes)
+	}
+	if name == "" {
+		return "empty branch name"
+	}
+	if strings.ContainsAny(name, "\x00\n") {
+		return "invalid branch name"
+	}
+	if strings.Contains(name, "..") || strings.Contains(name, "@{") || strings.Contains(name, "//") ||
+		strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") {
+		return fmt.Sprintf("branch name %q is not valid", name)
+	}
+	for _, p := range []string{"heads/", "tags/", "remotes/"} {
+		if strings.HasPrefix(name, p) {
+			return fmt.Sprintf("branch name %q is ambiguous (starts with %q)", name, p)
+		}
+	}
+	return ""
+}
+
 // branchCandidates returns the branch names a client-supplied branch field may
 // resolve to; every one of them must pass.
 func branchCandidates(name string) ([]string, string) {
+	if len(name) > maxGitHubRefNameBytes {
+		return nil, fmt.Sprintf("branch name is longer than %d bytes", maxGitHubRefNameBytes)
+	}
 	if name == "" {
 		return nil, "empty branch name"
 	}
@@ -368,13 +516,16 @@ func branchCandidates(name string) ([]string, string) {
 	}
 	if strings.HasPrefix(name, "refs/heads/") {
 		stripped := strings.TrimPrefix(name, "refs/heads/")
-		if stripped == "" {
-			return nil, "empty branch name"
+		if bad := invalidBranchName(stripped); bad != "" {
+			return nil, bad
 		}
 		return []string{name, stripped}, ""
 	}
 	if strings.HasPrefix(name, "refs/") {
 		return nil, fmt.Sprintf("ref %q is not a branch", name)
+	}
+	if bad := invalidBranchName(name); bad != "" {
+		return nil, bad
 	}
 	return []string{name}, ""
 }
@@ -387,6 +538,27 @@ func (e *guardEval) checkBranch(name, what string, ok func(role string, rule ser
 		return bad
 	}
 	for _, c := range cands {
+		if e.unknownDefault && e.policy.BranchPolicy.HasDefaultRule() {
+			asOther, okOther := e.policy.BranchPolicy.SelectRule(c, "")
+			roleOther := services.GitHubRoleRead
+			if okOther {
+				roleOther = asOther.Role
+			}
+			asDef, okDef := e.policy.BranchPolicy.SelectRule(c, c)
+			roleDef := services.GitHubRoleRead
+			if okDef {
+				roleDef = asDef.Role
+			}
+			passOther, passDef := ok(roleOther, asOther), ok(roleDef, asDef)
+			switch {
+			case !passOther && !passDef:
+				return fmt.Sprintf("branch %q has role %q under the repository's branch rules; %s", c, roleOther, what)
+			case passOther && passDef:
+				continue
+			}
+			e.have, e.err = true, errDefaultDeferred
+			return "the repository's default branch could not be determined, so the request was refused"
+		}
 		rule, role, err := e.ruleOf(c)
 		if err != nil {
 			return err.Error()
@@ -419,8 +591,11 @@ func (e *guardEval) requireDefaultAgent() string {
 }
 
 func (e *guardEval) requireTag(tag string) string {
+	if len(tag) > maxGitHubRefNameBytes {
+		return fmt.Sprintf("tag name is longer than %d bytes", maxGitHubRefNameBytes)
+	}
 	tag = strings.TrimPrefix(tag, "refs/tags/")
-	if tag == "" || strings.ContainsAny(tag, "\x00\n") {
+	if tag == "" || strings.ContainsAny(tag, "\x00\n") || strings.Contains(tag, "..") || strings.Contains(tag, "@{") || strings.Contains(tag, "//") {
 		return "invalid tag name"
 	}
 	if !e.policy.BranchPolicy.TagCreateAllowed(tag) {
@@ -454,6 +629,9 @@ func strField(m map[string]interface{}, key string) (val string, present, ok boo
 func (e *guardEval) checkREST(method string, rest []string, body []byte) string {
 	op := classifyGitHubREST(method, rest)
 	if op == opNone {
+		if method != http.MethodGet && method != http.MethodHead && !safeUnclassifiedWrite(method, rest) {
+			return "endpoint not allowed under branch rules"
+		}
 		return ""
 	}
 	if op == opRefOther {
@@ -596,6 +774,9 @@ func (e *guardEval) checkReceivePack(cmds []receivePackCommand) []string {
 
 func (e *guardEval) checkPushCommand(c receivePackCommand) string {
 	ref := c.Ref
+	if len(ref) > maxGitHubRefNameBytes {
+		return fmt.Sprintf("ref name is longer than %d bytes (%d)", maxGitHubRefNameBytes, len(ref))
+	}
 	if strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.ContainsAny(ref, "\x00\n") {
 		return fmt.Sprintf("invalid ref %q", ref)
 	}
@@ -609,6 +790,40 @@ func (e *guardEval) checkPushCommand(c receivePackCommand) string {
 		return e.requireTag(ref)
 	}
 	return fmt.Sprintf("ref %q is outside the branches and tags this grant may change", ref)
+}
+
+var errDefaultDeferred = errors.New("default branch lookup deferred")
+
+// precheck runs the guard decision without the default-branch lookup. definite
+// is true when the request is refused whatever the default branch is; reasons
+// are per command for receive-pack. A decision that would need @default is not
+// definite (the full check runs later, once the upstream credential exists).
+func (g *githubGuard) precheck() (definite bool, msg string, reasons []string) {
+	e := &guardEval{policy: g.policy, unknownDefault: true, def: func() (string, error) { return "", errDefaultDeferred }}
+	if g.receivePack {
+		reasons = make([]string, len(g.rp.Commands))
+		for i, c := range g.rp.Commands {
+			e.have, e.err = false, nil
+			r := e.checkPushCommand(c)
+			switch {
+			case r == "":
+			case e.err != nil && errors.Is(e.err, errDefaultDeferred):
+				// Undecided: only the refusals of other commands matter.
+			default:
+				reasons[i] = r
+				definite = true
+			}
+		}
+		if definite {
+			return true, firstReason(reasons), reasons
+		}
+		return false, "", nil
+	}
+	m := e.checkREST(g.method, g.rest, g.body)
+	if m != "" && (!e.have || !errors.Is(e.err, errDefaultDeferred)) {
+		return true, m, nil
+	}
+	return false, "", nil
 }
 
 func anyRefused(reasons []string) bool {

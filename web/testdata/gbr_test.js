@@ -5,7 +5,7 @@ const fs = require('fs');
 const vm = require('vm');
 const assert = require('assert');
 
-const [, , srcPath, vecPath, aclPath, commonPath] = process.argv;
+const [, , srcPath, vecPath, aclPath, commonPath, clientPath] = process.argv;
 const sandbox = { window: {} };
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(srcPath, 'utf8'), sandbox, { filename: srcPath });
@@ -158,6 +158,25 @@ check('presets', () => {
   assert(grants.find((g) => g.repo === 'a/dev').branch_policy);
 });
 
+// Q7/default-branch/Q5 model checks.
+check('serialize trimmed patterns', () => {
+  const st = G.newState(G.TEMPLATES.agent.rules(), {});
+  st.rules[1].branches = '  refs/heads/main \n';
+  eq(G.stateValue(st, {}).branch_policy.rules[1].branches, 'main');
+});
+check('default branch matches case-insensitively', () => {
+  const rules = G.TEMPLATES.agent.rules();
+  const hit = G.selectRule(rules, 'main', 'MAIN');
+  assert.strictEqual(hit.branches, '@default');
+});
+check('presets throw without the branch-rules script', () => {
+  const sb2 = { window: {} }; vm.createContext(sb2); vm.runInContext(fs.readFileSync(commonPath, 'utf8'), sb2);
+  assert.throws(() => sb2.window.PT.gitACLForRepos(['a/b'], 'dev', '', '', ''), /github-branch-rules/);
+  assert.throws(() => sb2.window.PT.gitACLForRepos(['a/b'], 'cicd', 'ci.yml', 'main', ''), /github-branch-rules/);
+  // A preset without branch rules never needs the script.
+  assert.doesNotThrow(() => sb2.window.PT.gitACLForRepos(['a/b'], 'deploy', '', '', ''));
+});
+
 // Rendering smoke test with a minimal DW stand-in (same escaping rules as dw.js) and a fake host.
 (function () {
   class Safe { constructor(h) { this.__html = String(h); } }
@@ -195,6 +214,89 @@ check('presets', () => {
   check('render escapes pattern text', () => {
     const { h } = mounted({ ctx: { push: true }, policy: { branch_policy: { rules: [{ branches: '<img onerror=x>', role: 'agent', run_workflows: false }] } } });
     assert(!h.innerHTML.includes('<img onerror'));
+  });
+
+  // F2: add-rule errors show inline under the add row and clear on the next draft edit.
+  check('addRule error is shown inline and cleared', () => {
+    const { h } = mounted({ ctx: { push: true, prWrite: true, dispatch: false } });
+    const el = (value) => ({ closest: () => h, value });
+    sb.window.DW.actions.gbrDraft(el('a b'));
+    sb.window.DW.actions.gbrAdd(el('a b'));
+    assert(h.innerHTML.includes('class="gbr-add-error"') && h.innerHTML.includes('character branch names cannot contain'), 'error not shown');
+    sb.window.DW.actions.gbrDraft(el('agent/x'));
+    assert(!h.innerHTML.includes('gbr-add-error'), 'error not cleared on edit');
+    sb.window.DW.actions.gbrAdd(el('agent/x'));
+    assert(h.innerHTML.includes('agent/x') && !h.innerHTML.includes('gbr-add-error'));
+    sb.window.DW.actions.gbrDraft(el('**'));
+    sb.window.DW.actions.gbrAdd(el('**'));
+    assert(h.innerHTML.includes('gbr-add-error'), 'duplicate/other-row error not shown');
+  });
+
+  // F1: toggling a capability in the client dialog re-syncs the row's editor.
+  check('client dialog capability toggle syncs the editor', () => {
+    const src = fs.readFileSync(clientPath, 'utf8');
+    const extract = (name) => {
+      const at = src.indexOf('function ' + name + '(');
+      assert(at >= 0, name + ' missing from client_detail.html');
+      let depth = 0;
+      for (let j = src.indexOf('{', at); j < src.length; j++) {
+        if (src[j] === '{') depth++;
+        else if (src[j] === '}' && --depth === 0) return src.slice(at, j + 1);
+      }
+      throw new Error('unbalanced ' + name);
+    };
+    let validityCalls = 0;
+    const csb = { GBR: g, refreshGrantValidity: () => { validityCalls++; } };
+    vm.createContext(csb);
+    vm.runInContext(['parsePolicyList', 'rowBranchCtx', 'syncRowBranchRules', 'onGitHubGrantToggle'].map(extract).join('\n'), csb);
+
+    const box = (cap, checked) => ({ checked, disabled: false, dataset: { capability: cap } });
+    const boxes = {};
+    ['clone', 'push', 'pull_requests_read', 'pull_requests_write', 'actions_read', 'workflow_dispatch', 'workflow_rerun', 'workflow_cancel'].forEach((c) => { boxes[c] = box(c, c === 'clone' || c === 'actions_read' || c === 'pull_requests_read'); });
+    const hostEl = host();
+    const enabled = { checked: true };
+    const workflows = { value: 'ci.yml' };
+    const row = {
+      dataset: { defaultBranch: 'main' },
+      querySelector(sel) {
+        let m = /^\[data-capability="(.+)"\]$/.exec(sel);
+        if (m) return boxes[m[1]] || null;
+        if (sel === '.assign-github-repo-enabled') return enabled;
+        if (sel === '[data-gbr-host]') return hostEl;
+        if (sel === '.github-workflows') return workflows;
+        return null;
+      }
+    };
+    boxes.push.closest = boxes.workflow_dispatch.closest = boxes.pull_requests_write.closest = () => row;
+    const inst = g.create({
+      ctx: csb.rowBranchCtx(row),
+      policy: { branch_policy: { rules: [
+        { branches: '@default', role: 'protected', run_workflows: true },
+        { branches: '**', role: 'read', run_workflows: false }], tags: { create: [] } }, pull_requests_merge: false, pull_requests_approve: false }
+    });
+    g.mount(hostEl, inst);
+    assert.strictEqual(hostEl.hidden, true, 'panel hidden while no write capability is on');
+
+    boxes.push.checked = true;
+    csb.onGitHubGrantToggle(boxes.push);
+    assert.strictEqual(hostEl.hidden, false, 'push makes the panel relevant');
+    assert.strictEqual(inst.ctx.push, true);
+    assert.strictEqual(g.value(inst).branch_policy.rules[0].run_workflows, false, 'run is off without dispatch');
+    assert(/data-gbr-fk="run0"[^>]*disabled/.test(hostEl.innerHTML), 'run box disabled without dispatch');
+
+    boxes.workflow_dispatch.checked = true;
+    csb.onGitHubGrantToggle(boxes.workflow_dispatch);
+    assert.strictEqual(inst.ctx.dispatch, true, 'ctx follows the dispatch toggle');
+    assert.strictEqual(g.value(inst).branch_policy.rules[0].run_workflows, true, 'serialized run_workflows follows dispatch');
+    assert(!/data-gbr-fk="run0"[^>]*disabled/.test(hostEl.innerHTML), 'run box enabled with dispatch');
+
+    boxes.workflow_dispatch.checked = false;
+    csb.onGitHubGrantToggle(boxes.workflow_dispatch);
+    assert.strictEqual(g.value(inst).branch_policy.rules[0].run_workflows, false);
+    boxes.push.checked = false;
+    csb.onGitHubGrantToggle(boxes.push);
+    assert.strictEqual(hostEl.hidden, true, 'panel hides again');
+    assert(validityCalls >= 4, 'validity refreshed on every toggle (' + validityCalls + ')');
   });
 })();
 
