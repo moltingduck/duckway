@@ -1,0 +1,83 @@
+{
+  "description": "Shared branch-rule match vectors (spec docs/github-branch-rules.md section 1). Copy verbatim to internal/server/services/testdata/github_branch_match_vectors.json; Go and JS tests must both pass every case.",
+  "glob": [
+    {"pattern": "main", "branch": "main", "match": true},
+    {"pattern": "main", "branch": "main-old", "match": false},
+    {"pattern": "feature/*", "branch": "feature/login", "match": true},
+    {"pattern": "feature/*", "branch": "feature/a/b", "match": false},
+    {"pattern": "feature/*", "branch": "feature/", "match": true},
+    {"pattern": "agent/**", "branch": "agent/x", "match": true},
+    {"pattern": "agent/**", "branch": "agent/a/b/c", "match": true},
+    {"pattern": "agent/**", "branch": "agents/x", "match": false},
+    {"pattern": "**", "branch": "a/b/c", "match": true},
+    {"pattern": "*", "branch": "a/b", "match": false},
+    {"pattern": "rel?ase", "branch": "release", "match": false},
+    {"pattern": "rel?ase", "branch": "rel?ase", "match": true},
+    {"pattern": "v1.2", "branch": "v1x2", "match": false},
+    {"pattern": "*-hotfix", "branch": "x-hotfix", "match": true}
+  ],
+  "select": [
+    {
+      "name": "agent template",
+      "default_branch": "main",
+      "rules": [
+        {"branches": "@default", "role": "protected", "run_workflows": false},
+        {"branches": "agent/**", "role": "agent", "run_workflows": false},
+        {"branches": "**", "role": "read", "run_workflows": false}
+      ],
+      "cases": [
+        {"branch": "main", "rule": "@default", "role": "protected"},
+        {"branch": "refs/heads/main", "rule": "@default", "role": "protected"},
+        {"branch": "agent/fix-login", "rule": "agent/**", "role": "agent"},
+        {"branch": "feature/x", "rule": "**", "role": "read"}
+      ]
+    },
+    {
+      "name": "specificity",
+      "default_branch": "trunk",
+      "rules": [
+        {"branches": "release/**", "role": "protected", "run_workflows": true},
+        {"branches": "release/2.*", "role": "agent", "run_workflows": false},
+        {"branches": "release/2.4", "role": "read", "run_workflows": false},
+        {"branches": "*", "role": "agent", "run_workflows": false}
+      ],
+      "cases": [
+        {"branch": "release/2.4", "rule": "release/2.4", "role": "read"},
+        {"branch": "release/2.5", "rule": "release/2.*", "role": "agent"},
+        {"branch": "release/3/x", "rule": "release/**", "role": "protected"},
+        {"branch": "dev", "rule": "*", "role": "agent"},
+        {"branch": "trunk", "rule": "*", "role": "agent"},
+        {"branch": "a/b", "rule": null, "role": "read"}
+      ]
+    },
+    {
+      "name": "tie picks most restrictive",
+      "default_branch": "main",
+      "rules": [
+        {"branches": "x/*", "role": "agent", "run_workflows": true},
+        {"branches": "x/*", "role": "protected", "run_workflows": false}
+      ],
+      "note": "duplicate patterns are a validation error; this vector only exercises the selector",
+      "cases": [
+        {"branch": "x/y", "rule": "x/*", "role": "protected", "run_workflows": false}
+      ]
+    },
+    {
+      "name": "default beats literal",
+      "default_branch": "main",
+      "rules": [
+        {"branches": "main", "role": "agent", "run_workflows": false},
+        {"branches": "@default", "role": "read", "run_workflows": false}
+      ],
+      "cases": [
+        {"branch": "main", "rule": "@default", "role": "read"}
+      ]
+    }
+  ],
+  "tags": [
+    {"create": ["v*"], "tag": "v2.4.0", "allowed": true},
+    {"create": ["v*"], "tag": "release-1", "allowed": false},
+    {"create": [], "tag": "v1", "allowed": false},
+    {"create": ["releases/**"], "tag": "releases/2026/11", "allowed": true}
+  ]
+}

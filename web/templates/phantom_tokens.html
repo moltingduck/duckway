@@ -121,7 +121,7 @@
         </div>
         <div class="form-group"><label for="pt-add-wf">Workflow constraints</label>
           <input type="text" id="pt-add-wf" placeholder="Workflows: ci.yml" aria-label="Workflows">
-          <input type="text" id="pt-add-refs" class="mt-1" placeholder="Refs: main, release/*" aria-label="Refs">
+          <input type="text" id="pt-add-refs" class="mt-1" placeholder="CI/CD only: branches workflows may run on (default branch always)" aria-label="Branches workflows may run on">
           <input type="text" id="pt-add-envs" class="mt-1" placeholder="Environments: staging" aria-label="Environments">
         </div>
       </div>
@@ -151,6 +151,7 @@
   </div>
 </div>
 
+<script nonce="{{$.CSPNonce}}" src="/static/github-branch-rules.js"></script>
 <script nonce="{{$.CSPNonce}}" src="/static/phantom-common.js"></script>
 <script nonce="{{$.CSPNonce}}" src="/static/phantom-tokens.js"></script>
 {{end}}

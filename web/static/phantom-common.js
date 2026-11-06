@@ -49,6 +49,25 @@
     return (value || '').split(/[\n,]+/).map(function (v) { return v.trim(); }).filter(Boolean);
   }
 
+  // Branch rules for a preset (spec: new configs never carry ref_allowlist).
+  //   dev  -> "Agent works on its own branches" template
+  //   cicd -> default branch plus each listed branch: protected, may run workflows
+  //   deploy -> no write capability, so no branch policy is needed
+  function presetBranchPolicy(preset, grant) {
+    var G = window.GBR;
+    if (preset === 'dev') return G ? G.defaultValue({ push: true, prWrite: true, dispatch: false }) : null;
+    if (preset !== 'cicd') return null;
+    var rules = [{ branches: '@default', role: 'protected', run_workflows: true }], seen = { '@default': 1, '**': 1 };
+    (grant.ref_allowlist || []).forEach(function (ref) {
+      var b = String(ref).trim().replace(/^refs\/heads\//, '');
+      if (!b || seen[b]) return;
+      seen[b] = 1;
+      rules.push({ branches: b, role: 'protected', run_workflows: true });
+    });
+    rules.push({ branches: '**', role: 'read', run_workflows: false });
+    return { branch_policy: { rules: rules, tags: { create: [] } }, pull_requests_merge: false, pull_requests_approve: false };
+  }
+
   function gitACLForRepoGrants(grants) {
     var repositories = {};
     grants.forEach(function (grant) {
@@ -56,11 +75,11 @@
       var c = { clone: true, push: false, issues_read: true, issues_write: false, pull_requests_read: true, pull_requests_write: false, releases_read: true, releases_write: false, actions_read: true, workflow_dispatch: false, workflow_rerun: false, workflow_cancel: false };
       if (preset === 'dev') { c.push = true; c.issues_write = true; c.pull_requests_write = true; }
       if (preset === 'cicd') { c.workflow_dispatch = true; c.workflow_rerun = true; c.workflow_cancel = true; }
+      var pol = presetBranchPolicy(preset, grant);
+      if (pol) { c.pull_requests_merge = pol.pull_requests_merge; c.pull_requests_approve = pol.pull_requests_approve; }
       repositories[grant.repo] = { capabilities: c };
-      if (preset === 'cicd') {
-        repositories[grant.repo].workflow_allowlist = (grant.workflow_allowlist || []).length ? grant.workflow_allowlist : ['ci.yml'];
-        repositories[grant.repo].ref_allowlist = (grant.ref_allowlist || []).length ? grant.ref_allowlist : ['main'];
-      }
+      if (preset === 'cicd') repositories[grant.repo].workflow_allowlist = (grant.workflow_allowlist || []).length ? grant.workflow_allowlist : ['ci.yml'];
+      if (pol) repositories[grant.repo].branch_policy = pol.branch_policy;
       if (grant.environment_allowlist && grant.environment_allowlist.length) repositories[grant.repo].environment_allowlist = grant.environment_allowlist;
     });
     return { version: '2', provider: 'github', repositories: repositories };
@@ -94,7 +113,7 @@
     if (cfg.version === '2' && cfg.provider === 'github') {
       return Object.keys(cfg.repositories || {}).sort().map(function (repo) {
         var p = cfg.repositories[repo] || {}, c = p.capabilities || {};
-        return { repo: repo, capabilities: c, pull: !!c.clone, push: !!c.push, workflow_allowlist: p.workflow_allowlist || [], ref_allowlist: p.ref_allowlist || [], environment_allowlist: p.environment_allowlist || [] };
+        return { repo: repo, capabilities: c, pull: !!c.clone, push: !!c.push, workflow_allowlist: p.workflow_allowlist || [], ref_allowlist: p.ref_allowlist || [], environment_allowlist: p.environment_allowlist || [], branch_policy: p.branch_policy || null };
       });
     }
     var byRepo = {};
