@@ -1,0 +1,38 @@
+{
+  "version": "2",
+  "provider": "github",
+  "repositories": {
+    "acme/api": {
+      "capabilities": {
+        "clone": true,
+        "push": true,
+        "pull_requests_read": true,
+        "pull_requests_write": true,
+        "pull_requests_merge": false,
+        "pull_requests_approve": false
+      },
+      "branch_policy": {
+        "rules": [
+          {
+            "branches": "@default",
+            "role": "protected",
+            "run_workflows": false
+          },
+          {
+            "branches": "agent/**",
+            "role": "agent",
+            "run_workflows": false
+          },
+          {
+            "branches": "**",
+            "role": "read",
+            "run_workflows": false
+          }
+        ],
+        "tags": {
+          "create": []
+        }
+      }
+    }
+  }
+}

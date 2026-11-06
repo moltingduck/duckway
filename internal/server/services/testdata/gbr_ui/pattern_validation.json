@@ -1,0 +1,140 @@
+[
+  {
+    "pattern": "",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "/x",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "a..b",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "a b",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "a~b",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "a^b",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "a:b",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "a?b",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "a[b",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "a\\b",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "a\tb",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "ab",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "a//b",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "a@{b",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "branch_error": false,
+    "branch_error_default_allowed": false,
+    "tag_error": false
+  },
+  {
+    "pattern": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "branch_error": true,
+    "branch_error_default_allowed": true,
+    "tag_error": true
+  },
+  {
+    "pattern": "@default",
+    "branch_error": true,
+    "branch_error_default_allowed": false,
+    "tag_error": true
+  },
+  {
+    "pattern": "refs/heads/agent/**",
+    "branch_error": false,
+    "branch_error_default_allowed": false,
+    "tag_error": false
+  },
+  {
+    "pattern": "release/*",
+    "branch_error": false,
+    "branch_error_default_allowed": false,
+    "tag_error": false
+  },
+  {
+    "pattern": "feature-1",
+    "branch_error": false,
+    "branch_error_default_allowed": false,
+    "tag_error": false
+  },
+  {
+    "pattern": "v1.2",
+    "branch_error": false,
+    "branch_error_default_allowed": false,
+    "tag_error": false
+  },
+  {
+    "pattern": "**",
+    "branch_error": false,
+    "branch_error_default_allowed": false,
+    "tag_error": false
+  },
+  {
+    "pattern": "a/*/b",
+    "branch_error": false,
+    "branch_error_default_allowed": false,
+    "tag_error": false
+  }
+]

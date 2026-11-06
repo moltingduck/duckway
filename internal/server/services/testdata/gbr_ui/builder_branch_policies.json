@@ -1,0 +1,66 @@
+{
+  "version": "1",
+  "provider": "github",
+  "rules": [
+    {
+      "name": "GitHub repositories",
+      "github_capabilities": {
+        "Acme/Api": {
+          "contents": "write",
+          "pull_requests": "write"
+        }
+      },
+      "github_branch_policies": {
+        "acme/api": {
+          "branch_policy": {
+            "rules": [
+              {
+                "branches": "@default",
+                "role": "protected",
+                "run_workflows": false
+              },
+              {
+                "branches": "agent/**",
+                "role": "agent",
+                "run_workflows": false
+              },
+              {
+                "branches": "**",
+                "role": "read",
+                "run_workflows": false
+              }
+            ],
+            "tags": {
+              "create": []
+            }
+          },
+          "pull_requests_merge": true,
+          "pull_requests_approve": false
+        }
+      },
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/repos/Acme/Api/contents/*",
+          "allow": true
+        },
+        {
+          "method": "PUT",
+          "path": "/repos/Acme/Api/contents/*",
+          "allow": true
+        },
+        {
+          "method": "GET",
+          "path": "/repos/Acme/Api/pulls/*",
+          "allow": true
+        },
+        {
+          "method": "POST",
+          "path": "/repos/Acme/Api/pulls",
+          "allow": true
+        }
+      ],
+      "deny_all_other": true
+    }
+  ]
+}

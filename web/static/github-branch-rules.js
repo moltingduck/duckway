@@ -113,6 +113,7 @@
     if (p.length > MAX_LEN) return 'A pattern can be at most ' + MAX_LEN + ' characters.';
     if (/[\u0000- \u007f~^:?\[\\]/.test(p)) return '"' + p + '" has a character branch names cannot contain (space, ~ ^ : ? [ \\).';
     if (p.indexOf('..') !== -1) return '"' + p + '" contains "..", which branch names cannot.';
+    if (p.indexOf('//') !== -1 || p.indexOf('@{') !== -1) return '"' + p + '" contains "//" or "@{", which branch names cannot.';
     if (p.charAt(0) === '/') return '"' + p + '" cannot start with "/".';
     return '';
   }
@@ -122,6 +123,8 @@
     if (p.length > MAX_LEN) return 'A pattern can be at most ' + MAX_LEN + ' characters.';
     if (/[\u0000- \u007f~^:?\[\\]/.test(p)) return 'Tag pattern "' + p + '" has a character tag names cannot contain.';
     if (p.indexOf('..') !== -1) return 'Tag pattern "' + p + '" contains "..".';
+    if (p.indexOf('//') !== -1 || p.indexOf('@{') !== -1) return 'Tag pattern "' + p + '" contains "//" or "@{".';
+    if (p === DEFAULT) return 'Tag patterns cannot use ' + DEFAULT + '.';
     if (p.charAt(0) === '/') return 'Tag pattern "' + p + '" cannot start with "/".';
     return '';
   }

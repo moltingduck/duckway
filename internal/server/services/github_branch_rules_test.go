@@ -202,3 +202,20 @@ func TestBuilderBranchPolicies(t *testing.T) {
 		t.Fatalf("legacy %v %v", pols, err)
 	}
 }
+
+func TestBranchPolicyRejectsInvalidRefCharacters(t *testing.T) {
+	for _, pat := range []string{"a?b", "a[b", `a\b`, "a b", "a\tb", "a\x7fb", "a~b", "a^b", "a:b", "a//b", "a@{b"} {
+		bp := GitHubBranchPolicy{Rules: []GitHubBranchRule{{Branches: pat, Role: GitHubRoleRead}}}
+		if err := ValidateGitHubBranchPolicy(&bp, false); err == nil {
+			t.Errorf("branch pattern %q accepted", pat)
+		}
+		tp := GitHubBranchPolicy{Tags: GitHubTagPolicy{Create: []string{pat}}}
+		if err := ValidateGitHubBranchPolicy(&tp, false); err == nil {
+			t.Errorf("tag pattern %q accepted", pat)
+		}
+	}
+	// The matcher still treats ? as a literal.
+	if !GitHubGlobMatch("a?b", "a?b") || GitHubGlobMatch("a?b", "axb") {
+		t.Error("matcher must treat ? literally")
+	}
+}

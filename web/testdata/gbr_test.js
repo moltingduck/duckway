@@ -35,7 +35,7 @@ check('actions', () => {
 
 // Pattern validation.
 check('pattern validation', () => {
-  ['', '/x', 'a..b', 'a b', 'a~b', 'a:b', 'a?b', 'a[b', 'x'.repeat(201), '@default'].forEach((p) => assert(G.patternError(p, false), 'should reject ' + JSON.stringify(p)));
+  ['', '/x', 'a..b', 'a b', 'a~b', 'a:b', 'a?b', 'a[b', 'a\\b', 'a//b', 'a@{b', 'x'.repeat(201), '@default'].forEach((p) => assert(G.patternError(p, false), 'should reject ' + JSON.stringify(p)));
   ['release/**', 'refs/heads/agent/*', 'feature-1', 'v1.2'].forEach((p) => assert.strictEqual(G.patternError(p, false), '', p));
   assert.strictEqual(G.patternError('@default', true), '');
 });

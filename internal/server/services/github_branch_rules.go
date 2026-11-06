@@ -96,7 +96,7 @@ func normalizeGitHubPattern(raw, prefix string, allowDefault bool) (string, erro
 	}
 	for i := 0; i < len(p); i++ {
 		c := p[i]
-		if c < 0x20 || c == 0x7f || c == ' ' || c == '~' || c == '^' || c == ':' || c == '[' || c == '\\' {
+		if c < 0x20 || c == 0x7f || c == ' ' || c == '~' || c == '^' || c == ':' || c == '[' || c == '\\' || c == '?' {
 			return "", fmt.Errorf("pattern %q contains a character git does not allow", p)
 		}
 	}

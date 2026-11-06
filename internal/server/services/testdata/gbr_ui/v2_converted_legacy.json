@@ -1,0 +1,48 @@
+{
+  "version": "2",
+  "provider": "github",
+  "repositories": {
+    "acme/api": {
+      "capabilities": {
+        "clone": true,
+        "push": true,
+        "pull_requests_read": true,
+        "pull_requests_write": true,
+        "actions_read": true,
+        "workflow_dispatch": true,
+        "pull_requests_merge": false,
+        "pull_requests_approve": false
+      },
+      "workflow_allowlist": [
+        "ci.yml"
+      ],
+      "branch_policy": {
+        "rules": [
+          {
+            "branches": "@default",
+            "role": "agent",
+            "run_workflows": false
+          },
+          {
+            "branches": "main",
+            "role": "agent",
+            "run_workflows": true
+          },
+          {
+            "branches": "release/*",
+            "role": "agent",
+            "run_workflows": true
+          },
+          {
+            "branches": "**",
+            "role": "agent",
+            "run_workflows": false
+          }
+        ],
+        "tags": {
+          "create": []
+        }
+      }
+    }
+  }
+}
