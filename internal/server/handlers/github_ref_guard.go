@@ -208,21 +208,31 @@ const (
 // paths (upload-pack, info/refs), which move no ref.
 func githubRepoAndRest(method, upstreamPath string) (repo string, rest []string, receivePack, restOK, smartRead bool) {
 	post := strings.EqualFold(method, http.MethodPost)
-	smartRepo := func(suffix string) string {
-		return strings.ToLower(strings.TrimPrefix(strings.TrimSuffix(upstreamPath, suffix), "/"))
+	// A smart-HTTP path names exactly owner/repo before the suffix; anything
+	// with more segments (a contents path that merely ends in ".git/info/refs")
+	// is an ordinary REST path and falls through to the /repos/ split below.
+	smartRepo := func(suffix string) (string, bool) {
+		r := strings.ToLower(strings.TrimPrefix(strings.TrimSuffix(upstreamPath, suffix), "/"))
+		parts := strings.Split(r, "/")
+		return r, len(parts) == 2 && parts[0] != "" && parts[1] != ""
 	}
 	switch {
 	case strings.HasSuffix(upstreamPath, githubSuffixReceivePack):
-		r := smartRepo(githubSuffixReceivePack)
-		if post && strings.Count(r, "/") == 1 {
-			return r, nil, true, true, false
+		if r, ok := smartRepo(githubSuffixReceivePack); ok {
+			if post {
+				return r, nil, true, true, false
+			}
+			// Any other method on a receive-pack path cannot be classified.
+			return r, nil, false, false, false
 		}
-		// Any other method on a receive-pack path cannot be classified.
-		return r, nil, false, false, false
 	case strings.HasSuffix(upstreamPath, githubSuffixUploadPack):
-		return smartRepo(githubSuffixUploadPack), nil, false, post, true
+		if r, ok := smartRepo(githubSuffixUploadPack); ok {
+			return r, nil, false, post, true
+		}
 	case strings.HasSuffix(upstreamPath, githubSuffixInfoRefs):
-		return smartRepo(githubSuffixInfoRefs), nil, false, strings.EqualFold(method, http.MethodGet), true
+		if r, ok := smartRepo(githubSuffixInfoRefs); ok {
+			return r, nil, false, strings.EqualFold(method, http.MethodGet), true
+		}
 	}
 	if strings.HasPrefix(upstreamPath, "/repos/") {
 		trimmed := strings.TrimSuffix(strings.TrimPrefix(upstreamPath, "/repos/"), "/")
@@ -261,21 +271,23 @@ func hasMethodOverrideQuery(rawQuery string) bool {
 // enforcement. A non-nil error means the policy itself is unusable (fail
 // closed).
 func newGitHubGuard(permissionConfig, method, upstreamPath, rawQuery string) (*githubGuard, error) {
-	if !strings.Contains(permissionConfig, "branch_polic") {
+	if strings.TrimSpace(permissionConfig) == "" {
 		return nil, nil
 	}
 	readOnly := strings.EqualFold(method, http.MethodGet) || strings.EqualFold(method, http.MethodHead)
 	lower := strings.ToLower(strings.TrimRight(upstreamPath, "/"))
 	graphql := lower == "/graphql" && !readOnly
 	repositories := lower == "/repositories" || strings.HasPrefix(lower, "/repositories/")
+	reposPath := lower == "/repos" || strings.HasPrefix(lower, "/repos/")
 	override := hasMethodOverrideQuery(rawQuery)
 	repo, rest, receivePack, restOK, smartRead := githubRepoAndRest(method, upstreamPath)
-	if !graphql && !repositories {
+	unresolved := repo == "" && reposPath && !readOnly
+	if !graphql && !repositories && !unresolved {
 		if repo == "" || (readOnly && !receivePack && !override) {
 			return nil, nil
 		}
 	}
-	policies, err := services.GitHubBranchPoliciesFromConfig(permissionConfig)
+	policies, err := services.ParseGitHubBranchPolicies(permissionConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -287,6 +299,10 @@ func newGitHubGuard(permissionConfig, method, upstreamPath, rawQuery string) (*g
 		return &githubGuard{deny: "GraphQL writes cannot be checked against branch rules"}, nil
 	case repositories:
 		return &githubGuard{deny: "repository-id paths cannot be checked against branch rules"}, nil
+	case unresolved:
+		// A write under /repos/ that does not resolve to owner/repo cannot be
+		// attributed to a policy: fail closed.
+		return &githubGuard{deny: "request path cannot be checked against branch rules"}, nil
 	}
 	pol, ok := policies[repo]
 	if !ok {
@@ -402,8 +418,12 @@ func safeUnclassifiedWrite(method string, rest []string) bool {
 	case "issues":
 		return true
 	case "pulls":
-		// merge and update-branch are classified (PUT) or refused (anything else).
-		return seg(2) != "merge" && seg(2) != "update-branch"
+		// merge and update-branch are classified (PUT) or refused (anything else);
+		// dismissing a review is refused.
+		if seg(2) == "merge" || seg(2) == "update-branch" {
+			return false
+		}
+		return seg(2) != "reviews" || seg(4) != "dismissals"
 	case "git":
 		if method != http.MethodPost || len(rest) != 2 {
 			return false
@@ -413,12 +433,35 @@ func safeUnclassifiedWrite(method string, rest []string) bool {
 			return true
 		}
 	case "releases":
-		if len(rest) >= 3 && seg(2) == "assets" && seg(1) != "assets" {
+		switch {
+		case method == http.MethodPost && len(rest) == 3 && seg(2) == "assets" && seg(1) != "assets":
+			return true // upload an asset
+		case (method == http.MethodPatch || method == http.MethodDelete) && len(rest) == 3 && seg(1) == "assets":
+			return true
+		case method == http.MethodPost && len(rest) == 2 && seg(1) == "generate-notes":
+			return true
+		case method == http.MethodDelete && len(rest) == 2 && seg(1) != "assets" && seg(1) != "generate-notes":
 			return true
 		}
-		return method == http.MethodDelete && len(rest) == 2 && seg(1) != "assets"
 	case "actions":
-		return seg(1) == "runs" && len(rest) >= 3
+		switch seg(1) {
+		case "runs":
+			switch {
+			case method == http.MethodDelete && len(rest) == 3:
+				return true
+			case method == http.MethodPost && len(rest) == 4:
+				switch seg(3) {
+				case "rerun", "rerun-failed-jobs", "cancel", "force-cancel":
+					return true
+				}
+			case method == http.MethodDelete && len(rest) == 4 && seg(3) == "logs":
+				return true
+			}
+		case "jobs":
+			return method == http.MethodPost && len(rest) == 4 && seg(3) == "rerun"
+		case "artifacts":
+			return method == http.MethodDelete && len(rest) == 3
+		}
 	}
 	return false
 }
@@ -476,23 +519,13 @@ func (e *guardEval) ruleOf(branch string) (services.GitHubBranchRule, string, er
 // maxGitHubRefNameBytes bounds any branch, tag, ref or dispatch name before
 // it reaches the matcher (git itself limits ref names to 255-byte components;
 // GitHub refuses anything near this size).
-const maxGitHubRefNameBytes = 255
+const maxGitHubRefNameBytes = services.MaxGitHubRefNameBytes
 
 // invalidBranchName rejects names that GitHub could resolve to something other
 // than the branch the rules were evaluated for.
 func invalidBranchName(name string) string {
-	if len(name) > maxGitHubRefNameBytes {
-		return fmt.Sprintf("name is longer than %d bytes", maxGitHubRefNameBytes)
-	}
-	if name == "" {
-		return "empty branch name"
-	}
-	if strings.ContainsAny(name, "\x00\n") {
-		return "invalid branch name"
-	}
-	if strings.Contains(name, "..") || strings.Contains(name, "@{") || strings.Contains(name, "//") ||
-		strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") {
-		return fmt.Sprintf("branch name %q is not valid", name)
+	if prob := services.GitHubRefNameProblem(name, false); prob != "" {
+		return fmt.Sprintf("branch name %s", prob)
 	}
 	for _, p := range []string{"heads/", "tags/", "remotes/"} {
 		if strings.HasPrefix(name, p) {
@@ -595,7 +628,7 @@ func (e *guardEval) requireTag(tag string) string {
 		return fmt.Sprintf("tag name is longer than %d bytes", maxGitHubRefNameBytes)
 	}
 	tag = strings.TrimPrefix(tag, "refs/tags/")
-	if tag == "" || strings.ContainsAny(tag, "\x00\n") || strings.Contains(tag, "..") || strings.Contains(tag, "@{") || strings.Contains(tag, "//") {
+	if services.GitHubRefNameProblem(tag, false) != "" {
 		return "invalid tag name"
 	}
 	if !e.policy.BranchPolicy.TagCreateAllowed(tag) {
@@ -777,8 +810,8 @@ func (e *guardEval) checkPushCommand(c receivePackCommand) string {
 	if len(ref) > maxGitHubRefNameBytes {
 		return fmt.Sprintf("ref name is longer than %d bytes (%d)", maxGitHubRefNameBytes, len(ref))
 	}
-	if strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.ContainsAny(ref, "\x00\n") {
-		return fmt.Sprintf("invalid ref %q", ref)
+	if prob := services.GitHubRefNameProblem(ref, false); prob != "" {
+		return fmt.Sprintf("invalid ref %q: it %s", ref, prob)
 	}
 	switch {
 	case strings.HasPrefix(ref, "refs/heads/") && len(ref) > len("refs/heads/"):

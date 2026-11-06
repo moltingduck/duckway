@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // GitHub branch rules (docs/github-branch-rules.md). A branch policy narrows
@@ -22,6 +23,9 @@ const (
 	MaxGitHubBranchRules   = 50
 	MaxGitHubTagPatterns   = 20
 	MaxGitHubPatternLength = 200
+
+	// MaxGitHubRefNameBytes bounds a concrete branch, tag or ref name.
+	MaxGitHubRefNameBytes = 255
 
 	// MaxGitHubMatchNameBytes bounds names handed to the glob matcher (defence
 	// in depth; the proxy refuses names above 255 bytes before matching).
@@ -87,6 +91,37 @@ func truncateRunes(s string, n int) string {
 	return s
 }
 
+// GitHubRefNameProblem is the one ref-name check shared by pattern validation
+// and request-time name checks. pattern allows `*` (a glob) and does not
+// require a trailing-slash-free name; a concrete name must be a valid git ref
+// name as far as the proxy can tell. It returns "" for an acceptable name.
+func GitHubRefNameProblem(name string, pattern bool) string {
+	if name == "" {
+		return "is empty"
+	}
+	if len(name) > MaxGitHubRefNameBytes && !pattern {
+		return fmt.Sprintf("is longer than %d bytes", MaxGitHubRefNameBytes)
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c < 0x20 || c == 0x7f || c == ' ' || c == '~' || c == '^' || c == ':' || c == '[' || c == '\\' || c == '?' {
+			return "contains a character git does not allow"
+		}
+		if c == '*' && !pattern {
+			return "contains a wildcard"
+		}
+	}
+	switch {
+	case strings.HasPrefix(name, "/"):
+		return "must not start with /"
+	case strings.Contains(name, ".."), strings.Contains(name, "//"), strings.Contains(name, "@{"):
+		return "contains a sequence git does not allow"
+	case !pattern && (strings.HasSuffix(name, "/") || name == "@"):
+		return "is not a valid ref name"
+	}
+	return ""
+}
+
 func stripBranchPrefix(s string) string { return strings.TrimPrefix(s, "refs/heads/") }
 
 // normalizeGitHubPattern validates one branch or tag glob and returns it
@@ -105,17 +140,8 @@ func normalizeGitHubPattern(raw, prefix string, allowDefault bool) (string, erro
 		}
 		return p, nil
 	}
-	if strings.HasPrefix(p, "/") {
-		return "", fmt.Errorf("pattern %q must not start with /", p)
-	}
-	if strings.Contains(p, "..") || strings.Contains(p, "//") || strings.Contains(p, "@{") {
-		return "", fmt.Errorf("pattern %q contains a sequence git does not allow", p)
-	}
-	for i := 0; i < len(p); i++ {
-		c := p[i]
-		if c < 0x20 || c == 0x7f || c == ' ' || c == '~' || c == '^' || c == ':' || c == '[' || c == '\\' || c == '?' {
-			return "", fmt.Errorf("pattern %q contains a character git does not allow", p)
-		}
+	if prob := GitHubRefNameProblem(p, true); prob != "" {
+		return "", fmt.Errorf("pattern %q %s", p, prob)
 	}
 	return p, nil
 }
@@ -330,6 +356,43 @@ func (p GitHubBranchPolicy) TagCreateAllowed(tag string) bool {
 	return false
 }
 
+var policyCache struct {
+	mu sync.Mutex
+	m  map[string]policyCacheEntry
+}
+
+type policyCacheEntry struct {
+	pols map[string]GitHubRepoBranchPolicy
+	err  error
+}
+
+const policyCacheMax = 256
+
+// ParseGitHubBranchPolicies is GitHubBranchPoliciesFromConfig with the result
+// memoised per config string, for the proxy's per-request use. The returned
+// map and its slices are shared: callers must not modify them. It decodes the
+// config with the same case-insensitive field matching as every other reader,
+// so a policy that validation accepted is never missed.
+func ParseGitHubBranchPolicies(configJSON string) (map[string]GitHubRepoBranchPolicy, error) {
+	if strings.TrimSpace(configJSON) == "" {
+		return nil, nil
+	}
+	policyCache.mu.Lock()
+	if e, ok := policyCache.m[configJSON]; ok {
+		policyCache.mu.Unlock()
+		return e.pols, e.err
+	}
+	policyCache.mu.Unlock()
+	pols, err := GitHubBranchPoliciesFromConfig(configJSON)
+	policyCache.mu.Lock()
+	if policyCache.m == nil || len(policyCache.m) >= policyCacheMax {
+		policyCache.m = map[string]policyCacheEntry{}
+	}
+	policyCache.m[configJSON] = policyCacheEntry{pols: pols, err: err}
+	policyCache.mu.Unlock()
+	return pols, err
+}
+
 func githubCapRowLevel(rows GitHubCapabilityRows, repo, key string) string {
 	for r, row := range rows {
 		if strings.EqualFold(r, repo) {
@@ -420,7 +483,7 @@ func GitHubBranchPoliciesFromConfig(configJSON string) (map[string]GitHubRepoBra
 // need no rewriting, are returned byte for byte. The config is assumed to
 // have passed ValidatePermissionConfig.
 func NormalizePermissionConfigPolicies(configJSON string) (string, error) {
-	if !strings.Contains(configJSON, "branch_polic") {
+	if strings.TrimSpace(configJSON) == "" {
 		return configJSON, nil
 	}
 	dec := json.NewDecoder(strings.NewReader(configJSON))
@@ -442,17 +505,27 @@ func NormalizePermissionConfigPolicies(configJSON string) (string, error) {
 			}
 			return s
 		}
-		if rules, ok := pol["rules"].([]interface{}); ok {
+		for _, rulesV := range ciValues(pol, "rules") {
+			rules, _ := rulesV.([]interface{})
 			for _, rv := range rules {
-				if r, ok := rv.(map[string]interface{}); ok {
-					if b, ok := r["branches"].(string); ok {
-						r["branches"] = fix(b, "refs/heads/")
+				r, ok := rv.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				for k, v := range r {
+					if b, ok := v.(string); ok && strings.EqualFold(k, "branches") {
+						r[k] = fix(b, "refs/heads/")
 					}
 				}
 			}
 		}
-		if tags, ok := pol["tags"].(map[string]interface{}); ok {
-			if cr, ok := tags["create"].([]interface{}); ok {
+		for _, tagsV := range ciValues(pol, "tags") {
+			tags, _ := tagsV.(map[string]interface{})
+			for k, v := range tags {
+				cr, ok := v.([]interface{})
+				if !ok || !strings.EqualFold(k, "create") {
+					continue
+				}
 				for i, tv := range cr {
 					if t, ok := tv.(string); ok {
 						cr[i] = fix(t, "refs/tags/")
@@ -461,23 +534,25 @@ func NormalizePermissionConfigPolicies(configJSON string) (string, error) {
 			}
 		}
 	}
-	if repos, ok := root["repositories"].(map[string]interface{}); ok {
-		for _, rv := range repos {
-			if rp, ok := rv.(map[string]interface{}); ok {
-				normPolicy(rp["branch_policy"])
+	// Go's decoder matches field names case-insensitively, so the walk must too.
+	for _, rv := range ciValues(root, "repositories") {
+		for _, rp := range ciObjects(rv) {
+			for _, pol := range ciValues(rp, "branch_policy") {
+				normPolicy(pol)
 			}
 		}
 	}
-	if rules, ok := root["rules"].([]interface{}); ok {
+	for _, rulesV := range ciValues(root, "rules") {
+		rules, _ := rulesV.([]interface{})
 		for _, rv := range rules {
 			rule, ok := rv.(map[string]interface{})
 			if !ok {
 				continue
 			}
-			if pols, ok := rule["github_branch_policies"].(map[string]interface{}); ok {
-				for _, ev := range pols {
-					if entry, ok := ev.(map[string]interface{}); ok {
-						normPolicy(entry["branch_policy"])
+			for _, pv := range ciValues(rule, "github_branch_policies") {
+				for _, ev := range ciObjects(pv) {
+					for _, pol := range ciValues(ev, "branch_policy") {
+						normPolicy(pol)
 					}
 				}
 			}
@@ -491,4 +566,30 @@ func NormalizePermissionConfigPolicies(configJSON string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// ciValues returns the values of every key of m equal to name ignoring case.
+func ciValues(m map[string]interface{}, name string) []interface{} {
+	var out []interface{}
+	for k, v := range m {
+		if strings.EqualFold(k, name) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// ciObjects returns the object values of a map of objects.
+func ciObjects(v interface{}) []map[string]interface{} {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	var out []map[string]interface{}
+	for _, e := range m {
+		if o, ok := e.(map[string]interface{}); ok {
+			out = append(out, o)
+		}
+	}
+	return out
 }

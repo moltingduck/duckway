@@ -564,6 +564,7 @@ func (h *APIKeyHandler) ApplyACLTemplate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// tmpl.Config is a built-in template; it carries no branch policy, so there is nothing to normalise.
 	if err := h.apiKeys.UpdateACL(id, tmpl.Config); err != nil {
 		jsonError(w, "failed to apply template", http.StatusInternalServerError)
 		return

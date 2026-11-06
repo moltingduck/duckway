@@ -116,10 +116,16 @@ Hardening rules (all refusals use the 403 / `ng` forms above):
   direction).
 - Default deny: for a repository with a branch policy, every non-GET request is
   refused (`duckway: endpoint not allowed under branch rules`) unless it is in
-  the table above or in this list: `issues/**`; `pulls/**` except merge and
-  update-branch; `POST git/blobs|trees|commits|tags`; `releases/{id}/assets/**`
-  and `DELETE releases/{id}`; `actions/runs/**`. This closes endpoints that
-  move a ref without being listed (branch rename, merge-upstream, ...).
+  the table above or in this list (anything else, including `runners/**`,
+  `pending_deployments`, run `approve`, review dismissals, secrets, branch
+  rename and merge-upstream, is refused):
+  - `issues/**`; `pulls/**` except merge, update-branch and
+    `reviews/{id}/dismissals`; `POST git/blobs|trees|commits|tags`.
+  - Actions: `POST actions/runs/{id}/(rerun|rerun-failed-jobs|cancel|force-cancel)`,
+    `DELETE actions/runs/{id}` and `actions/runs/{id}/logs`,
+    `POST actions/jobs/{id}/rerun`, `DELETE actions/artifacts/{id}`.
+  - Releases: `POST releases/{id}/assets`, `PATCH|DELETE releases/assets/{id}`,
+    `POST releases/generate-notes`, `DELETE releases/{id}`.
 - When any repository of the placeholder's config has a branch policy, non-GET
   `/graphql` and every `/repositories/**` path are refused (neither can be
   attributed to a repository policy).
@@ -128,9 +134,20 @@ Hardening rules (all refusals use the 403 / `ng` forms above):
   request with a `_method` query parameter is refused for a repository with a
   policy.
 - Smart-HTTP paths (`.git/git-receive-pack`, `.git/git-upload-pack`,
-  `.git/info/refs`) are recognised before the `/repos/` prefix with the same
-  repository split as the ACL, so `/repos/x.git/git-receive-pack` is the push
-  endpoint of repository `repos/x`.
+  `.git/info/refs`) are recognised before the `/repos/` prefix, but only when
+  the part before the suffix is exactly `owner/repo`; `/repos/x.git/git-receive-pack`
+  is the push endpoint of repository `repos/x`, while a REST path that merely
+  ends in such a suffix (`/repos/o/r/contents/a.git/info/refs`) is an ordinary
+  REST path of `o/r` and is guarded as one. A write under `/repos/` that does
+  not resolve to `owner/repo` is refused whenever any policy exists.
+- Whether a config carries a policy is decided by decoding it with the same
+  case-insensitive field matching every reader uses (`Branch_Policy` is a
+  policy, not a skipped unknown key); the decoded result is memoised per config
+  string.
+- One ref-name check (`GitHubRefNameProblem`) serves pattern validation and
+  every request-time name check: no control characters, space, `~ ^ : ? [ \`,
+  `..`, `//`, `@{`, leading `/`; concrete names also no `*`, no trailing `/`,
+  at most 255 bytes. Pushes to a ref with such a name are refused.
 - A refusal that does not depend on the default branch is decided before an
   approval rule can hold the request, so a definitely refused request never
   creates an approval. Decisions that need `@default` keep the order

@@ -336,14 +336,14 @@ func parseRSAPrivateKey(privateKeyPEM string) (*rsa.PrivateKey, error) {
 // (pull_requests_merge); legacy grants mint exactly what they always did.
 func githubMintPermissions(method, upstreamPath, rawQuery, permissionConfig string) map[string]string {
 	perms := githubTokenPermissions(method, upstreamPath, rawQuery)
-	if !strings.EqualFold(method, http.MethodPut) || !strings.Contains(permissionConfig, "branch_polic") {
+	if !strings.EqualFold(method, http.MethodPut) {
 		return perms
 	}
 	repo, rest, _, restOK, _ := githubRepoAndRest(method, upstreamPath)
 	if !restOK || classifyGitHubREST(http.MethodPut, rest) != opPullMerge {
 		return perms
 	}
-	policies, err := services.GitHubBranchPoliciesFromConfig(permissionConfig)
+	policies, err := services.ParseGitHubBranchPolicies(permissionConfig)
 	if err != nil {
 		return perms
 	}

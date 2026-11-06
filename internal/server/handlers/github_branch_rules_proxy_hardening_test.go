@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -170,5 +171,62 @@ func TestBranchRulesOversizeNamesThroughProxy(t *testing.T) {
 	}
 	if d := time.Since(start); d > 10*time.Second {
 		t.Errorf("took %v", d)
+	}
+}
+
+func TestBranchRulesSmartSuffixPathsStillGuarded(t *testing.T) {
+	// The builder grants contents write, so the ACL lets these paths through
+	// and only the guard stands between them and the default branch.
+	e := newBrEnv(t, builderConfig(t, false, false))
+	for _, c := range []struct{ m, p string }{
+		{"PUT", "/repos/owner/repo/contents/a.git/info/refs"},
+		{"PUT", "/repos/owner/repo/contents/a.git/git-upload-pack"},
+		{"DELETE", "/repos/owner/repo/contents/a.git/git-receive-pack"},
+	} {
+		code, msg := e.restWith(c.m, c.p, `{"message":"m","content":"eA==","sha":"1","branch":"main"}`, nil)
+		if code != 403 || !strings.Contains(msg, "duckway:") {
+			t.Errorf("%s %s to main: %d %s", c.m, c.p, code, msg)
+		}
+		// Same path, an agent branch: allowed, so the 403 above came from the guard.
+		if code, msg := e.restWith(c.m, c.p, `{"message":"m","content":"eA==","sha":"1","branch":"agent/x"}`, nil); code == 403 {
+			// 200, or a 500 from the fake smart-HTTP upstream: either way it was forwarded.
+			t.Errorf("%s %s to agent/x refused: %d %s", c.m, c.p, code, msg)
+		}
+	}
+	if n := e.saw("PUT /repos/owner/repo/contents/a.git/info/refs"); n != 1 {
+		t.Errorf("upstream saw %d info/refs writes, want only the agent/x one: %v", n, e.requests)
+	}
+}
+
+func TestBranchRulesReposXReceivePackStillRefused(t *testing.T) {
+	cfg := `{"version":"2","provider":"github","repositories":{"repos/x":{"capabilities":{"clone":true,"push":true},"branch_policy":{"rules":[{"branches":"agent/**","role":"agent"},{"branches":"**","role":"read"}]}}}}`
+	e := newBrEnv(t, cfg)
+	line := strings.Repeat("0", 40) + " " + strings.Repeat("1", 40) + " refs/heads/main\x00 report-status\n"
+	pkt := fmt.Sprintf("%04x%s0000", len(line)+4, line)
+	req, _ := http.NewRequest("POST", e.proxy.URL+"/proxy/github/repos/x.git/git-receive-pack", strings.NewReader(pkt))
+	req.Header.Set("Authorization", "Bearer "+brPlaceholder)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(b), "ng refs/heads/main duckway:") {
+		t.Fatalf("push to main not rejected: %d %q", resp.StatusCode, b)
+	}
+	if e.saw("POST ") != 0 {
+		t.Fatal("refused push reached the upstream")
+	}
+}
+
+func TestBranchRulesCaseVariantPolicyKeyEnforcedThroughProxy(t *testing.T) {
+	cfg := strings.Replace(builderConfig(t, false, false), `"branch_policy"`, `"Branch_Policy"`, 1)
+	cfg = strings.Replace(cfg, `"github_branch_policies"`, `"Github_Branch_Policies"`, 1)
+	if !strings.Contains(cfg, "Branch_Policy") || !strings.Contains(cfg, "Github_Branch_Policies") {
+		t.Fatal("test config not rewritten")
+	}
+	e := newBrEnv(t, cfg)
+	if code, body := e.restWith("PUT", "/repos/OWNER/REPO/contents/f", `{"message":"m","content":"eA==","branch":"somewhere"}`, nil); code != 403 || !strings.Contains(body, "duckway:") {
+		t.Fatalf("case-variant policy skipped: %d %s", code, body)
 	}
 }

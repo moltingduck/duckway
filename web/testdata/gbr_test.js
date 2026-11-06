@@ -232,6 +232,48 @@ check('presets throw without the branch-rules script', () => {
     assert(h.innerHTML.includes('gbr-add-error'), 'duplicate/other-row error not shown');
   });
 
+  // Enter in the add-rule draft: render blurs the input, `change` fires inside setHTML and
+  // gbrDraft must neither re-render nor clear the error being shown.
+  check('addRule via Enter survives the change event fired during render', () => {
+    const listeners = {};
+    let html = '', hook = null, setCalls = 0, depth = 0, maxDepth = 0;
+    const h = {
+      hidden: false, attrs: {}, isConnected: true,
+      get innerHTML() { return html; },
+      set innerHTML(v) { setCalls++; depth++; maxDepth = Math.max(maxDepth, depth); html = v; if (hook) { const f = hook; hook = null; f(); } depth--; },
+      contains: () => false, setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; },
+      querySelector: () => null, addEventListener(t, f) { listeners[t] = f; }
+    };
+    const inst = g.create({ ctx: { push: true, prWrite: true, dispatch: false } });
+    g.mount(h, inst);
+    const input = { value: 'a b', closest: () => h, matches: () => true, hasAttribute: (n) => n === 'data-gbr-draft', preventDefault() {} };
+    // The blur of the replaced input delivers a change event with the same text, mid-render.
+    hook = () => sb.window.DW.actions.gbrDraft({ closest: () => h, value: 'a b' });
+    listeners.keydown({ key: 'Enter', target: input, preventDefault() {} });
+    assert.strictEqual(maxDepth, 1, 'render re-entered from inside setHTML');
+    assert(html.includes('class="gbr-add-error"'), 'error lost after the change event');
+    // A real edit afterwards still clears it.
+    sb.window.DW.actions.gbrDraft({ closest: () => h, value: 'agent/x' });
+    assert(!html.includes('gbr-add-error'), 'error not cleared by the next edit');
+  });
+  check('render requested from inside render is deferred, not nested', () => {
+    let depth = 0, maxDepth = 0, sets = 0, html = '', hook = null;
+    const h = {
+      hidden: false, attrs: {}, isConnected: true,
+      get innerHTML() { return html; },
+      set innerHTML(v) { sets++; depth++; maxDepth = Math.max(maxDepth, depth); html = v; if (hook) { const f = hook; hook = null; f(); } depth--; },
+      contains: () => false, setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; },
+      querySelector: () => null, addEventListener() {}
+    };
+    const inst = g.create({ ctx: { push: true } });
+    g.mount(h, inst);
+    sets = 0;
+    hook = () => g.render(inst);
+    g.render(inst);
+    assert.strictEqual(maxDepth, 1);
+    assert.strictEqual(sets, 2, 'deferred render ran once after the first');
+  });
+
   // F1: toggling a capability in the client dialog re-syncs the row's editor.
   check('client dialog capability toggle syncs the editor', () => {
     const src = fs.readFileSync(clientPath, 'utf8');

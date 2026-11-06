@@ -160,6 +160,12 @@ func drainRefusedBody(w http.ResponseWriter, body io.Reader) {
 		_, _ = io.CopyN(io.Discard, body, receivePackMaxDrain)
 		return
 	}
+	// Fallback only for writers without read-deadline support (a recorder in
+	// tests, a wrapped ResponseWriter): a real net/http server connection takes
+	// the branch above. The goroutine only reads body and discards, touches no
+	// shared state, and ends when the body returns, errors or hits the size cap;
+	// we stop waiting after the timeout. For a server request the body is
+	// closed by net/http when the handler returns, which unblocks the read.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

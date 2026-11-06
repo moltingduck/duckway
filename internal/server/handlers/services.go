@@ -72,6 +72,12 @@ func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	normalizedACL, nerr := services.NormalizePermissionConfigPolicies(req.DefaultACL)
+	if nerr != nil {
+		jsonError(w, nerr.Error(), http.StatusBadRequest)
+		return
+	}
+	req.DefaultACL = normalizedACL
 	if err := validateUsageMetering(req.UsageMetering); err != nil {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -206,7 +212,12 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		svc.DefaultACL = *req.DefaultACL
+		normalizedACL, nerr := services.NormalizePermissionConfigPolicies(*req.DefaultACL)
+		if nerr != nil {
+			jsonError(w, nerr.Error(), http.StatusBadRequest)
+			return
+		}
+		svc.DefaultACL = normalizedACL
 	}
 	if req.Category != nil {
 		svc.Category = strings.TrimSpace(*req.Category)

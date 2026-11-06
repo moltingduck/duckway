@@ -321,3 +321,50 @@ func TestNormalizePermissionConfigPolicies(t *testing.T) {
 		}
 	}
 }
+
+func TestCaseVariantPolicyKeysAreDecodedAndNormalised(t *testing.T) {
+	cfg := `{"version":"2","provider":"github","repositories":{"o/r":{"capabilities":{"clone":true,"push":true},"Branch_Policy":{"Rules":[{"Branches":"refs/heads/a","role":"agent"}],"Tags":{"Create":["refs/tags/v*"]}}}}}`
+	if err := ValidatePermissionConfig(cfg); err != nil {
+		t.Fatalf("rejected: %v", err)
+	}
+	pols, err := ParseGitHubBranchPolicies(cfg)
+	if err != nil || len(pols["o/r"].BranchPolicy.Rules) != 1 {
+		t.Fatalf("policy missed: %+v %v", pols, err)
+	}
+	// Second call is served from the cache and is identical.
+	again, _ := ParseGitHubBranchPolicies(cfg)
+	if again["o/r"].BranchPolicy.Rules[0].Branches != "a" {
+		t.Fatalf("cached policy differs: %+v", again)
+	}
+	out, err := NormalizePermissionConfigPolicies(cfg)
+	if err != nil || strings.Contains(out, "refs/") {
+		t.Fatalf("normalise missed case-variant keys: %v %s", err, out)
+	}
+	builder := `{"version":"1","provider":"github","rules":[{"name":"x","deny_all_other":true,"endpoints":[{"method":"GET","path":"/repos/o/r","allow":true}],
+	 "github_capabilities":{"o/r":{"contents":"write"}},"Github_Branch_Policies":{"o/r":{"BRANCH_POLICY":{"rules":[{"branches":"refs/heads/x","role":"read"}]}}}}]}`
+	bp, err := ParseGitHubBranchPolicies(builder)
+	if err != nil || len(bp) != 1 {
+		t.Fatalf("builder case-variant policy missed: %+v %v", bp, err)
+	}
+	if out, err := NormalizePermissionConfigPolicies(builder); err != nil || strings.Contains(out, "refs/heads/") {
+		t.Fatalf("builder normalise: %v %s", err, out)
+	}
+}
+
+func TestGitHubRefNameProblemTable(t *testing.T) {
+	bad := []string{"", "/x", "a..b", "a b", "a~b", "a^b", "a:b", "a?b", "a[b", `a\b`, "a\tb", "a\x7fb", "a//b", "a@{b"}
+	for _, n := range bad {
+		if GitHubRefNameProblem(n, true) == "" || GitHubRefNameProblem(n, false) == "" {
+			t.Errorf("%q accepted", n)
+		}
+	}
+	if GitHubRefNameProblem("a*", true) != "" || GitHubRefNameProblem("a*", false) == "" {
+		t.Error("wildcard handling")
+	}
+	if GitHubRefNameProblem("x/", true) != "" || GitHubRefNameProblem("x/", false) == "" || GitHubRefNameProblem("@", false) == "" {
+		t.Error("trailing slash / @ handling")
+	}
+	if GitHubRefNameProblem(strings.Repeat("a", 256), false) == "" || GitHubRefNameProblem(strings.Repeat("a", 256), true) != "" {
+		t.Error("length handling")
+	}
+}

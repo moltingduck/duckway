@@ -90,33 +90,58 @@ func TestGuardDefaultDenyUnderPolicy(t *testing.T) {
 		method, rest string
 		allow        bool
 	}{
+		// refused
 		{"POST", "branches/main/rename", false},
 		{"POST", "merge-upstream", false},
 		{"POST", "actions/runners/registration-token", false},
+		{"DELETE", "actions/runners/5", false},
 		{"PUT", "collaborators/bob", false},
 		{"POST", "forks", false},
 		{"PATCH", "", false},
 		{"DELETE", "branches/main/protection", false},
 		{"POST", "pulls/1/merge", false},
 		{"POST", "pulls/1/update-branch", false},
-		{"POST", "releases/generate-notes", false},
-		{"PATCH", "releases/assets/4", false},
+		{"PUT", "pulls/1/reviews/2/dismissals", false},
 		{"PUT", "git/refs", false},
 		{"POST", "git/blobs/x", false},
+		{"POST", "actions/runs/9/approve", false},
+		{"POST", "actions/runs/9/pending_deployments", false},
+		{"POST", "actions/runs/9/attempts/1/cancel", false},
+		{"DELETE", "actions/runs/9/artifacts", false},
+		{"PUT", "actions/runs/9/rerun", false},
+		{"POST", "actions/jobs/4/cancel", false},
+		{"DELETE", "actions/jobs/4/rerun", false},
+		{"POST", "actions/artifacts/3", false},
+		{"POST", "actions/workflows/ci.yml/enable", false},
+		{"PUT", "actions/secrets/X", false},
+		{"DELETE", "releases/5/assets/6", false},
+		{"POST", "releases/assets/4", false},
+		{"PUT", "releases/assets/4", false},
+		{"DELETE", "releases/generate-notes", false},
+		{"POST", "releases/5", false},
+		// allowed
 		{"POST", "issues/1/comments", true},
 		{"PATCH", "issues/1", true},
 		{"POST", "pulls/1/comments", true},
 		{"POST", "pulls/1/reviews", true},
 		{"PUT", "pulls/1/requested_reviewers", true},
-		{"POST", "actions/runs/9/rerun", true},
-		{"POST", "actions/runs/9/cancel", true},
 		{"POST", "git/blobs", true},
 		{"POST", "git/trees", true},
 		{"POST", "git/commits", true},
 		{"POST", "git/tags", true},
-		{"DELETE", "releases/5", true},
+		{"POST", "actions/runs/9/rerun", true},
+		{"POST", "actions/runs/9/rerun-failed-jobs", true},
+		{"POST", "actions/runs/9/cancel", true},
+		{"POST", "actions/runs/9/force-cancel", true},
+		{"DELETE", "actions/runs/9", true},
+		{"DELETE", "actions/runs/9/logs", true},
+		{"POST", "actions/jobs/4/rerun", true},
+		{"DELETE", "actions/artifacts/3", true},
 		{"POST", "releases/5/assets", true},
-		{"DELETE", "releases/5/assets/6", true},
+		{"PATCH", "releases/assets/4", true},
+		{"DELETE", "releases/assets/4", true},
+		{"POST", "releases/generate-notes", true},
+		{"DELETE", "releases/5", true},
 		{"GET", "branches/main/rename", true},
 	}
 	for _, c := range cases {
@@ -128,7 +153,7 @@ func TestGuardDefaultDenyUnderPolicy(t *testing.T) {
 		if (msg == "") != c.allow {
 			t.Errorf("%s %s: allow=%v msg=%q", c.method, c.rest, c.allow, msg)
 		}
-		if !c.allow && !strings.Contains(msg, "endpoint not allowed under branch rules") && !strings.HasPrefix(c.rest, "git/") && !strings.HasPrefix(c.rest, "pulls/1/") {
+		if !c.allow && !strings.Contains(msg, "endpoint not allowed under branch rules") && !strings.HasPrefix(c.rest, "git/refs") && !strings.HasPrefix(c.rest, "pulls/1/merge") && !strings.HasPrefix(c.rest, "pulls/1/update") {
 			t.Errorf("%s %s: unexpected message %q", c.method, c.rest, msg)
 		}
 	}
@@ -446,4 +471,68 @@ func TestGitHubMintPermissionsForMerge(t *testing.T) {
 	want(githubMintPermissions("POST", "/repos/acme/api/pulls/3/reviews", "", with(true)), "pull_requests", "write")
 	want(githubMintPermissions("GET", "/repos/acme/api/pulls/3", "", with(true)), "pull_requests", "read")
 	want(githubMintPermissions("PUT", "/repos/other/repo/pulls/3/merge", "", with(true)), "pull_requests", "write")
+}
+
+func TestGuardSmartHTTPSuffixNeedsOwnerRepo(t *testing.T) {
+	// A contents path that merely ends in a smart-HTTP suffix is a REST path.
+	for _, p := range []string{
+		"/repos/o/r/contents/a.git/info/refs",
+		"/repos/o/r/contents/a.git/git-upload-pack",
+		"/repos/o/r/contents/a.git/git-receive-pack",
+	} {
+		repo, rest, rp, ok, smart := githubRepoAndRest("PUT", p)
+		if repo != "o/r" || rp || smart || !ok || len(rest) < 2 || rest[0] != "contents" {
+			t.Errorf("%s: repo=%q rest=%v rp=%v smart=%v ok=%v", p, repo, rest, rp, smart, ok)
+		}
+	}
+	repo, _, rp, _, _ := githubRepoAndRest("POST", "/repos/x.git/git-receive-pack")
+	if repo != "repos/x" || !rp {
+		t.Fatalf("repos/x receive-pack: %q %v", repo, rp)
+	}
+	cfg := `{"version":"2","provider":"github","repositories":{"o/r":{"capabilities":{"clone":true,"push":true},"branch_policy":{"rules":[{"branches":"**","role":"read"}]}}}}`
+	g, err := newGitHubGuard(cfg, "PUT", "/repos/o/r/contents/a.git/info/refs", "")
+	if err != nil || g == nil || g.repo != "o/r" || g.deny != "" || g.rest[0] != "contents" {
+		t.Fatalf("guard %+v err %v", g, err)
+	}
+	// Fail closed: a write under /repos/ that names no owner/repo.
+	for _, p := range []string{"/repos/o", "/repos", "/repos/"} {
+		g, _ := newGitHubGuard(cfg, "PUT", p, "")
+		if g == nil || g.deny == "" {
+			t.Errorf("%s not refused: %+v", p, g)
+		}
+	}
+	if g, _ := newGitHubGuard(cfg, "GET", "/repos/o", ""); g != nil {
+		t.Error("GET /repos/o refused")
+	}
+}
+
+func TestGuardCaseVariantPolicyKeysNeverSkipped(t *testing.T) {
+	for name, cfg := range map[string]string{
+		"v2 Branch_Policy": `{"version":"2","provider":"github","repositories":{"o/r":{"capabilities":{"clone":true,"push":true},"Branch_Policy":{"rules":[{"branches":"**","role":"read"}]}}}}`,
+		"v2 BRANCH_POLICY": `{"version":"2","provider":"github","repositories":{"o/r":{"capabilities":{"clone":true,"push":true},"BRANCH_POLICY":{"rules":[{"branches":"**","role":"read"}]}}}}`,
+		"v1 Github_Branch_Policies": `{"version":"1","provider":"github","rules":[{"name":"x","deny_all_other":true,"endpoints":[{"method":"*","path":"*","allow":true}],
+		  "Github_Branch_Policies":{"o/r":{"Branch_Policy":{"rules":[{"branches":"**","role":"read"}]}}}}]}`,
+	} {
+		g, err := newGitHubGuard(cfg, "PUT", "/repos/o/r/contents/f", "")
+		if err != nil || g == nil || g.repo != "o/r" {
+			t.Errorf("%s: policy skipped: %+v %v", name, g, err)
+			continue
+		}
+		if msg := evaluateGitHubGuardREST(g.policy, defMain, g.method, g.rest, []byte(`{"branch":"x"}`)); msg == "" {
+			t.Errorf("%s: write to read branch allowed", name)
+		}
+	}
+}
+
+func TestGuardPushRefusesSpoofedRefNames(t *testing.T) {
+	e := &guardEval{policy: agentEverywherePolicy(), def: defMain}
+	zero, one := strings.Repeat("0", 40), strings.Repeat("1", 40)
+	for _, ref := range []string{"refs/heads/a@{b", "refs/heads/a..b", "refs/heads/a//b", "refs/heads/a b", "refs/heads/a?b", "refs/heads/a*b", "refs/tags/v@{1}", "refs/heads/a/"} {
+		if r := e.checkPushCommand(receivePackCommand{Old: zero, New: one, Ref: ref}); r == "" {
+			t.Errorf("push to %q accepted", ref)
+		}
+	}
+	if r := e.checkPushCommand(receivePackCommand{Old: zero, New: one, Ref: "refs/heads/feature/x"}); r != "" {
+		t.Errorf("plain branch refused: %s", r)
+	}
 }

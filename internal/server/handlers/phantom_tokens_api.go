@@ -90,6 +90,7 @@ func (h *PlaceholderHandler) TestACL(w http.ResponseWriter, r *http.Request) {
 		tokenConfig = *ph.PermissionConfig
 	}
 	if req.PermissionConfig != nil {
+		// Draft preview only: nothing is stored, so no normalisation is needed.
 		tokenConfig = *req.PermissionConfig
 		if err := svc.ValidatePermissionConfig(tokenConfig); err != nil {
 			jsonError(w, "draft rules are invalid: "+err.Error(), http.StatusBadRequest)

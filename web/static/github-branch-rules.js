@@ -426,6 +426,24 @@
 
   function render(inst) {
     if (!inst.host || !dw) return;
+    // setHTML removes the focused input, which blurs it and fires `change`
+    // synchronously; a handler that renders again from inside setHTML would
+    // remove nodes of the tree being replaced. Defer such a render until this
+    // one has finished.
+    if (inst.rendering) { inst.renderAgain = true; return; }
+    inst.rendering = true;
+    try {
+      for (var pass = 0; pass < 3; pass++) {
+        inst.renderAgain = false;
+        renderOnce(inst);
+        if (!inst.renderAgain) break;
+      }
+    } finally {
+      inst.rendering = false;
+      inst.renderAgain = false;
+    }
+  }
+  function renderOnce(inst) {
     var host = inst.host, active = document.activeElement, fk = '';
     if (active && host.contains(active) && active.getAttribute) fk = active.getAttribute('data-gbr-fk') || '';
     dw.setHTML(host, view(inst));
@@ -512,10 +530,14 @@
     };
     dw.actions.gbrDraft = function (el) {
       var inst = instOf(el);
-      if (!inst) return;
+      // A change fired by the blur of the input being replaced carries the
+      // text that render already holds; it must neither re-render nor clear
+      // the error that render is showing.
+      if (!inst || inst.rendering) return;
+      var edited = el.value !== inst.st.draft;
       inst.st.draft = el.value;
       // The message belongs to the draft that produced it.
-      if (inst.addError) { inst.addError = ''; render(inst); }
+      if (inst.addError && edited) { inst.addError = ''; render(inst); }
     };
     dw.actions.gbrAdd = function (el) {
       var inst = instOf(el);
