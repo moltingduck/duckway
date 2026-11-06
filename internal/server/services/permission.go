@@ -27,6 +27,11 @@ type PermissionRule struct {
 	// repositories builder. It is informational: the engine evaluates only
 	// Endpoints.
 	GitHubCapabilityRows GitHubCapabilityRows `json:"github_capabilities,omitempty"`
+	// GitHubBranchPolicies carries per-repository branch rules (keyed by the
+	// same lower-case owner/repo as GitHubCapabilityRows). The browser still
+	// compiles endpoints from the capability table; the server enforces these
+	// in the proxy (docs/github-branch-rules.md section 5).
+	GitHubBranchPolicies map[string]GitHubRepoBranchPolicy `json:"github_branch_policies,omitempty"`
 }
 
 // EndpointRule is one method+path rule. It has three effects: allow
@@ -66,6 +71,8 @@ type GitHubRepositoryPolicy struct {
 	WorkflowAllowlist    []string           `json:"workflow_allowlist,omitempty"`
 	RefAllowlist         []string           `json:"ref_allowlist,omitempty"`
 	EnvironmentAllowlist []string           `json:"environment_allowlist,omitempty"`
+	// BranchPolicy replaces RefAllowlist with branch-protection style rules.
+	BranchPolicy *GitHubBranchPolicy `json:"branch_policy,omitempty"`
 }
 
 type GitHubCapabilities struct {
@@ -75,12 +82,16 @@ type GitHubCapabilities struct {
 	IssuesWrite       bool `json:"issues_write"`
 	PullRequestsRead  bool `json:"pull_requests_read"`
 	PullRequestsWrite bool `json:"pull_requests_write"`
-	ReleasesRead      bool `json:"releases_read"`
-	ReleasesWrite     bool `json:"releases_write"`
-	ActionsRead       bool `json:"actions_read"`
-	WorkflowDispatch  bool `json:"workflow_dispatch"`
-	WorkflowRerun     bool `json:"workflow_rerun"`
-	WorkflowCancel    bool `json:"workflow_cancel"`
+	// PullRequestsMerge and PullRequestsApprove need pull_requests_write and
+	// are only consulted when the repository has a branch_policy.
+	PullRequestsMerge   bool `json:"pull_requests_merge,omitempty"`
+	PullRequestsApprove bool `json:"pull_requests_approve,omitempty"`
+	ReleasesRead        bool `json:"releases_read"`
+	ReleasesWrite       bool `json:"releases_write"`
+	ActionsRead         bool `json:"actions_read"`
+	WorkflowDispatch    bool `json:"workflow_dispatch"`
+	WorkflowRerun       bool `json:"workflow_rerun"`
+	WorkflowCancel      bool `json:"workflow_cancel"`
 }
 
 type RateLimitConfig struct {
@@ -121,6 +132,9 @@ func ValidatePermissionConfig(configJSON string) error {
 			}
 		}
 	}
+	if _, err := GitHubBranchPoliciesFromConfig(configJSON); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -159,6 +173,9 @@ func ValidateGitHubRepoScopePermissionConfig(configJSON string) error {
 				return fmt.Errorf("github app minter rule %d endpoint %d is not an allowed repository-scoped GitHub path", i, j)
 			}
 		}
+	}
+	if _, err := GitHubBranchPoliciesFromConfig(configJSON); err != nil {
+		return err
 	}
 	return nil
 }
@@ -227,7 +244,23 @@ func appendGitHubCapabilityEndpoints(dst []EndpointRule, repo string, p GitHubRe
 	if (c.WorkflowDispatch || c.WorkflowRerun || c.WorkflowCancel) && !c.ActionsRead {
 		return nil, fmt.Errorf("workflow mutation capabilities require actions_read")
 	}
-	if c.WorkflowDispatch && (len(p.WorkflowAllowlist) == 0 || len(p.RefAllowlist) == 0) {
+	if (c.PullRequestsMerge || c.PullRequestsApprove) && !c.PullRequestsWrite {
+		return nil, fmt.Errorf("pull_requests_merge and pull_requests_approve require pull_requests_write")
+	}
+	if p.BranchPolicy != nil {
+		if len(p.RefAllowlist) > 0 {
+			return nil, fmt.Errorf("ref_allowlist and branch_policy are mutually exclusive")
+		}
+		bp := *p.BranchPolicy
+		bp.Rules = append([]GitHubBranchRule(nil), bp.Rules...)
+		bp.Tags.Create = append([]string(nil), bp.Tags.Create...)
+		if err := ValidateGitHubBranchPolicy(&bp, c.WorkflowDispatch); err != nil {
+			return nil, err
+		}
+		if c.WorkflowDispatch && (len(p.WorkflowAllowlist) == 0 || !bp.HasRunWorkflowsRule()) {
+			return nil, fmt.Errorf("workflow_dispatch requires workflow_allowlist and a branch rule with run_workflows")
+		}
+	} else if c.WorkflowDispatch && (len(p.WorkflowAllowlist) == 0 || len(p.RefAllowlist) == 0) {
 		return nil, fmt.Errorf("workflow_dispatch requires workflow_allowlist and ref_allowlist")
 	}
 	add := func(method, suffix string, constraints *EndpointConstraints) {
@@ -255,6 +288,10 @@ func appendGitHubCapabilityEndpoints(dst []EndpointRule, repo string, p GitHubRe
 	}
 	addREST(c.IssuesRead, c.IssuesWrite, "issues")
 	addREST(c.PullRequestsRead, c.PullRequestsWrite, "pulls")
+	if p.BranchPolicy != nil && c.PullRequestsMerge {
+		add("PUT", "/repos/"+repo+"/pulls/*/merge", nil)
+		add("PUT", "/repos/"+repo+"/pulls/*/update-branch", nil)
+	}
 	addREST(c.ReleasesRead, c.ReleasesWrite, "releases")
 	if c.ActionsRead {
 		add("GET", "/repos/"+repo+"/actions", nil)
@@ -265,7 +302,13 @@ func appendGitHubCapabilityEndpoints(dst []EndpointRule, repo string, p GitHubRe
 			if !githubWorkflowPattern.MatchString(workflow) {
 				return nil, fmt.Errorf("invalid workflow %q", workflow)
 			}
-			body := map[string]FieldConstraint{"ref": {Matches: p.RefAllowlist, Required: true}}
+			// With a branch policy the proxy decides the ref from the branch
+			// rules; the endpoint constraint only requires that one is given.
+			refConstraint := FieldConstraint{Matches: p.RefAllowlist, Required: true}
+			if p.BranchPolicy != nil {
+				refConstraint = FieldConstraint{Required: true}
+			}
+			body := map[string]FieldConstraint{"ref": refConstraint}
 			if len(p.EnvironmentAllowlist) > 0 {
 				body["inputs.environment"] = FieldConstraint{OneOf: p.EnvironmentAllowlist}
 			}

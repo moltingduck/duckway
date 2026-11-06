@@ -51,6 +51,10 @@ type ProxyHandler struct {
 	// scopedOpsWrap lets tests wrap the scoped-approval store operations.
 	scopedOpsWrap func(scopedApprovalOps) scopedApprovalOps
 
+	githubDefaultFetch GitHubDefaultBranchFetcher
+	githubDefaultOnce  sync.Once
+	githubDefaultCache *githubDefaultBranchCache
+
 	githubAppMu     sync.Mutex
 	githubAppTokens map[string]githubAppTokenCache
 	githubAppMints  map[string]*githubAppMintCall
@@ -648,6 +652,65 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GitHub branch rules: only for repositories that carry a branch policy.
+	// Body-dependent checks need the JSON body (or the receive-pack command
+	// section) in hand now; the decision itself runs once the upstream
+	// credential is known (it may need the default branch).
+	var ghGuard *githubGuard
+	var ghStreamPrefix []byte
+	if serviceName == "github" {
+		g, gerr := newGitHubGuard(result.PermissionConfig, r.Method, upstreamPath)
+		if gerr != nil {
+			log.Printf("github branch policy invalid for placeholder %s: %v", result.PlaceholderID, gerr)
+			h.logGatewayDecision(client, result.PlaceholderID, serviceName, r.Method, upstreamPath, queries.DecisionACLDenied, "", false)
+			jsonError(w, "duckway: the branch policy of this grant is invalid", http.StatusForbidden)
+			return
+		}
+		ghGuard = g
+	}
+	if ghGuard != nil {
+		switch {
+		case ghGuard.receivePack:
+			if enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc != "" && enc != "identity" {
+				h.refuseGitHubRequest(w, nil, nil, client, result.PlaceholderID, r.Method, upstreamPath, nil, "pushes with a Content-Encoding cannot be checked against branch rules")
+				return
+			}
+			var src io.Reader = r.Body
+			if bodyRequired {
+				src = bytes.NewReader(bodyBytes)
+			}
+			rp, perr := parseReceivePackCommands(src, receivePackMaxCommandBytes, receivePackMaxCommands)
+			if perr != nil {
+				var drain io.Reader
+				if !bodyRequired {
+					drain = r.Body
+				}
+				h.refuseGitHubRequest(w, drain, nil, client, result.PlaceholderID, r.Method, upstreamPath, nil, perr.Error())
+				return
+			}
+			ghGuard.rp = rp
+			if !bodyRequired {
+				ghStreamPrefix = rp.Prefix
+			}
+		case !ghGuard.restOK && ghGuard.method != http.MethodGet && ghGuard.method != http.MethodHead:
+			h.logGatewayDecision(client, result.PlaceholderID, serviceName, r.Method, upstreamPath, queries.DecisionACLDenied, "", false)
+			jsonError(w, "duckway: request path cannot be checked against branch rules", http.StatusForbidden)
+			return
+		case ghGuard.needsJSONBody():
+			if !bodyRequired && r.Body != nil {
+				var rerr error
+				bodyBytes, rerr = io.ReadAll(http.MaxBytesReader(w, r.Body, maxInspectableRequestBodyBytes))
+				r.Body.Close()
+				if rerr != nil {
+					jsonError(w, "request body too large or unreadable for branch rule check", http.StatusRequestEntityTooLarge)
+					return
+				}
+				bodyRequired = true
+			}
+			ghGuard.body = bodyBytes
+		}
+	}
+
 	// Build upstream URL
 	if upstreamBaseURL == "" {
 		upstreamBaseURL = svc.UpstreamURL
@@ -661,6 +724,10 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	var bodyReader io.Reader
 	if bodyRequired {
 		bodyReader = bytes.NewReader(bodyBytes)
+	} else if ghStreamPrefix != nil {
+		// Replay the already-read command section, then stream the pack
+		// from the client unchanged.
+		bodyReader = io.MultiReader(bytes.NewReader(ghStreamPrefix), r.Body)
 	} else {
 		bodyReader = r.Body
 	}
@@ -739,6 +806,40 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		authType = "bearer"
 		authHeader = "Authorization"
 		authPrefix = "Bearer "
+	}
+	if ghGuard != nil {
+		dreq := GitHubDefaultBranchRequest{
+			APIBase:      svc.UpstreamURL,
+			Repo:         ghGuard.repo,
+			CredentialID: githubDefaultCredentialID(githubAppCred, realKey),
+			AuthType:     authType,
+			AuthHeader:   authHeader,
+			AuthPrefix:   authPrefix,
+			Key:          realKey,
+		}
+		def := func() (string, error) {
+			c, cerr := h.httpClientForUpstream(result.UpstreamProxyURL)
+			if cerr != nil {
+				return "", cerr
+			}
+			dreq.Client = c
+			return h.githubDefaultBranchFor(r.Context(), dreq)
+		}
+		if ghGuard.receivePack {
+			e := &guardEval{policy: ghGuard.policy, def: def}
+			reasons := e.checkReceivePack(ghGuard.rp.Commands)
+			if anyRefused(reasons) {
+				var drain io.Reader
+				if !bodyRequired {
+					drain = r.Body
+				}
+				h.refuseGitHubRequest(w, drain, ghGuard.rp, client, result.PlaceholderID, r.Method, upstreamPath, reasons, firstReason(reasons))
+				return
+			}
+		} else if msg := evaluateGitHubGuardREST(ghGuard.policy, def, ghGuard.method, ghGuard.rest, ghGuard.body); msg != "" {
+			h.refuseGitHubRequest(w, nil, nil, client, result.PlaceholderID, r.Method, upstreamPath, nil, msg)
+			return
+		}
 	}
 	switch authType {
 	case "bearer":
@@ -1860,6 +1961,27 @@ func resolveScopedApproval(ops scopedApprovalOps) (id string, created, forward b
 // Volume control: ACL denials are coalesced per client, token, method and path
 // within a minute, and a held retry is recorded only if the approval has no held
 // row in the last 60 seconds (created=true, a brand-new approval, always logs).
+// refuseGitHubRequest records a branch-rule refusal like any ACL denial and
+// answers it: a report-status rejection for receive-pack (rp != nil with
+// reasons per command), 403 JSON for everything else.
+func (h *ProxyHandler) refuseGitHubRequest(w http.ResponseWriter, drain io.Reader, rp *receivePackRequest, client *models.Client, placeholderID, method, path string, reasons []string, reason string) {
+	h.logGatewayDecision(client, placeholderID, "github", method, path, queries.DecisionACLDenied, "", false)
+	if strings.EqualFold(method, http.MethodPost) && strings.HasSuffix(path, ".git/git-receive-pack") {
+		writeReceivePackRefusal(w, drain, rp, reasons, reason)
+		return
+	}
+	jsonError(w, "duckway: "+reason, http.StatusForbidden)
+}
+
+func firstReason(reasons []string) string {
+	for _, r := range reasons {
+		if r != "" {
+			return r
+		}
+	}
+	return "push refused"
+}
+
 func (h *ProxyHandler) logGatewayDecision(client *models.Client, placeholderID, serviceName, method, path, decision, approvalID string, created bool) {
 	if h.requestLog == nil || client == nil {
 		return
