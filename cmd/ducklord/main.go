@@ -7011,7 +7011,11 @@ func (s *tuiState) render(out io.Writer) {
 	}
 	fmt.Fprintf(out, "%s%s%s\n", modalBorder, strings.Repeat("─", renderWidth), modalReset)
 	if len(s.sessions) == 0 {
-		fmt.Fprintln(out, truncate("No sessions.", renderWidth))
+		guidance := "No sessions yet. Press " + s.cfg.Shortcut("session_create") + " to create a session · " + s.cfg.Shortcut("host_add") + " to add a host · " + s.cfg.Shortcut("help") + " for help"
+		if s.cfg != nil && len(s.cfg.Clients) == 0 {
+			guidance = "No hosts configured. Press " + s.cfg.Shortcut("host_add") + " to add a host · " + s.cfg.Shortcut("help") + " for help"
+		}
+		fmt.Fprintln(out, truncate(guidance, renderWidth))
 		s.renderCreateModal(out, width, modalHeight)
 		s.renderSearchModal(out, width, modalHeight)
 		s.renderActionModal(out, width, modalHeight)
@@ -8895,14 +8899,17 @@ func (s *tuiState) renderSearchModal(out io.Writer, cols, rows int) {
 				displayField(session.Client), displayField(session.Name), displayField(session.Kind), displayField(session.AgentType))})
 		}
 	}
-	status := fmt.Sprintf("  %d match", totalResults)
-	if totalResults != 1 {
-		status += "es"
+	status := fmt.Sprintf("  %d of %d sessions match", totalResults, len(s.sessions))
+	switch totalResults {
+	case 0:
+		status = fmt.Sprintf("  0 matches (of %d sessions)", len(s.sessions))
+	case 1:
+		status = fmt.Sprintf("  1 match (of %d sessions)", len(s.sessions))
 	}
 	if s.searchErr != "" {
 		status = "  " + sanitizeTerminalText(s.searchErr)
 	}
-	lines = append(lines, modalRenderLine{modalStatus, status}, modalRenderLine{modalMuted, "  ↑/↓ select · Enter activate · Esc close"})
+	lines = append(lines, modalRenderLine{modalStatus, status}, modalRenderLine{modalMuted, "  Type to filter · ↑/↓ select · Enter activate · Esc close"})
 	s.renderModalBox(out, cols, rows, lines)
 }
 

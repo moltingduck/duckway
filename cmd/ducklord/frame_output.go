@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 
@@ -10,6 +11,13 @@ import (
 )
 
 var frameStylePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func terminalColorDisabled() bool {
+	if _, set := os.LookupEnv("NO_COLOR"); set {
+		return true
+	}
+	return strings.EqualFold(os.Getenv("TERM"), "dumb")
+}
 
 // frameOutput remembers only successfully published screen cells. Each renderer
 // still composes a complete frame; terminal updates replace changed rows in place.
@@ -52,6 +60,11 @@ func (f *frameOutput) write(out io.Writer, frame string, width, height int) {
 	data := "\033[?2026h\033[?25l\033[?7l" + body.String() + "\033[?7h" + cursor + "\033[?2026l"
 	if reset {
 		data = "\033[?2026h" + frame + "\033[?2026l"
+	}
+	if terminalColorDisabled() {
+		// Remove only ANSI SGR styling; cursor movement, screen clearing, and
+		// synchronized-update controls remain available to the TUI.
+		data = frameStylePattern.ReplaceAllString(data, "")
 	}
 	n, err := io.WriteString(out, data)
 	if err != nil || n != len(data) {

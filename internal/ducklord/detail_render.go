@@ -68,16 +68,23 @@ func RenderDetailedSessionBodyWithOptions(out io.Writer, geometry DetailGeometry
 	if geometry.Pane.Width < 1 || geometry.Pane.Height < 1 {
 		return
 	}
+	listHidden := geometry.List.Width == 0
+	contentOffset := 0
+	if listHidden && geometry.Pane.Height > 1 {
+		workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y+1, geometry.Pane.Width, " Resize to show list", "\x1b[2m")
+		contentOffset = 1
+	}
 	if selectedIndex < 0 {
 		workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y, geometry.Pane.Width, " SESSION PREVIEW ", options.Theme.style(options.Focus == WorkspaceFocusTerminal))
 		message := "No matching Sessions"
 		if len(items) != 0 {
 			message = "Select a Session to preview"
 		}
-		if geometry.Pane.Height > 1 {
-			workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y+1, geometry.Pane.Width, message, "\x1b[2m")
+		messageRow := 1 + contentOffset
+		if geometry.Pane.Height > messageRow {
+			workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y+messageRow, geometry.Pane.Width, message, "\x1b[2m")
 		}
-		for row := 2; row < geometry.Pane.Height; row++ {
+		for row := messageRow + 1; row < geometry.Pane.Height; row++ {
 			workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y+row, geometry.Pane.Width, "", "")
 		}
 		return
@@ -85,7 +92,7 @@ func RenderDetailedSessionBodyWithOptions(out io.Writer, geometry DetailGeometry
 	item := items[selectedIndex]
 	data := WorkspacePaneView{Title: item.Host + "/" + item.Name, Stale: item.Disconnected, ReadOnly: true}
 	if paneView != nil {
-		data = paneView(item.Identity, geometry.Pane.Width, max(0, geometry.Pane.Height-1))
+		data = paneView(item.Identity, geometry.Pane.Width, max(0, geometry.Pane.Height-1-contentOffset))
 	}
 	if data.Title == "" {
 		data.Title = item.Host + "/" + item.Name
@@ -104,10 +111,10 @@ func RenderDetailedSessionBodyWithOptions(out io.Writer, geometry DetailGeometry
 		data.Title += " [disconnected/stale]"
 	}
 	workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y, geometry.Pane.Width, marker+" "+data.Title, options.Theme.style(options.Focus == WorkspaceFocusTerminal))
-	for row := 1; row < geometry.Pane.Height; row++ {
+	for row := 1 + contentOffset; row < geometry.Pane.Height; row++ {
 		line := ""
-		if row-1 < len(data.Lines) {
-			line = data.Lines[row-1]
+		if row-1-contentOffset < len(data.Lines) {
+			line = data.Lines[row-1-contentOffset]
 		}
 		workspaceWriteVT(out, geometry.Pane.X, geometry.Pane.Y+row, geometry.Pane.Width, line)
 	}
