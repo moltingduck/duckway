@@ -9,18 +9,19 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
-func TestFrameOutputStripsSGRWhenColorDisabled(t *testing.T) {
+func TestFrameOutputColorModes(t *testing.T) {
 	frame := "\033[?25l\033[H\033[2J\033[1;31mred\033[0m\nplain\033[38;2;1;2;3mx\033[m"
 	cases := []struct {
 		name, noColor, term string
 		set                 bool
-		strip               bool
+		wantColor           bool // colour params present
+		wantAttrs           bool // bold SGR present
 	}{
-		{"unset", "", "xterm", false, false},
-		{"no_color", "1", "xterm", true, true},
-		{"no_color_empty", "", "xterm", true, false},
-		{"dumb", "", "dumb", false, true},
-		{"dumb_upper", "", "DUMB", false, true},
+		{"unset", "", "xterm", false, true, true},
+		{"no_color", "1", "xterm", true, false, true},
+		{"no_color_empty", "", "xterm", true, true, true},
+		{"dumb", "", "dumb", false, false, false},
+		{"dumb_upper", "", "DUMB", false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -35,9 +36,11 @@ func TestFrameOutputStripsSGRWhenColorDisabled(t *testing.T) {
 			var out strings.Builder
 			output.write(&out, frame, 20, 4)
 			got := out.String()
-			hasSGR := frameStylePattern.MatchString(got)
-			if hasSGR == tc.strip {
-				t.Fatalf("strip=%v but SGR present=%v: %q", tc.strip, hasSGR, got)
+			if hasColor := strings.Contains(got, "31") || strings.Contains(got, "38;2"); hasColor != tc.wantColor {
+				t.Fatalf("colour present=%v want %v: %q", hasColor, tc.wantColor, got)
+			}
+			if hasBold := strings.Contains(got, "\033[1m") || strings.Contains(got, "\033[1;"); hasBold != tc.wantAttrs {
+				t.Fatalf("bold present=%v want %v: %q", hasBold, tc.wantAttrs, got)
 			}
 			for _, keep := range []string{"\033[?2026h", "\033[?2026l", "\033[H", "\033[2J", "\033[?25l", "red", "plain"} {
 				if !strings.Contains(got, keep) {
@@ -56,7 +59,7 @@ func TestFrameOutputNoColorKeepsIncrementalCursorMoves(t *testing.T) {
 	out.Reset()
 	output.write(&out, "\033[H\033[2J\033[32mz\033[0m\nb", 10, 3)
 	got := out.String()
-	if frameStylePattern.MatchString(got) || !strings.Contains(got, "\033[1;1H") || !strings.Contains(got, "z") {
+	if strings.Contains(got, "\033[31m") || strings.Contains(got, "\033[32m") || !strings.Contains(got, "\033[1;1H") || !strings.Contains(got, "z") {
 		t.Fatalf("incremental update wrong: %q", got)
 	}
 }
@@ -143,6 +146,72 @@ func TestDetailPTYRectMatchesRenderedContentRows(t *testing.T) {
 		}
 		if rect.Y != g.Pane.Y+wantOffset || rect.Height-1 != g.ContentRows() || g.ContentRows() != g.Pane.Height-1-wantOffset {
 			t.Fatalf("%dx%d rect=%+v pane=%+v rows=%d", size.width, size.height, rect, g.Pane, g.ContentRows())
+		}
+	}
+}
+
+func TestDropSGRColorRewritesParameters(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"\x1b[0m", "\x1b[0m"},
+		{"\x1b[m", "\x1b[m"},
+		{"\x1b[31m", ""},
+		{"\x1b[1;31;7m", "\x1b[1;7m"},
+		{"\x1b[38;5;196m", ""},
+		{"\x1b[48;2;1;2;3m", ""},
+		{"\x1b[1;38;5;196;4m", "\x1b[1;4m"},
+		{"\x1b[7;48;2;1;2;3;1m", "\x1b[7;1m"},
+		{"\x1b[38;5m", ""},
+		{"\x1b[1;38;5m", "\x1b[1m"},
+		{"\x1b[1;38;2;1;2m", "\x1b[1m"},
+		{"\x1b[1;38m", "\x1b[1m"},
+		{"\x1b[38;9;7m", "\x1b[9;7m"},
+		{"\x1b[0;31m", "\x1b[0m"},
+		{"\x1b[;31m", "\x1b[m"},
+		{"\x1b[1;;31m", "\x1b[1;m"},
+		{"\x1b[90;97;100;107;39;49m", ""},
+		{"\x1b[22;27;53m", "\x1b[22;27;53m"},
+		{"\x1b[58;5;1;4;59m", "\x1b[4m"},
+		{"\x1b[1;38:2::1:2:3;7m", "\x1b[1;7m"},
+		{"\x1b[108m", "\x1b[108m"},
+	}
+	for _, tc := range cases {
+		if got := dropSGRColor(tc.in); got != tc.want {
+			t.Errorf("dropSGRColor(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestApplyFrameColorModeKeepsControls(t *testing.T) {
+	frame := "\x1b[?2026h\x1b[H\x1b[2J\x1b[3;4H\x1b[?25l\x1b[7;31mX\x1b[0m\x1b[?2026l"
+	if got := applyFrameColorMode(frame, frameColorFull); got != frame {
+		t.Fatalf("full mode changed frame: %q", got)
+	}
+	drop := applyFrameColorMode(frame, frameColorDrop)
+	want := "\x1b[?2026h\x1b[H\x1b[2J\x1b[3;4H\x1b[?25l\x1b[7mX\x1b[0m\x1b[?2026l"
+	if drop != want {
+		t.Fatalf("drop mode = %q, want %q", drop, want)
+	}
+	strip := applyFrameColorMode(frame, frameColorStrip)
+	want = "\x1b[?2026h\x1b[H\x1b[2J\x1b[3;4H\x1b[?25lX\x1b[?2026l"
+	if strip != want {
+		t.Fatalf("strip mode = %q, want %q", strip, want)
+	}
+}
+
+func TestTerminalColorModeSelection(t *testing.T) {
+	for _, tc := range []struct {
+		term, noColor string
+		want          frameColorMode
+	}{
+		{"xterm", "", frameColorFull},
+		{"xterm", "1", frameColorDrop},
+		{"dumb", "", frameColorStrip},
+		{"dumb", "1", frameColorStrip},
+	} {
+		t.Setenv("TERM", tc.term)
+		t.Setenv("NO_COLOR", tc.noColor)
+		if got := terminalColorMode(); got != tc.want {
+			t.Errorf("TERM=%q NO_COLOR=%q mode=%v want %v", tc.term, tc.noColor, got, tc.want)
 		}
 	}
 }
