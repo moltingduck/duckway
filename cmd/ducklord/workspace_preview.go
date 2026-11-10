@@ -394,7 +394,7 @@ func (s *tuiState) workspacePaneRectAt(width, height int) (ducklord.WorkspaceRec
 		if actual := nav.DetailSelection(); actual != identity || actual != s.detailSelected {
 			return ducklord.WorkspaceRect{}, fmt.Errorf("active detailed Session no longer matches PTY Session")
 		}
-		rect := ducklord.CalculateDetailGeometry(width, height, 4).Pane
+		rect := ducklord.CalculateDetailGeometry(width, height, 4).ContentRect()
 		if rect.Width < 1 || rect.Height < 2 {
 			return ducklord.WorkspaceRect{}, fmt.Errorf("detailed Session pane is hidden by terminal size")
 		}
@@ -428,7 +428,7 @@ func (s *tuiState) workspaceVisibleSelections(selected ducklord.TerminalSelectio
 		if s.detailSelected.Key() == "" || nav.DetailSelection() != s.detailSelected {
 			return nil
 		}
-		rect := ducklord.CalculateDetailGeometry(width, height, 4).Pane
+		rect := ducklord.CalculateDetailGeometry(width, height, 4).ContentRect()
 		for _, session := range s.sessions {
 			identity, ok := ducklord.IdentityFromSession(session)
 			if !ok || identity != s.detailSelected || !canRead(session) || session.Status != string(model.StatusRunning) ||

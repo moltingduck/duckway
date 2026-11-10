@@ -18,7 +18,7 @@ func TestFrameOutputStripsSGRWhenColorDisabled(t *testing.T) {
 	}{
 		{"unset", "", "xterm", false, false},
 		{"no_color", "1", "xterm", true, true},
-		{"no_color_empty", "", "xterm", true, true},
+		{"no_color_empty", "", "xterm", true, false},
 		{"dumb", "", "dumb", false, true},
 		{"dumb_upper", "", "DUMB", false, true},
 	}
@@ -108,6 +108,41 @@ func TestSearchModalShowsMatchCountsAndTypeHint(t *testing.T) {
 		}
 		if !strings.Contains(got, "Type to filter · ↑/↓ select · Enter activate · Esc close") {
 			t.Fatalf("footer missing hint: %q", got)
+		}
+	}
+}
+
+func TestDetailPTYRectMatchesRenderedContentRows(t *testing.T) {
+	state, _, first, _ := workspacePaneTestState(t)
+	id, _ := ducklord.IdentityFromSession(first)
+	state.workspacePreview = true
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nav.EnterDetail()
+	state.detailSelected = id
+	if err := nav.PreviewDetail(id); err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range []struct {
+		width, height int
+		hidden        bool
+	}{{30, 24, true}, {120, 24, false}} {
+		g := ducklord.CalculateDetailGeometry(size.width, size.height, 4)
+		if (g.List.Width == 0) != size.hidden {
+			t.Fatalf("%dx%d hidden=%v", size.width, size.height, g.List.Width == 0)
+		}
+		rect, err := state.workspacePaneRectAt(size.width, size.height)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantOffset := 0
+		if size.hidden {
+			wantOffset = 1
+		}
+		if rect.Y != g.Pane.Y+wantOffset || rect.Height-1 != g.ContentRows() || g.ContentRows() != g.Pane.Height-1-wantOffset {
+			t.Fatalf("%dx%d rect=%+v pane=%+v rows=%d", size.width, size.height, rect, g.Pane, g.ContentRows())
 		}
 	}
 }

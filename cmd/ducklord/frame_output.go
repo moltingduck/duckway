@@ -13,7 +13,8 @@ import (
 var frameStylePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func terminalColorDisabled() bool {
-	if _, set := os.LookupEnv("NO_COLOR"); set {
+	// no-color.org: only a present and non-empty NO_COLOR disables colour.
+	if os.Getenv("NO_COLOR") != "" {
 		return true
 	}
 	return strings.EqualFold(os.Getenv("TERM"), "dumb")

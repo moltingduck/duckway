@@ -30,6 +30,31 @@ func CalculateDetailGeometry(width, height, top int) DetailGeometry {
 	return result
 }
 
+// ContentOffset is the number of rows between the pane title and its content
+// that are reserved for the "Resize to show list" hint when the list is hidden.
+func (g DetailGeometry) ContentOffset() int {
+	if g.List.Width == 0 && g.Pane.Height > 1 {
+		return 1
+	}
+	return 0
+}
+
+// ContentRect is the Pane rectangle whose first row is the title row of the
+// content and whose remaining rows (Height-1) hold the Session terminal. Render,
+// PTY sizing, and cursor placement all derive from it so they cannot disagree.
+func (g DetailGeometry) ContentRect() WorkspaceRect {
+	rect := g.Pane
+	offset := g.ContentOffset()
+	rect.Y += offset
+	rect.Height -= offset
+	return rect
+}
+
+// ContentRows is the number of terminal rows shown below the title.
+func (g DetailGeometry) ContentRows() int {
+	return max(0, g.ContentRect().Height-1)
+}
+
 // RenderDetailedSessionBody is presentation-only. The caller supplies a
 // filtered list and the sole selected Session's pane view; it cannot attach,
 // resize a remote PTY, clear unread, or grant writer ownership.
@@ -68,11 +93,9 @@ func RenderDetailedSessionBodyWithOptions(out io.Writer, geometry DetailGeometry
 	if geometry.Pane.Width < 1 || geometry.Pane.Height < 1 {
 		return
 	}
-	listHidden := geometry.List.Width == 0
-	contentOffset := 0
-	if listHidden && geometry.Pane.Height > 1 {
+	contentOffset := geometry.ContentOffset()
+	if contentOffset > 0 {
 		workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y+1, geometry.Pane.Width, " Resize to show list", "\x1b[2m")
-		contentOffset = 1
 	}
 	if selectedIndex < 0 {
 		workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y, geometry.Pane.Width, " SESSION PREVIEW ", options.Theme.style(options.Focus == WorkspaceFocusTerminal))
@@ -92,7 +115,7 @@ func RenderDetailedSessionBodyWithOptions(out io.Writer, geometry DetailGeometry
 	item := items[selectedIndex]
 	data := WorkspacePaneView{Title: item.Host + "/" + item.Name, Stale: item.Disconnected, ReadOnly: true}
 	if paneView != nil {
-		data = paneView(item.Identity, geometry.Pane.Width, max(0, geometry.Pane.Height-1-contentOffset))
+		data = paneView(item.Identity, geometry.Pane.Width, geometry.ContentRows())
 	}
 	if data.Title == "" {
 		data.Title = item.Host + "/" + item.Name

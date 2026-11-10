@@ -87,3 +87,25 @@ func TestDetailHiddenListTinyHeights(t *testing.T) {
 		}
 	}
 }
+
+func TestDetailContentRowsMatchRenderedPaneViewHeight(t *testing.T) {
+	id := testLayoutIdentity("ABC123")
+	items := []DetailedSessionItem{{Identity: id, Name: "s", Host: "h"}}
+	for _, size := range [][2]int{{30, 24}, {120, 24}, {30, 5}, {30, 4}} {
+		g := CalculateDetailGeometry(size[0], size[1], 4)
+		var got = -1
+		var out bytes.Buffer
+		RenderDetailedSessionBody(&out, g, items, id, "", DetailFilter("all"), false,
+			func(_ SessionIdentity, _, h int) WorkspacePaneView { got = h; return WorkspacePaneView{} })
+		if got != g.ContentRows() || got != g.ContentRect().Height-1 {
+			t.Fatalf("%v: pane view rows %d, ContentRows %d, rect %+v", size, got, g.ContentRows(), g.ContentRect())
+		}
+		if g.List.Width == 0 && g.Pane.Height > 1 {
+			if g.ContentRect().Y != g.Pane.Y+1 {
+				t.Fatalf("%v: hidden list rect not shifted", size)
+			}
+		} else if g.ContentRect() != g.Pane {
+			t.Fatalf("%v: visible list rect changed", size)
+		}
+	}
+}
