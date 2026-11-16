@@ -24,7 +24,13 @@ func TestDecidingRuleIsFilledWhereKnown(t *testing.T) {
 		{"push read branch", act("push", "feature/x"), "branch_rules", "** → read", true},
 		{"push agent-less nested", act("push", "release/1"), "branch_rules", "** → read", true},
 		{"delete read branch", act("force_or_delete", "feature/y"), "branch_rules", "** → read", true},
-		{"push moves existing tag", act("push", "refs/tags/v1"), "branch_rules", "tag create patterns:", true},
+		{"push moves existing tag", act("push", "refs/tags/v1"), "branch_rules", "existing tags never move", false},
+		{"push invalid ref name", map[string]interface{}{"mode": "raw", "method": "POST", "path": "/OWNER/REPO.git/git-receive-pack",
+			"body_hex": hex.EncodeToString([]byte(pushBody("report-status", [3]string{oidA, oidB, "refs/heads/a..b"})))}, "branch_rules", "invalid ref name", false},
+		{"push outside refs", map[string]interface{}{"mode": "raw", "method": "POST", "path": "/OWNER/REPO.git/git-receive-pack",
+			"body_hex": hex.EncodeToString([]byte(pushBody("report-status", [3]string{oidA, oidB, "refs/notes/x"})))}, "branch_rules", "refs outside branches and tags", false},
+		{"rest invalid branch name", act("create_branch", "a..b"), "branch_rules", "invalid ref name", false},
+		{"rest ref of the wrong type", act("create_branch", "refs/remotes/x"), "branch_rules", "ref type not allowed", false},
 		{"rest create read branch", act("create_branch", "feature/z"), "branch_rules", "** → read", false},
 		{"rest pr into read branch", act("open_pr_into", "feature/x"), "branch_rules", "** → read", false},
 		{"rest tag not allowed", act("create_tag", "nightly"), "branch_rules", "tag create patterns: v*", false},
@@ -59,6 +65,18 @@ func TestDecidingRuleIsFilledWhereKnown(t *testing.T) {
 			if !strings.HasPrefix(rule, tc.prefix) {
 				t.Errorf("logged rule %q, want prefix %q (%v)", rule, tc.prefix, d)
 			}
+			if causeOnly[tc.prefix] { // refused for a cause no rule decided
+				for _, r := range s.Refs {
+					if r.Verdict == "refused" && (r.Pattern != "" || r.Role != "") {
+						t.Errorf("simulated ref names a rule that did not decide: %+v", r)
+					}
+				}
+				for _, r := range logRefs(d["refs"]) {
+					if r["verdict"] == "refused" && (r["pattern"] != "" || r["role"] != "") {
+						t.Errorf("logged ref names a rule that did not decide: %v", r)
+					}
+				}
+			}
 			if tc.refRule {
 				for _, list := range [][]map[string]interface{}{logRefs(d["refs"])} {
 					refused := 0
@@ -82,6 +100,13 @@ func TestDecidingRuleIsFilledWhereKnown(t *testing.T) {
 			}
 		})
 	}
+}
+
+// causeOnly are the deciding "rules" that name a cause, not a rule: refs
+// refused for them must not name a branch or tag-create rule.
+var causeOnly = map[string]bool{
+	"existing tags never move": true, "invalid ref name": true,
+	"refs outside branches and tags": true, "ref type not allowed": true,
 }
 
 func logRefs(v interface{}) []map[string]interface{} {

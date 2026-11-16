@@ -54,6 +54,8 @@ type ProxyHandler struct {
 	githubDefaultFetch GitHubDefaultBranchFetcher
 	githubDefaultOnce  sync.Once
 	githubDefaultCache *githubDefaultBranchCache
+	// githubDefaultNegTTL > 0 caches failed lookups (simulator only).
+	githubDefaultNegTTL time.Duration
 
 	githubAppMu     sync.Mutex
 	githubAppTokens map[string]githubAppTokenCache

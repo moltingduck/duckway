@@ -527,7 +527,9 @@ func (f RequestLogFilter) where(cursor bool) (string, []interface{}) {
 		args = append(args, f.Decision)
 	}
 	if f.DenyKind != "" {
-		// deny_detail is written by this package with "kind" as its first key.
+		// Relies on DenyDetail.Marshal: it always writes {"kind":"...", as the
+		// first key, so a prefix match selects exactly that kind (see the field
+		// order of DenyDetail). Do not reorder its fields.
 		conds = append(conds, `r.decision = ? AND r.deny_detail LIKE ? ESCAPE '\'`)
 		args = append(args, DecisionACLDenied, `{"kind":"`+escapeLike(f.DenyKind)+`"%`)
 	}

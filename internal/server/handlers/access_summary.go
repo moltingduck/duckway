@@ -179,11 +179,16 @@ func (a *AccessSimulator) AccessSummary(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, "the token's permission config is invalid: "+err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	a.fillDefaultBranches(r.Context(), ph, svc, cfg, repos)
+	ctx, cancel := context.WithTimeout(r.Context(), summaryTotalTimeout)
+	defer cancel()
+	a.fillDefaultBranches(ctx, ph, svc, cfg, repos)
 	jsonResponse(w, accessSummaryResponse{Service: svc.Name, Repos: repos})
 }
 
-const summaryDefaultTimeout = 4 * time.Second
+const (
+	summaryDefaultTimeout = 4 * time.Second // one lookup
+	summaryTotalTimeout   = 8 * time.Second // all lookups of one summary
+)
 
 // fillDefaultBranches sets default_branch for repositories whose rules mention
 // @default, using the same read-only, cached lookup the simulator makes with
@@ -200,8 +205,8 @@ func (a *AccessSimulator) fillDefaultBranches(ctx context.Context, ph *models.Pl
 			continue
 		}
 		if cand == nil {
-			cands, _, cerr := a.candidateKeys(ph)
-			if cerr != nil {
+			cands, _, problem, cerr := a.candidateKeys(ph)
+			if cerr != nil || problem != nil {
 				return
 			}
 			for j := range cands {
@@ -214,9 +219,12 @@ func (a *AccessSimulator) fillDefaultBranches(ctx context.Context, ph *models.Pl
 				return
 			}
 		}
+		if ctx.Err() != nil {
+			return // the overall deadline passed: leave the rest unknown
+		}
 		lctx, cancel := context.WithTimeout(ctx, summaryDefaultTimeout)
 		sr := &simReq{Method: "GET", Path: "/repos/" + repos[i].Repo}
-		b, derr := a.defaultBranchFor(lctx, svc, *cand, ph, cfg, sr, repos[i].Repo)()
+		b, derr := a.defaultBranchFor(lctx, svc, *cand, cfg, sr, repos[i].Repo)()
 		cancel()
 		if derr == nil && b != "" {
 			repos[i].DefaultBranch = &b

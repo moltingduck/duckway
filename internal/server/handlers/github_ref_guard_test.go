@@ -326,7 +326,7 @@ func TestGuardRESTPathClassification(t *testing.T) {
 }
 
 func TestDefaultBranchCache(t *testing.T) {
-	c := newGitHubDefaultBranchCache()
+	c := newGitHubDefaultBranchCache(0)
 	now := time.Unix(1000, 0)
 	var mu sync.Mutex
 	c.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
@@ -377,5 +377,39 @@ func TestDefaultBranchCache(t *testing.T) {
 	// Different credential or repo -> separate entries.
 	if b, _ := c.get(context.Background(), "other", func(context.Context) (string, error) { return "dev", nil }); b != "dev" {
 		t.Fatal("keys collide")
+	}
+}
+
+func TestDefaultBranchCacheNegativeTTL(t *testing.T) {
+	calls := 0
+	fail := func(context.Context) (string, error) { calls++; return "", errors.New("down") }
+	now := time.Now()
+	for _, tc := range []struct {
+		ttl   time.Duration
+		calls int
+	}{{0, 3}, {time.Minute, 1}} {
+		calls = 0
+		c := newGitHubDefaultBranchCache(tc.ttl)
+		c.now = func() time.Time { return now }
+		for i := 0; i < 3; i++ {
+			if _, err := c.get(context.Background(), "k", fail); err == nil {
+				t.Fatal("expected the failure")
+			}
+			time.Sleep(5 * time.Millisecond) // let the lookup goroutine record its result
+		}
+		if calls != tc.calls {
+			t.Errorf("ttl %v: %d lookups, want %d", tc.ttl, calls, tc.calls)
+		}
+	}
+	// The failure expires, and a success is cached as before.
+	c := newGitHubDefaultBranchCache(time.Minute)
+	clock := now
+	c.now = func() time.Time { return clock }
+	calls = 0
+	_, _ = c.get(context.Background(), "k", fail)
+	time.Sleep(5 * time.Millisecond)
+	clock = clock.Add(2 * time.Minute)
+	if b, err := c.get(context.Background(), "k", func(context.Context) (string, error) { return "main", nil }); err != nil || b != "main" {
+		t.Fatalf("after expiry: %q %v", b, err)
 	}
 }

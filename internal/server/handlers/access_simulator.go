@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -48,7 +49,7 @@ type AccessSimulator struct {
 func NewAccessSimulator(placeholders *queries.PlaceholderQueries, svcs *queries.ServiceQueries, apiKeys *queries.APIKeyQueries, groups *queries.GroupQueries, approvals *queries.ApprovalQueries, crypto *services.Crypto) *AccessSimulator {
 	return &AccessSimulator{
 		placeholders: placeholders, services: svcs, apiKeys: apiKeys, groups: groups, approvals: approvals, crypto: crypto,
-		proxy: NewProxyHandler(svcs, apiKeys, nil, nil, nil, nil, nil).WithCrypto(crypto),
+		proxy: NewProxyHandler(svcs, apiKeys, nil, nil, nil, nil, nil).WithCrypto(crypto).WithGitHubDefaultFailureTTL(simDefaultFailureTTL),
 		pc:    services.NewPermissionChecker(),
 	}
 }
@@ -60,12 +61,15 @@ func (a *AccessSimulator) WithGitHubDefaultBranchFetcher(f GitHubDefaultBranchFe
 }
 
 const (
-	simMaxJSONBytes   = 2*maxInspectableRequestBodyBytes + 1<<20
-	simMaxPathLength  = 2048
-	simMaxHeaders     = 50
-	simMaxCandidates  = 20
-	simDefaultWorkflw = "ci.yml"
-	simEvalTimeout    = 15 * time.Second
+	simMaxJSONBytes    = 2*maxInspectableRequestBodyBytes + 1<<20
+	simMaxPathLength   = 2048
+	simMaxHeaders      = 50
+	simMaxCandidates   = 20
+	simDefaultWorkflow = "ci.yml"
+	simEvalTimeout     = 15 * time.Second
+	// simDefaultFailureTTL is how long a failed default-branch lookup is
+	// remembered, so a down upstream is not hit on every simulation or page load.
+	simDefaultFailureTTL = 60 * time.Second
 )
 
 // simulateRequest is the body of POST /api/phantom-tokens/{id}/simulate.
@@ -146,14 +150,15 @@ func hexBodyError(msg string, offset int) *simHTTPError {
 }
 
 // parseHexBody decodes hex digits with optional whitespace. Errors carry the
-// character offset (0-based, in the text as sent) of the first problem.
+// character offset (0-based rune index in the text as sent) of the first
+// problem and name the offending character.
 func parseHexBody(s string) ([]byte, *simHTTPError) {
 	out := make([]byte, 0, len(s)/2)
 	var hi byte
 	have := false
-	lastDigit := 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
+	lastDigit, idx := 0, -1
+	for _, c := range s {
+		idx++
 		switch c {
 		case ' ', '\t', '\r', '\n':
 			continue
@@ -161,15 +166,15 @@ func parseHexBody(s string) ([]byte, *simHTTPError) {
 		var v byte
 		switch {
 		case c >= '0' && c <= '9':
-			v = c - '0'
+			v = byte(c - '0')
 		case c >= 'a' && c <= 'f':
-			v = c - 'a' + 10
+			v = byte(c-'a') + 10
 		case c >= 'A' && c <= 'F':
-			v = c - 'A' + 10
+			v = byte(c-'A') + 10
 		default:
-			return nil, hexBodyError(fmt.Sprintf("invalid hex character %q", c), i)
+			return nil, hexBodyError(fmt.Sprintf("invalid hex character %q", c), idx)
 		}
-		lastDigit = i
+		lastDigit = idx
 		if !have {
 			hi, have = v, true
 			continue
@@ -291,7 +296,7 @@ func buildActionRequest(req simulateRequest) (*simReq, *simHTTPError) {
 	case "dispatch":
 		wf := strings.TrimSpace(req.Workflow)
 		if wf == "" {
-			wf = simDefaultWorkflw
+			wf = simDefaultWorkflow
 		}
 		if len(wf) > 255 || strings.ContainsAny(wf, "/?#% \x00\r\n\t") {
 			return nil, simErr(http.StatusBadRequest, "workflow is invalid")
@@ -327,6 +332,9 @@ func buildRawRequest(req simulateRequest, serviceName string) (*simReq, *simHTTP
 	if strings.ContainsAny(raw+query, " \t\r\n\x00") {
 		return nil, simErr(http.StatusBadRequest, "path must contain no whitespace")
 	}
+	if strings.Contains(raw+query, "#") {
+		return nil, simErr(http.StatusBadRequest, "a # starts a URL fragment, which a client never sends; remove it (write %%23 for a literal #)")
+	}
 	prefix := "/proxy/" + serviceName
 	if strings.HasPrefix(raw, "/proxy/") {
 		if raw != prefix && !strings.HasPrefix(raw, prefix+"/") {
@@ -347,6 +355,11 @@ func buildRawRequest(req simulateRequest, serviceName string) (*simReq, *simHTTP
 	}
 	if msg := validateProxiedPath(hr); msg != "" {
 		return nil, simErr(http.StatusBadRequest, "%s", msg)
+	}
+	// The gateway's ServeMux redirects a path that needs cleaning (. and ..
+	// segments, //) before any handler, and so before any check, runs.
+	if cleaned := muxCleanPath(hr.URL.Path); cleaned != hr.URL.Path {
+		return nil, simErr(http.StatusBadRequest, "the proxy would redirect this path to %s before checking it; send the cleaned path", strings.TrimPrefix(cleaned, prefix))
 	}
 	if hasEncodedSlash(hr) {
 		return nil, simErr(http.StatusBadRequest, "encoded slashes in the path are not supported by the simulator")
@@ -384,6 +397,25 @@ func buildRawRequest(req simulateRequest, serviceName string) (*simReq, *simHTTP
 	return &simReq{Method: method, Path: upstream, RawQuery: hr.URL.RawQuery, Header: hdr, Body: body}, nil
 }
 
+// muxCleanPath is net/http's ServeMux path cleaning.
+func muxCleanPath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	if p[0] != '/' {
+		p = "/" + p
+	}
+	np := path.Clean(p)
+	if p[len(p)-1] == '/' && np != "/" {
+		if len(p) == len(np)+1 && strings.HasPrefix(p, np) {
+			np = p
+		} else {
+			np += "/"
+		}
+	}
+	return np
+}
+
 func writeSimError(w http.ResponseWriter, e *simHTTPError) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(e.status)
@@ -401,28 +433,46 @@ type simCandidate struct {
 	key           models.APIKey
 }
 
+// credProblem is what the proxy answers when key resolution cannot produce a
+// credential: the status and message the agent sees, plus a step detail.
+type credProblem struct {
+	status int
+	msg    string
+	detail string
+}
+
 // candidateKeys lists, read-only, the keys the proxy's resolver could pick for
 // the placeholder: the assigned key, or the active members of its key group.
 // It reads exactly what the resolver reads (a group's members come from
 // GetMembers, as in KeyResolver.resolveFromGroup) but never advances a
-// round-robin index or bumps a usage counter.
-func (a *AccessSimulator) candidateKeys(ph *models.PlaceholderKey) ([]simCandidate, bool, error) {
+// round-robin index or bumps a usage counter. When resolution would fail it
+// returns the problem the proxy reports instead (a missing or empty key is a
+// 500 "key resolution failed"; no key at all is a 403).
+func (a *AccessSimulator) candidateKeys(ph *models.PlaceholderKey) (cands []simCandidate, truncated bool, problem *credProblem, err error) {
+	failed := func(detail string) *credProblem {
+		return &credProblem{status: http.StatusInternalServerError, msg: "key resolution failed", detail: detail}
+	}
 	switch {
 	case ph.APIKeyID != nil:
-		k, err := a.apiKeys.GetByID(*ph.APIKeyID)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil, false, nil
+		k, gerr := a.apiKeys.GetByID(*ph.APIKeyID)
+		if gerr != nil {
+			if errors.Is(gerr, sql.ErrNoRows) {
+				return nil, false, failed("The assigned credential no longer exists"), nil
 			}
-			return nil, false, err
+			return nil, false, nil, gerr
 		}
-		return []simCandidate{{ID: k.ID, Name: k.Name, ACL: k.ACL, Active: k.IsActive, key: *k}}, false, nil
-	case ph.GroupID != nil && a.groups != nil:
-		members, err := a.groups.GetMembers(*ph.GroupID)
-		if err != nil {
-			return nil, false, err
+		return []simCandidate{{ID: k.ID, Name: k.Name, ACL: k.ACL, Active: k.IsActive, key: *k}}, false, nil, nil
+	case ph.GroupID != nil:
+		if a.groups == nil {
+			return nil, false, failed("The key group cannot be read"), nil
 		}
-		truncated := false
+		members, gerr := a.groups.GetMembers(*ph.GroupID)
+		if gerr != nil {
+			return nil, false, nil, gerr
+		}
+		if len(members) == 0 {
+			return nil, false, failed("The key group has no active members"), nil
+		}
 		if len(members) > simMaxCandidates {
 			members, truncated = members[:simMaxCandidates], true
 		}
@@ -430,9 +480,9 @@ func (a *AccessSimulator) candidateKeys(ph *models.PlaceholderKey) ([]simCandida
 		for _, k := range members {
 			out = append(out, simCandidate{ID: k.ID, Name: k.Name, ACL: k.ACL, Active: k.IsActive, key: k})
 		}
-		return out, truncated, nil
+		return out, truncated, nil, nil
 	}
-	return nil, false, nil
+	return nil, false, &credProblem{status: http.StatusForbidden, msg: "placeholder has no key or group assigned", detail: "No credential or key group is assigned"}, nil
 }
 
 func simTitle(verdict, kind string) string {
@@ -443,21 +493,21 @@ func simTitle(verdict, kind string) string {
 		return "Held for approval"
 	}
 	switch kind {
-	case "service_acl":
+	case queries.KindServiceACL:
 		return "Refused by the service rules"
-	case "api_key_acl":
+	case queries.KindAPIKeyACL:
 		return "Refused by the credential's rules"
-	case "token_acl":
+	case queries.KindTokenACL:
 		return "Refused by the token's rules"
-	case "capability":
+	case queries.KindCapability:
 		return "Refused: the grant does not include this capability"
-	case "branch_rules":
+	case queries.KindBranchRules:
 		return "Refused by branch rules"
-	case "invalid_policy":
+	case queries.KindInvalidPolicy:
 		return "Refused: the branch policy is invalid"
-	case "uncheckable":
+	case queries.KindUncheckable:
 		return "Refused: the request cannot be checked"
-	case "credential":
+	case queries.KindCredential:
 		return "Refused: no usable credential"
 	}
 	return "Refused"
@@ -465,7 +515,7 @@ func simTitle(verdict, kind string) string {
 
 // defaultBranchFor resolves a repository's default branch with one candidate
 // credential, exactly as the proxy does once it has its upstream credential.
-func (a *AccessSimulator) defaultBranchFor(ctx context.Context, svc *models.Service, cand simCandidate, ph *models.PlaceholderKey, tokenConfig string, sr *simReq, repo string) defaultBranchFn {
+func (a *AccessSimulator) defaultBranchFor(ctx context.Context, svc *models.Service, cand simCandidate, tokenConfig string, sr *simReq, repo string) defaultBranchFn {
 	return func() (string, error) {
 		if a.crypto == nil {
 			return "", errors.New("no credential access")
@@ -515,43 +565,53 @@ type simOutcome struct {
 	depends bool
 }
 
-func (a *AccessSimulator) evalKey(ctx context.Context, svc *models.Service, ph *models.PlaceholderKey, tokenConfig string, cand simCandidate, sr *simReq, pre []DecisionStep) simOutcome {
+// evalKey runs the gateway decision for one candidate key. A pool member's
+// own rules are not evaluated, as in the proxy (see candidateKeys).
+func (a *AccessSimulator) evalKey(ctx context.Context, svc *models.Service, tokenConfig string, cand simCandidate, pool bool, sr *simReq, pre []DecisionStep) simOutcome {
 	out := simOutcome{cand: cand}
 	if !cand.Active {
 		out.steps = append(append([]DecisionStep{}, pre...),
-			DecisionStep{Status: "stop", Label: "Credential status", Detail: "The credential is inactive"})
-		out.d = &GatewayDecision{Verdict: GatewayRefused, Kind: "credential", Reason: "api key is inactive", Refs: []DecisionRef{}, Sees: jsonErrorBody("api key is inactive")}
+			DecisionStep{Status: queries.StepStop, Label: "Credential status", Detail: "The credential is inactive"})
+		out.d = &GatewayDecision{Verdict: GatewayRefused, Kind: queries.KindCredential, Reason: "api key is inactive", Refs: []DecisionRef{}, Sees: jsonErrorBody("api key is inactive")}
 		return out
 	}
 	st := &gatewayState{in: gatewayInput{
 		Service: svc.Name, Method: sr.Method, Path: sr.Path, RawQuery: sr.RawQuery,
-		Layers:           []proxyACLLayer{{"service", svc.DefaultACL}, {"api_key", cand.ACL}, {"placeholder", tokenConfig}},
+		Layers:           []proxyACLLayer{{queries.LayerService, svc.DefaultACL}, {queries.LayerAPIKey, cand.ACL}, {queries.LayerPlaceholder, tokenConfig}},
 		PermissionConfig: tokenConfig,
 		ContentEncoding:  sr.Header.Get("Content-Encoding"),
 		Check:            dryACLCheck(a.pc),
 		Body:             gatewayBody{Bytes: sr.Body, InHand: true},
 	}}
 	d := st.decide()
-	if d == nil {
-		if held := st.Held(); held != nil {
-			d = held
-			st.step("skip", stepBranch, "Not checked yet: the request is held before branch rules that need the default branch run")
-		} else {
-			repo := ""
-			if st.guard != nil {
-				repo = st.guard.repo
-			}
-			d = st.finish(a.defaultBranchFor(ctx, svc, cand, ph, tokenConfig, sr, repo))
+	repo := ""
+	if st.guard != nil {
+		repo = st.guard.repo
+	}
+	def := a.defaultBranchFor(ctx, svc, cand, tokenConfig, sr, repo)
+	switch {
+	case d != nil:
+		st.enrich(d, def)
+	case st.Held() != nil:
+		// An approve rule holds the request before the guard's final check,
+		// which is where @default would be looked up.
+		d = st.Held()
+		if st.guard != nil && st.DependsOnDefault() {
+			st.step(queries.StepSkip, stepBranch, "Held before the default branch is looked up; branch rules that need it run after approval")
 		}
-	} else {
-		repo := ""
-		if st.guard != nil {
-			repo = st.guard.repo
-		}
-		st.enrich(d, a.defaultBranchFor(ctx, svc, cand, ph, tokenConfig, sr, repo))
+	default:
+		d = st.finish(def)
 	}
 	out.d, out.depends = d, st.DependsOnDefault()
 	out.steps = append(append([]DecisionStep{}, pre...), st.Steps()...)
+	if pool {
+		for i := range out.steps {
+			if out.steps[i].Label == stepCredential {
+				out.steps[i] = DecisionStep{Status: queries.StepSkip, Label: stepCredential,
+					Detail: "The pool key's own rules are not evaluated: the proxy does not apply them to key pool members"}
+			}
+		}
+	}
 	return out
 }
 
@@ -649,20 +709,25 @@ func (a *AccessSimulator) evaluate(ctx context.Context, ph *models.PlaceholderKe
 	skipAll := func(labels ...string) []DecisionStep {
 		out := []DecisionStep{}
 		for _, l := range labels {
-			out = append(out, DecisionStep{Status: "skip", Label: l})
+			out = append(out, DecisionStep{Status: queries.StepSkip, Label: l})
 		}
 		return out
 	}
-	allStages := []string{stepService, stepCredential, stepToken, stepCapability, stepBranch}
+	allStages := stageOrder
 	const lblStatus, lblWide, lblHold = "Token status", "Token-wide approval", "Approval hold"
 
 	if !ph.IsActive {
-		d := &GatewayDecision{Verdict: GatewayRefused, Kind: "credential", Reason: "placeholder key is inactive", Refs: []DecisionRef{}, Sees: jsonErrorBody("placeholder key is inactive")}
-		steps := append([]DecisionStep{{Status: "stop", Label: lblStatus, Detail: "The phantom token is inactive"}}, skipAll(append([]string{lblWide}, allStages...)...)...)
-		return finish(d, append(steps, DecisionStep{Status: "skip", Label: lblHold})), nil
+		d := &GatewayDecision{Verdict: GatewayRefused, Kind: queries.KindCredential, Reason: "placeholder key is inactive", Refs: []DecisionRef{}, Sees: jsonErrorBody("placeholder key is inactive")}
+		steps := append([]DecisionStep{{Status: queries.StepStop, Label: lblStatus, Detail: "The phantom token is inactive"}}, skipAll(append([]string{lblWide}, allStages...)...)...)
+		return finish(d, append(steps, DecisionStep{Status: queries.StepSkip, Label: lblHold})), nil
 	}
-	pre := []DecisionStep{{Status: "pass", Label: lblStatus, Detail: "The phantom token is active"}}
+	pre := []DecisionStep{{Status: queries.StepPass, Label: lblStatus, Detail: "The phantom token is active"}}
 	if ph.RequiresApproval {
+		// Held means "held until an admin approves": the production proxy always
+		// has an approval store (without one it would refuse outright). Whether
+		// an approval for this exact request already exists cannot be known here
+		// (scoped approvals are keyed to the full request body), so a gating
+		// approve rule is always reported as held.
 		approved := false
 		if a.approvals != nil {
 			if _, aerr := a.approvals.GetValidApproval(ph.ID); aerr == nil {
@@ -672,43 +737,40 @@ func (a *AccessSimulator) evaluate(ctx context.Context, ph *models.PlaceholderKe
 			}
 		}
 		if !approved {
-			d := &GatewayDecision{Verdict: GatewayHeld, Kind: "approval", Reason: "this token requires an admin's approval before requests go through", Refs: []DecisionRef{}}
-			steps := append(pre, DecisionStep{Status: "stop", Label: lblWide, Detail: d.Reason})
+			d := &GatewayDecision{Verdict: GatewayHeld, Kind: queries.KindApproval, Reason: "this token requires an admin's approval before requests go through", Refs: []DecisionRef{}}
+			steps := append(pre, DecisionStep{Status: queries.StepStop, Label: lblWide, Detail: d.Reason})
 			steps = append(steps, skipAll(allStages...)...)
-			return finish(d, append(steps, DecisionStep{Status: "stop", Label: lblHold, Detail: "Held until an admin approves"})), nil
+			return finish(d, append(steps, DecisionStep{Status: queries.StepStop, Label: lblHold, Detail: "Held until an admin approves"})), nil
 		}
-		pre = append(pre, DecisionStep{Status: "pass", Label: lblWide, Detail: "A token-wide approval is active"})
+		pre = append(pre, DecisionStep{Status: queries.StepPass, Label: lblWide, Detail: "A token-wide approval is active"})
 	} else {
-		pre = append(pre, DecisionStep{Status: "skip", Label: lblWide, Detail: "This token does not require approval"})
+		pre = append(pre, DecisionStep{Status: queries.StepSkip, Label: lblWide, Detail: "This token does not require approval"})
 	}
 
 	tokenConfig := ""
 	if ph.PermissionConfig != nil {
 		tokenConfig = *ph.PermissionConfig
 	}
-	cands, truncated, err := a.candidateKeys(ph)
+	cands, truncated, problem, err := a.candidateKeys(ph)
 	if err != nil {
 		return nil, simErr(http.StatusInternalServerError, "failed to list the token's keys")
 	}
-	if len(cands) == 0 {
-		msg := "placeholder has no key or group assigned"
-		if ph.GroupID != nil {
-			msg = "the key group has no active members"
-		}
-		d := &GatewayDecision{Verdict: GatewayRefused, Kind: "credential", Reason: msg, Refs: []DecisionRef{}, Sees: jsonErrorBody(msg)}
-		steps := append(pre, DecisionStep{Status: "stop", Label: "Credential status", Detail: msg})
+	if problem != nil {
+		d := &GatewayDecision{Verdict: GatewayRefused, Kind: queries.KindCredential, Reason: problem.msg, Refs: []DecisionRef{}, Sees: jsonErrorBody(problem.msg), status: problem.status}
+		steps := append(pre, DecisionStep{Status: queries.StepStop, Label: "Credential status", Detail: problem.detail})
 		steps = append(steps, skipAll(allStages...)...)
-		return finish(d, append(steps, DecisionStep{Status: "skip", Label: lblHold})), nil
+		return finish(d, append(steps, DecisionStep{Status: queries.StepSkip, Label: lblHold})), nil
 	}
 
 	var outs []simOutcome
-	if svc.UpstreamURL != "" && strings.HasPrefix(svc.UpstreamURL, "internal://") {
-		// The proxy answers an internal service itself, before any ACL.
+	if strings.HasPrefix(svc.UpstreamURL, "internal://") && cands[0].Active {
+		// The proxy answers an internal service itself: after key resolution
+		// (so after an inactive-key refusal) but before any ACL.
 		d := &GatewayDecision{Verdict: GatewayAllowed, Refs: []DecisionRef{}}
 		return finish(d, append(pre, skipAll(allStages...)...)), nil
 	}
 	for _, c := range cands {
-		outs = append(outs, a.evalKey(ctx, svc, ph, tokenConfig, c, sr, pre))
+		outs = append(outs, a.evalKey(ctx, svc, tokenConfig, c, ph.GroupID != nil, sr, pre))
 	}
 	same := true
 	for _, o := range outs[1:] {
@@ -732,11 +794,11 @@ func (a *AccessSimulator) evaluate(ctx context.Context, ph *models.PlaceholderKe
 	steps := pick.steps
 	switch pick.d.Verdict {
 	case GatewayHeld:
-		steps = append(steps, DecisionStep{Status: "stop", Label: lblHold, Detail: "Held until an admin approves this exact request"})
+		steps = append(steps, DecisionStep{Status: queries.StepStop, Label: lblHold, Detail: "Held until an admin approves this exact request"})
 	case GatewayAllowed:
-		steps = append(steps, DecisionStep{Status: "pass", Label: lblHold, Detail: "No approval needed"})
+		steps = append(steps, DecisionStep{Status: queries.StepPass, Label: lblHold, Detail: "No approval needed"})
 	default:
-		steps = append(steps, DecisionStep{Status: "skip", Label: lblHold})
+		steps = append(steps, DecisionStep{Status: queries.StepSkip, Label: lblHold})
 	}
 	for _, o := range outs {
 		if o.depends {
@@ -745,7 +807,7 @@ func (a *AccessSimulator) evaluate(ctx context.Context, ph *models.PlaceholderKe
 	}
 	out := finish(pick.d, steps)
 	if truncated {
-		out.Steps = append(out.Steps, DecisionStep{Status: "skip", Label: "Key pool", Detail: fmt.Sprintf("Only the first %d keys of the pool were evaluated", simMaxCandidates)})
+		out.Steps = append(out.Steps, DecisionStep{Status: queries.StepSkip, Label: "Key pool", Detail: fmt.Sprintf("Only the first %d keys of the pool were evaluated", simMaxCandidates)})
 	}
 	return out, nil
 }

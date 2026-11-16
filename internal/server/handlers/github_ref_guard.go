@@ -105,13 +105,26 @@ type githubDefaultBranchCache struct {
 	entries map[string]githubDefaultBranchEntry
 	calls   map[string]*githubDefaultBranchCall
 	now     func() time.Time
+	// negTTL > 0 also remembers a failed lookup for that long, so a down
+	// upstream is not retried on every call. The proxy leaves it zero (it
+	// retries, failing closed meanwhile); the access simulator and summary,
+	// which are called by people reloading a page, set it.
+	negTTL time.Duration
+	fails  map[string]githubDefaultBranchFailure
 }
 
-func newGitHubDefaultBranchCache() *githubDefaultBranchCache {
+type githubDefaultBranchFailure struct {
+	err     error
+	expires time.Time
+}
+
+func newGitHubDefaultBranchCache(negTTL time.Duration) *githubDefaultBranchCache {
 	return &githubDefaultBranchCache{
 		entries: map[string]githubDefaultBranchEntry{},
 		calls:   map[string]*githubDefaultBranchCall{},
+		fails:   map[string]githubDefaultBranchFailure{},
 		now:     time.Now,
+		negTTL:  negTTL,
 	}
 }
 
@@ -123,6 +136,13 @@ func (c *githubDefaultBranchCache) get(ctx context.Context, key string, fetch fu
 			return e.branch, nil
 		}
 		delete(c.entries, key)
+	}
+	if f, ok := c.fails[key]; ok {
+		if c.now().Before(f.expires) {
+			c.mu.Unlock()
+			return "", f.err
+		}
+		delete(c.fails, key)
 	}
 	call, inflight := c.calls[key]
 	if !inflight {
@@ -144,6 +164,16 @@ func (c *githubDefaultBranchCache) get(ctx context.Context, key string, fetch fu
 					}
 				}
 				c.entries[key] = githubDefaultBranchEntry{branch: branch, expires: now.Add(githubDefaultBranchTTL)}
+			}
+			if c.negTTL > 0 && (err != nil || branch == "") {
+				if len(c.fails) > 256 {
+					c.fails = map[string]githubDefaultBranchFailure{}
+				}
+				failure := err
+				if failure == nil {
+					failure = errors.New("empty default branch")
+				}
+				c.fails[key] = githubDefaultBranchFailure{err: failure, expires: c.now().Add(c.negTTL)}
 			}
 			delete(c.calls, key)
 			c.mu.Unlock()
@@ -176,13 +206,20 @@ var errDefaultNotCached = errors.New("default branch not cached")
 // the network. It is used to name the rule behind a refusal in the request log.
 func (h *ProxyHandler) githubDefaultBranchPeek(credentialID, repo string) defaultBranchFn {
 	return func() (string, error) {
-		h.githubDefaultOnce.Do(func() { h.githubDefaultCache = newGitHubDefaultBranchCache() })
+		h.githubDefaultOnce.Do(func() { h.githubDefaultCache = newGitHubDefaultBranchCache(h.githubDefaultNegTTL) })
 		sum := sha256.Sum256([]byte(credentialID))
 		if b, ok := h.githubDefaultCache.peek(hex.EncodeToString(sum[:]) + "|" + strings.ToLower(repo)); ok {
 			return b, nil
 		}
 		return "", errDefaultNotCached
 	}
+}
+
+// WithGitHubDefaultFailureTTL makes failed default-branch lookups be
+// remembered for ttl (see githubDefaultBranchCache.negTTL). Call before use.
+func (h *ProxyHandler) WithGitHubDefaultFailureTTL(ttl time.Duration) *ProxyHandler {
+	h.githubDefaultNegTTL = ttl
+	return h
 }
 
 // WithGitHubDefaultBranchFetcher replaces the upstream default-branch lookup
@@ -197,7 +234,7 @@ func (h *ProxyHandler) githubDefaultBranchFor(ctx context.Context, req GitHubDef
 	if fetch == nil {
 		fetch = fetchGitHubDefaultBranch
 	}
-	h.githubDefaultOnce.Do(func() { h.githubDefaultCache = newGitHubDefaultBranchCache() })
+	h.githubDefaultOnce.Do(func() { h.githubDefaultCache = newGitHubDefaultBranchCache(h.githubDefaultNegTTL) })
 	sum := sha256.Sum256([]byte(req.CredentialID))
 	key := hex.EncodeToString(sum[:]) + "|" + strings.ToLower(req.Repo)
 	return h.githubDefaultCache.get(ctx, key, func(c context.Context) (string, error) { return fetch(c, req) })

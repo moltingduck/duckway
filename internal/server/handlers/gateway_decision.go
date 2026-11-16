@@ -20,9 +20,9 @@ import (
 // forwards); the simulator only reports it.
 type GatewayDecision struct {
 	Verdict string // GatewayAllowed | GatewayRefused | GatewayHeld
-	Kind    string // one of queries.DenyKinds, or "credential" for simulator-only credential problems
-	Layer   string // ACL layer (service | api_key | placeholder) when a layer decided
-	Rule    string // rule name, or "pattern (role)" for a branch rule
+	Kind    string // one of queries.DenyKinds, or queries.KindCredential (simulator only)
+	Layer   string // queries.Layer* when an ACL layer decided
+	Rule    string // rule name, "pattern \u2192 role" for a branch rule, tag patterns or capability name
 	Reason  string // the text sent to the agent today (without the "duckway: " prefix)
 	Refs    []DecisionRef
 	Sees    string // exact client-visible body (or the report-status lines of a push), as text
@@ -62,6 +62,12 @@ type DecisionStep struct {
 	Detail string `json:"detail"`
 }
 
+// gatewayErrPrefix starts every refusal message the guard sends the agent;
+// decisions keep the bare reason and add it once, in guardMessage.
+const gatewayErrPrefix = "duckway: "
+
+func guardMessage(reason string) string { return gatewayErrPrefix + reason }
+
 // Stage labels of the decision path (the simulator adds the approval ones).
 const (
 	stepService    = "Service rules"
@@ -70,6 +76,14 @@ const (
 	stepCapability = "Capability toggles"
 	stepBranch     = "Branch rules"
 )
+
+// stageOrder is the canonical order of the ACL and guard stages.
+var stageOrder = []string{stepService, stepCredential, stepToken, stepCapability, stepBranch}
+
+// layerSteps maps an ACL layer to its stage label.
+var layerSteps = map[string]string{
+	queries.LayerService: stepService, queries.LayerAPIKey: stepCredential, queries.LayerPlaceholder: stepToken,
+}
 
 const (
 	refVerdictAllowed = "allowed"
@@ -118,19 +132,19 @@ func (st *gatewayState) tagRuleText() string {
 
 func layerKind(layer string) string {
 	switch layer {
-	case "service":
-		return "service_acl"
-	case "api_key":
-		return "api_key_acl"
+	case queries.LayerService:
+		return queries.KindServiceACL
+	case queries.LayerAPIKey:
+		return queries.KindAPIKeyACL
 	}
-	return "token_acl"
+	return queries.KindTokenACL
 }
 
 // guardKind classifies a branch-rule refusal message.
 func guardKind(msg string) string {
 	switch {
 	case msg == msgMergeNotPermitted || msg == msgApproveNotPermitted:
-		return "capability"
+		return queries.KindCapability
 	case strings.HasPrefix(msg, "the repository's default branch could not be determined"),
 		strings.HasPrefix(msg, "endpoint not allowed under branch rules"),
 		strings.HasPrefix(msg, "unsupported write request"),
@@ -143,9 +157,9 @@ func guardKind(msg string) string {
 		strings.Contains(msg, "method override"),
 		strings.HasPrefix(msg, "pushes with a Content-Encoding"),
 		strings.Contains(msg, "truncated git-receive-pack"):
-		return "uncheckable"
+		return queries.KindUncheckable
 	}
-	return "branch_rules"
+	return queries.KindBranchRules
 }
 
 // aclResult is one ACL layer's verdict.
@@ -242,16 +256,19 @@ func (st *gatewayState) step(status, label, detail string) {
 	st.steps = append(st.steps, DecisionStep{Status: status, Label: label, Detail: detail})
 }
 
-// Steps returns the decision path with every stage not reached marked skipped.
+// Steps returns the decision path in canonical stage order, every stage not
+// reached marked skipped.
 func (st *gatewayState) Steps() []DecisionStep {
-	out := append([]DecisionStep(nil), st.steps...)
-	seen := map[string]bool{}
-	for _, s := range out {
-		seen[s.Label] = true
+	by := map[string]DecisionStep{}
+	for _, s := range st.steps {
+		by[s.Label] = s
 	}
-	for _, l := range []string{stepService, stepCredential, stepToken, stepCapability, stepBranch} {
-		if !seen[l] {
-			out = append(out, DecisionStep{Status: "skip", Label: l})
+	out := make([]DecisionStep, 0, len(stageOrder))
+	for _, l := range stageOrder {
+		if s, ok := by[l]; ok {
+			out = append(out, s)
+		} else {
+			out = append(out, DecisionStep{Status: queries.StepSkip, Label: l})
 		}
 	}
 	return out
@@ -275,29 +292,95 @@ func (st *gatewayState) refuseJSON(kind, layer, rule, reason string, status int,
 // rejection for receive-pack, 403 JSON for everything else.
 func (st *gatewayState) refuseGuard(rp *receivePackRequest, reasons []string, reason string, drain bool, e *guardEval) *GatewayDecision {
 	kind := guardKind(reason)
+	d := &GatewayDecision{Verdict: GatewayRefused, Kind: kind, Layer: queries.LayerPlaceholder, Reason: reason, Refs: []DecisionRef{}, logDenied: true}
 	rule := ""
-	d := &GatewayDecision{Verdict: GatewayRefused, Kind: kind, Layer: "placeholder", Reason: reason, Refs: []DecisionRef{}, logDenied: true}
-	switch {
-	case kind == "capability":
-		rule = capabilityOf(reason)
-	case st.guard != nil && strings.Contains(reason, "tag") && strings.Contains(reason, "may not be created"):
-		rule = st.tagRuleText()
-	case st.guard != nil && kind == "branch_rules" && len(reasons) == 0:
-		rule = st.guardRuleHint(reason)
+	if len(reasons) == 0 {
+		rule = st.ruleBehind(kind, reason)
 	}
-	if st.in.Method == http.MethodPost && strings.HasSuffix(st.in.Path, ".git/git-receive-pack") {
+	if strings.EqualFold(st.in.Method, http.MethodPost) && strings.HasSuffix(st.in.Path, ".git/git-receive-pack") {
 		d.receive, d.rp, d.reasons, d.fallback, d.drain = true, rp, reasons, reason, drain
 		d.Sees = receivePackSees(rp, reasons, reason)
 		if rp != nil && len(reasons) == len(rp.Commands) {
 			d.Refs = st.describeRefs(e, rp.Commands, reasons)
 			rule = firstRefusedRule(d.Refs)
+			if rule == "" {
+				for _, r := range d.Refs {
+					if r.Verdict == refVerdictRefused {
+						rule = causeRule(r.Reason)
+						break
+					}
+				}
+			}
 		}
 	} else {
-		d.status, d.jsonMsg = http.StatusForbidden, "duckway: "+reason
+		d.status, d.jsonMsg = http.StatusForbidden, guardMessage(reason)
 		d.Sees = jsonErrorBody(d.jsonMsg)
 	}
 	d.Rule = rule
 	return d
+}
+
+// ruleBehind names what decided a REST refusal, but only when that is known:
+// the governing branch rule (by the quoted branch, without the default branch),
+// the tag-create patterns, the capability toggle, or a plain cause such as an
+// invalid ref name. It is empty when nothing specific decided it.
+func (st *gatewayState) ruleBehind(kind, reason string) string {
+	switch {
+	case kind == queries.KindCapability:
+		return capabilityOf(reason)
+	case st.guard != nil && isTagRuleReason(reason):
+		return st.tagRuleText()
+	case st.guard != nil && kind == queries.KindBranchRules && isBranchRuleReason(reason):
+		branch := quotedBranch(reason)
+		if rule, matched := st.guard.policy.BranchPolicy.SelectRule(branch, ""); matched && rule.Branches != services.GitHubDefaultBranchToken {
+			return ruleText(rule.Branches, rule.Role)
+		}
+		return ruleText("(no rule)", roleInReason(reason))
+	case kind == queries.KindBranchRules:
+		return causeRule(reason)
+	}
+	return ""
+}
+
+// A rule-bearing refusal says which rule decided it; every other refusal
+// (invalid names, existing tags, other namespaces) is decided by no rule.
+func isBranchRuleReason(reason string) bool { return strings.Contains(reason, "\" has role \"") }
+
+func isTagRuleReason(reason string) bool {
+	return strings.Contains(reason, "may not be created under the repository's branch rules")
+}
+
+func roleInReason(reason string) string {
+	const k = "has role \""
+	i := strings.Index(reason, k)
+	if i < 0 {
+		return ""
+	}
+	rest := reason[i+len(k):]
+	if m := strings.Index(rest, "\""); m >= 0 {
+		return rest[:m]
+	}
+	return ""
+}
+
+// causeRule names the actual cause of a refusal that no rule decided; "" when
+// there is nothing more specific than the reason itself.
+func causeRule(reason string) string {
+	switch {
+	case strings.Contains(reason, "can never be moved or deleted"):
+		return "existing tags never move"
+	case strings.Contains(reason, "is outside the branches and tags"):
+		return "refs outside branches and tags"
+	case strings.HasPrefix(reason, "invalid ref"), strings.HasPrefix(reason, "invalid tag name"),
+		strings.HasPrefix(reason, "invalid branch name"), strings.HasPrefix(reason, "branch name "),
+		strings.HasPrefix(reason, "ref name is longer"), strings.HasPrefix(reason, "tag name is longer"),
+		strings.HasPrefix(reason, "empty branch name"):
+		return "invalid ref name"
+	case strings.Contains(reason, "is neither a branch nor a tag"), strings.Contains(reason, "is not a branch"),
+		strings.HasPrefix(reason, "only branches may be changed"), strings.HasPrefix(reason, "workflows may only be dispatched on branches"):
+		return "ref type not allowed"
+	}
+	return ""
 }
 
 // firstRefusedRule is the rule text of the first refused ref that has one.
@@ -306,36 +389,6 @@ func firstRefusedRule(refs []DecisionRef) string {
 		if r.Verdict == refVerdictRefused && r.Pattern != "" {
 			return ruleText(r.Pattern, r.Role)
 		}
-	}
-	return ""
-}
-
-// guardRuleHint names the branch rule behind a REST refusal when the message
-// quotes a branch ("branch "x" has role "r" ...").
-func (st *gatewayState) guardRuleHint(reason string) string {
-	i := strings.Index(reason, "branch \"")
-	if i < 0 {
-		return ""
-	}
-	rest := reason[i+len("branch \""):]
-	j := strings.Index(rest, "\"")
-	if j < 0 {
-		return ""
-	}
-	branch := rest[:j]
-	role := ""
-	if k := strings.Index(rest, "has role \""); k >= 0 {
-		r2 := rest[k+len("has role \""):]
-		if m := strings.Index(r2, "\""); m >= 0 {
-			role = r2[:m]
-		}
-	}
-	rule, matched := st.guard.policy.BranchPolicy.SelectRule(branch, "")
-	if matched && rule.Branches != services.GitHubDefaultBranchToken {
-		return ruleText(rule.Branches, rule.Role)
-	}
-	if role != "" {
-		return ruleText("(no rule)", role)
 	}
 	return ""
 }
@@ -369,10 +422,20 @@ func (st *gatewayState) describeRefs(e *guardEval, cmds []receivePackCommand, re
 		if i < len(reasons) && reasons[i] != "" {
 			r.Verdict, r.Reason = refVerdictRefused, reasons[i]
 		}
-		r.Pattern, r.Role = st.describeRule(e, c.Ref, r.Verdict == refVerdictRefused)
+		r.Pattern, r.Role = st.refRule(e, r)
 		out = append(out, r)
 	}
 	return out
+}
+
+// refRule is describeRule, except that a ref refused for a reason no rule
+// decided (invalid name, existing tag, other namespace, ref type) names none.
+func (st *gatewayState) refRule(e *guardEval, r DecisionRef) (pattern, role string) {
+	refused := r.Verdict == refVerdictRefused
+	if refused && !isBranchRuleReason(r.Reason) && !isTagRuleReason(r.Reason) {
+		return "", ""
+	}
+	return st.describeRule(e, r.Ref, refused)
 }
 
 // describeRule names the branch rule (pattern, role) governing a ref, or the
@@ -432,9 +495,9 @@ func (st *gatewayState) decide() *GatewayDecision {
 	st.body, st.inHand = in.Body.Bytes, in.Body.InHand
 	st.aclMethod, st.aclPath = proxyACLRequest(in.Method, in.Path, in.RawQuery)
 	for _, layer := range in.Layers {
-		label := map[string]string{"service": stepService, "api_key": stepCredential, "placeholder": stepToken}[layer.name]
+		label := layerSteps[layer.name]
 		if layer.config == "" {
-			st.step("skip", label, "No rules configured")
+			st.step(queries.StepSkip, label, "No rules configured")
 			continue
 		}
 		res := in.Check(layer.config, st.aclMethod, st.aclPath, st.body)
@@ -442,11 +505,11 @@ func (st *gatewayState) decide() *GatewayDecision {
 			if st.approveLayer == "" {
 				st.approveLayer, st.approveRule = layer.name, res.RuleName
 			}
-			st.step("pass", label, "Matched approve rule "+quoteRule(res.RuleName, res.RuleIndex)+": needs an admin's approval")
+			st.step(queries.StepPass, label, "Matched approve rule "+quoteRule(res.RuleName, res.RuleIndex)+": needs an admin's approval")
 			continue
 		}
 		if !res.Allowed {
-			st.step("stop", label, res.Reason)
+			st.step(queries.StepStop, label, res.Reason)
 			return st.refuseJSON(layerKind(layer.name), layer.name, ruleLabel(res.RuleName, res.RuleIndex), res.Reason,
 				http.StatusForbidden, "permission denied ("+layer.name+"): "+res.Reason)
 		}
@@ -454,34 +517,34 @@ func (st *gatewayState) decide() *GatewayDecision {
 		if res.RuleName != "" || res.RuleIndex >= 0 {
 			detail = "Allowed by " + quoteRule(res.RuleName, res.RuleIndex)
 		}
-		st.step("pass", label, detail)
+		st.step(queries.StepPass, label, detail)
 	}
 	if in.Service != "github" {
 		return nil
 	}
 	g, gerr := newGitHubGuard(in.PermissionConfig, in.Method, in.Path, in.RawQuery)
 	if gerr != nil {
-		st.step("stop", stepBranch, "The branch policy of this grant is invalid")
-		d := st.refuseJSON("invalid_policy", "placeholder", "", "the branch policy of this grant is invalid",
-			http.StatusForbidden, "duckway: the branch policy of this grant is invalid")
+		const reason = "the branch policy of this grant is invalid"
+		st.step(queries.StepStop, stepBranch, "The branch policy of this grant is invalid")
+		d := st.refuseJSON(queries.KindInvalidPolicy, queries.LayerPlaceholder, "", reason, http.StatusForbidden, guardMessage(reason))
 		d.internal = gerr
 		return d
 	}
 	st.guard = g
 	if g == nil {
-		st.step("skip", stepCapability, "No branch rules apply to this request")
-		st.step("skip", stepBranch, "No branch rules apply to this request")
+		st.step(queries.StepSkip, stepCapability, "No branch rules apply to this request")
+		st.step(queries.StepSkip, stepBranch, "No branch rules apply to this request")
 		return nil
 	}
 	body := &in.Body
 	switch {
 	case g.deny != "":
-		st.step("stop", stepBranch, g.deny)
+		st.step(queries.StepStop, stepBranch, g.deny)
 		return st.refuseGuard(nil, nil, g.deny, false, nil)
 	case g.receivePack:
 		if enc := strings.ToLower(strings.TrimSpace(in.ContentEncoding)); enc != "" && enc != "identity" {
 			msg := "pushes with a Content-Encoding cannot be checked against branch rules"
-			st.step("stop", stepBranch, msg)
+			st.step(queries.StepStop, stepBranch, msg)
 			return st.refuseGuard(nil, nil, msg, false, nil)
 		}
 		src := body.Stream
@@ -493,7 +556,7 @@ func (st *gatewayState) decide() *GatewayDecision {
 		}
 		rp, perr := parseReceivePackCommands(src, receivePackMaxCommandBytes, receivePackMaxCommands)
 		if perr != nil {
-			st.step("stop", stepBranch, perr.Error())
+			st.step(queries.StepStop, stepBranch, perr.Error())
 			return st.refuseGuard(nil, nil, perr.Error(), !st.inHand, nil)
 		}
 		g.rp = rp
@@ -501,17 +564,16 @@ func (st *gatewayState) decide() *GatewayDecision {
 			st.streamPrefix = rp.Prefix
 		}
 	case !g.restOK && g.method != http.MethodGet && g.method != http.MethodHead:
-		msg := "duckway: request path cannot be checked against branch rules"
-		st.step("stop", stepBranch, strings.TrimPrefix(msg, "duckway: "))
-		d := st.refuseJSON("uncheckable", "placeholder", "", strings.TrimPrefix(msg, "duckway: "), http.StatusForbidden, msg)
-		return d
+		const reason = "request path cannot be checked against branch rules"
+		st.step(queries.StepStop, stepBranch, reason)
+		return st.refuseJSON(queries.KindUncheckable, queries.LayerPlaceholder, "", reason, http.StatusForbidden, guardMessage(reason))
 	case g.needsJSONBody():
 		if !st.inHand && body.Stream != nil && body.ReadAll != nil {
 			b, rerr := body.ReadAll(body.Stream)
 			if rerr != nil {
 				msg := "request body too large or unreadable for branch rule check"
-				st.step("stop", stepBranch, msg)
-				return st.refuseJSON("uncheckable", "placeholder", "", msg, http.StatusRequestEntityTooLarge, msg)
+				st.step(queries.StepStop, stepBranch, msg)
+				return st.refuseJSON(queries.KindUncheckable, queries.LayerPlaceholder, "", msg, http.StatusRequestEntityTooLarge, msg)
 			}
 			st.body, st.inHand = b, true
 		}
@@ -529,18 +591,18 @@ func (st *gatewayState) decide() *GatewayDecision {
 
 func quoteRule(name string, idx int) string {
 	if l := ruleLabel(name, idx); l != "" {
-		return "“" + l + "”"
+		return "\u201c" + l + "\u201d"
 	}
 	return "a rule"
 }
 
 func (st *gatewayState) guardStopStep(d *GatewayDecision) {
 	if d.Kind == "capability" {
-		st.step("stop", stepCapability, d.Reason)
+		st.step(queries.StepStop, stepCapability, d.Reason)
 		return
 	}
-	st.step("pass", stepCapability, "Merge and approve toggles do not block this request")
-	st.step("stop", stepBranch, d.Reason)
+	st.step(queries.StepPass, stepCapability, "Merge and approve toggles do not block this request")
+	st.step(queries.StepStop, stepBranch, d.Reason)
 }
 
 // Held reports the decision of a request an approve rule gates, once phase
@@ -550,7 +612,7 @@ func (st *gatewayState) Held() *GatewayDecision {
 		return nil
 	}
 	return &GatewayDecision{
-		Verdict: GatewayHeld, Kind: "approval", Layer: st.approveLayer, Rule: st.approveRule,
+		Verdict: GatewayHeld, Kind: queries.KindApproval, Layer: st.approveLayer, Rule: st.approveRule,
 		Reason: "an approve rule matched; an admin must approve this exact request", Refs: []DecisionRef{},
 	}
 }
@@ -574,8 +636,8 @@ func (st *gatewayState) finish(def defaultBranchFn) *GatewayDecision {
 		st.defaultUsed = true
 		return def()
 	}
+	e := &guardEval{policy: g.policy, def: wrapped}
 	if g.receivePack {
-		e := &guardEval{policy: g.policy, def: wrapped}
 		reasons := e.checkReceivePack(g.rp.Commands)
 		if anyRefused(reasons) {
 			d := st.refuseGuard(g.rp, reasons, firstReason(reasons), !st.inHand, e)
@@ -583,25 +645,22 @@ func (st *gatewayState) finish(def defaultBranchFn) *GatewayDecision {
 			return d
 		}
 		allowed.Refs = st.describeRefs(e, g.rp.Commands, reasons)
-	} else {
-		e := &guardEval{policy: g.policy, def: wrapped}
-		if msg := e.checkREST(g.method, g.rest, g.body); msg != "" {
-			d := st.refuseGuard(nil, nil, msg, false, e)
-			st.enrich(d, def)
-			st.guardStopStep(d)
-			return d
-		}
+	} else if msg := e.checkREST(g.method, g.rest, g.body); msg != "" {
+		d := st.refuseGuard(nil, nil, msg, false, e)
+		st.enrich(d, def)
+		st.guardStopStep(d)
+		return d
 	}
-	st.step("pass", stepCapability, "Merge and approve toggles do not block this request")
-	st.step("pass", stepBranch, "The branch rules allow this request")
+	st.step(queries.StepPass, stepCapability, "Merge and approve toggles do not block this request")
+	st.step(queries.StepPass, stepBranch, "The branch rules allow this request")
 	return allowed
 }
 
-// enrich fills in which rule governed a refused request when phase one could
-// only decide without the default branch: it resolves @default through def
-// (read-only, best effort) and names the pattern and role per ref (or the rule
-// of a REST refusal). The refusal itself is never changed. The proxy does not
-// call this; the simulator does, to explain.
+// enrich refines which rule governed a refused request once the default
+// branch may be known: it resolves @default through def and names the pattern
+// and role per ref (or the rule of a REST refusal). The refusal itself is
+// never changed. def must be read-only: the proxy passes a cache-only peek so a
+// refusal never waits on the network, the simulator its real (cached) lookup.
 func (st *gatewayState) enrich(d *GatewayDecision, def defaultBranchFn) {
 	g := st.guard
 	if g == nil || d == nil || d.Verdict != GatewayRefused || !g.policy.BranchPolicy.HasDefaultRule() {
@@ -613,13 +672,13 @@ func (st *gatewayState) enrich(d *GatewayDecision, def defaultBranchFn) {
 	}
 	e := &guardEval{policy: g.policy, def: wrapped}
 	for i := range d.Refs {
-		d.Refs[i].Pattern, d.Refs[i].Role = st.describeRule(e, d.Refs[i].Ref, d.Refs[i].Verdict == refVerdictRefused)
+		d.Refs[i].Pattern, d.Refs[i].Role = st.refRule(e, d.Refs[i])
 	}
 	if rt := firstRefusedRule(d.Refs); rt != "" {
 		d.Rule = rt
 		return
 	}
-	if d.Kind == "branch_rules" && len(d.Refs) == 0 {
+	if d.Kind == queries.KindBranchRules && len(d.Refs) == 0 && isBranchRuleReason(d.Reason) {
 		if branch := quotedBranch(d.Reason); branch != "" {
 			if dflt, err := e.defaultBranch(); err == nil {
 				if rule, ok := g.policy.BranchPolicy.SelectRule(branch, dflt); ok {

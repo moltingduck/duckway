@@ -30,7 +30,7 @@ func TestDenyDetailMarshalCaps(t *testing.T) {
 	// Hostile strings: control characters, invalid UTF-8, multi-byte cut, HTML.
 	long := strings.Repeat("é", 5000)
 	hostile := queries.DenyDetail{
-		Kind: "branch_rules", Reason: "bad\x00\x1b[31m\nline" + long, Rule: "a b", Sees: "keep\nnewline\tbut\x07not" + long + "\xff",
+		Kind: "branch_rules", Reason: "bad\x00\x1b[31m\nline" + long, Rule: "a\u2028b", Sees: "keep\nnewline\tbut\x07not" + long + "\xff",
 		Refs: []queries.DenyRef{{Ref: "refs/heads/x\ny\x00" + long, Reason: "<script>&"}},
 	}.Marshal()
 	if len(hostile) > queries.MaxDenyDetailBytes {
@@ -41,7 +41,7 @@ func TestDenyDetailMarshalCaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range []string{h.Reason, h.Rule, h.Refs[0].Ref} {
-		if strings.ContainsAny(f, "\x00\x1b\n ") || !utf8.ValidString(f) {
+		if strings.ContainsAny(f, "\x00\x1b\n\u2028") || !utf8.ValidString(f) {
 			t.Errorf("unsafe field %q", f)
 		}
 	}
@@ -154,5 +154,31 @@ func TestSearchFiltersByDenyKindAndReturnsDetail(t *testing.T) {
 	}
 	if !queries.ValidDenyKind("capability") || queries.ValidDenyKind("nope") {
 		t.Error("ValidDenyKind")
+	}
+}
+
+func TestDenyDetailReplacesFormatCharactersAndMarksTruncation(t *testing.T) {
+	// Bidirectional overrides and marks (category Cf) could make a ref name
+	// display as something else; they are replaced like control characters.
+	hostile := "refs/heads/\u202Eevil\u202C\u2066x\u2069\u200E\u200F\u200B"
+	got := queries.DenyDetail{Kind: "branch_rules", Reason: hostile, Rule: hostile, Sees: hostile,
+		Refs: []queries.DenyRef{{Ref: hostile, Pattern: hostile, Reason: hostile}}}.Marshal()
+	for _, r := range []rune{0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200e, 0x200f, 0x200b} {
+		if strings.ContainsRune(got, r) {
+			t.Errorf("U+%04X survived: %s", r, got)
+		}
+	}
+	// A short Sees is stored as is; a long one is cut at 2 KiB with a marker.
+	var d queries.DenyDetail
+	if err := json.Unmarshal([]byte(queries.DenyDetail{Kind: "x", Sees: "short\nbody\n"}.Marshal()), &d); err != nil || d.Sees != "short\nbody\n" {
+		t.Fatalf("short sees: %q %v", d.Sees, err)
+	}
+	long := strings.Repeat("ng refs/heads/x duckway: reason\n", 200)
+	s := queries.DenyDetail{Kind: "branch_rules", Sees: long}.Marshal()
+	if err := json.Unmarshal([]byte(s), &d); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(d.Sees, "(truncated)") || len(d.Sees) > 2048+32 || len(d.Sees) >= len(long) {
+		t.Fatalf("truncated sees: %d bytes %q", len(d.Sees), d.Sees[len(d.Sees)-40:])
 	}
 }

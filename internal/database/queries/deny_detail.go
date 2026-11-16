@@ -42,7 +42,7 @@ type DenyDetail struct {
 // characters (ref names and other fragments come from the agent). keepNL keeps
 // line feeds, for the multi-line "what the agent saw" text.
 func cleanDenyText(s string, max int, keepNL bool) string {
-	s = strings.ToValidUTF8(s, "�")
+	s = strings.ToValidUTF8(s, "\uFFFD")
 	if len(s) > max {
 		s = s[:max]
 		for len(s) > 0 && !utf8.ValidString(s) {
@@ -53,8 +53,8 @@ func cleanDenyText(s string, max int, keepNL bool) string {
 		switch {
 		case r == '\n' && keepNL:
 			return r
-		case unicode.IsControl(r) || r == ' ' || r == ' ':
-			return '�'
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029':
+			return '\uFFFD'
 		}
 		return r
 	}, s)
@@ -70,6 +70,18 @@ func marshalNoEscape(v interface{}) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+const seesTruncated = "\n\u2026 (truncated)"
+
+// cleanSees is cleanDenyText for the multi-line "what the agent saw" text,
+// ending in a visible marker when it had to be cut.
+func cleanSees(s string, max int) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	if len(s) <= max {
+		return cleanDenyText(s, max, true)
+	}
+	return cleanDenyText(s, max, true) + seesTruncated
+}
+
 // Marshal returns the bounded JSON stored for the detail: strings truncated on
 // UTF-8 boundaries with control characters replaced, at most MaxDenyDetailRefs
 // refs (the rest counted in "more"), and never more than MaxDenyDetailBytes.
@@ -79,7 +91,7 @@ func (d DenyDetail) Marshal() string {
 		Layer:  cleanDenyText(d.Layer, 64, false),
 		Rule:   cleanDenyText(d.Rule, maxDenyFieldBytes, false),
 		Reason: cleanDenyText(d.Reason, maxDenyFieldBytes, false),
-		Sees:   cleanDenyText(d.Sees, maxDenySeesBytes, true),
+		Sees:   cleanSees(d.Sees, maxDenySeesBytes),
 		More:   d.More,
 		Refs:   []DenyRef{},
 	}
@@ -103,7 +115,12 @@ func (d DenyDetail) Marshal() string {
 		s = marshalNoEscape(out)
 	}
 	for len(s) > MaxDenyDetailBytes && len(out.Sees) > 0 {
-		out.Sees = cleanDenyText(out.Sees, len(out.Sees)/2, true)
+		if len(out.Sees) <= 64 {
+			out.Sees = ""
+			s = marshalNoEscape(out)
+			break
+		}
+		out.Sees = cleanSees(strings.TrimSuffix(out.Sees, seesTruncated), len(out.Sees)/2)
 		s = marshalNoEscape(out)
 	}
 	return s
@@ -111,9 +128,38 @@ func (d DenyDetail) Marshal() string {
 
 // DenyKinds are the values of DenyDetail.Kind: what refused the request.
 var DenyKinds = []string{
-	"service_acl", "api_key_acl", "token_acl", "capability",
-	"branch_rules", "invalid_policy", "uncheckable", "approval",
+	KindServiceACL, KindAPIKeyACL, KindTokenACL, KindCapability,
+	KindBranchRules, KindInvalidPolicy, KindUncheckable, KindApproval,
 }
+
+// Kinds of refusal (DenyDetail.Kind).
+const (
+	KindServiceACL    = "service_acl"
+	KindAPIKeyACL     = "api_key_acl"
+	KindTokenACL      = "token_acl"
+	KindCapability    = "capability"
+	KindBranchRules   = "branch_rules"
+	KindInvalidPolicy = "invalid_policy"
+	KindUncheckable   = "uncheckable"
+	KindApproval      = "approval"
+	// KindCredential is reported by the access simulator only (no usable
+	// credential); the proxy does not log such a request as acl_denied.
+	KindCredential = "credential"
+)
+
+// ACL layers (DenyDetail.Layer), in evaluation order.
+const (
+	LayerService     = "service"
+	LayerAPIKey      = "api_key"
+	LayerPlaceholder = "placeholder"
+)
+
+// Statuses of a decision step.
+const (
+	StepPass = "pass"
+	StepStop = "stop"
+	StepSkip = "skip"
+)
 
 // ValidDenyKind reports whether k is one of DenyKinds.
 func ValidDenyKind(k string) bool {

@@ -319,7 +319,7 @@ func TestReceivePackRefusalDrainIsBoundedByWallClock(t *testing.T) {
 }
 
 func TestDefaultBranchCacheDeletesExpiredEntries(t *testing.T) {
-	c := newGitHubDefaultBranchCache()
+	c := newGitHubDefaultBranchCache(0)
 	now := time.Unix(5000, 0)
 	var mu sync.Mutex
 	c.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
@@ -362,7 +362,7 @@ func TestDefaultBranchCacheDeletesExpiredEntries(t *testing.T) {
 }
 
 func TestDefaultBranchCacheWaiterCancelledWhileLeaderInFlight(t *testing.T) {
-	c := newGitHubDefaultBranchCache()
+	c := newGitHubDefaultBranchCache(0)
 	release := make(chan struct{})
 	started := make(chan struct{})
 	var once sync.Once
@@ -405,7 +405,7 @@ func TestDefaultBranchCacheWaiterCancelledWhileLeaderInFlight(t *testing.T) {
 }
 
 func TestDefaultBranchCacheSharedFailureThenRefetch(t *testing.T) {
-	c := newGitHubDefaultBranchCache()
+	c := newGitHubDefaultBranchCache(0)
 	release := make(chan struct{})
 	var calls int32
 	var fail atomic.Bool

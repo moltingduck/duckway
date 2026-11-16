@@ -15,6 +15,7 @@ import (
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/server/handlers"
+	"github.com/hackerduck/duckway/internal/server/services"
 )
 
 // simResp mirrors the simulate response contract.
@@ -100,8 +101,42 @@ func (e *brEnv) replay(t *testing.T, s simResp, headers map[string]string) (int,
 	return resp.StatusCode, b
 }
 
-func proxyRefused(code int, body []byte) bool {
-	return bytes.Contains(body, []byte("duckway: ")) || bytes.Contains(body, []byte("permission denied")) || code == http.StatusForbidden
+// proxyVerdict classifies what the real proxy did with a replayed request.
+func proxyVerdict(code int, body []byte) string {
+	switch {
+	case bytes.Contains(body, []byte("duckway_approval_pending")):
+		return "held"
+	case bytes.Contains(body, []byte("duckway: ")), bytes.Contains(body, []byte("permission denied")), code == http.StatusForbidden:
+		return "refused"
+	}
+	return "allowed"
+}
+
+// expectParity replays a simulated request through the real proxy and checks
+// verdict (allowed vs held vs refused) and, for refusals, what the agent sees.
+func (e *brEnv) expectParity(t *testing.T, s simResp, hdrs map[string]string) {
+	t.Helper()
+	pcode, pbody := e.replay(t, s, hdrs)
+	if got := proxyVerdict(pcode, pbody); got != s.Verdict {
+		t.Fatalf("proxy %s (status %d body %q), simulator says %q", got, pcode, pbody, s.Verdict)
+	}
+	if s.Verdict != "refused" {
+		return
+	}
+	if strings.HasPrefix(s.Sees, "unpack ok\n") {
+		for _, line := range strings.Split(strings.TrimSpace(s.Sees), "\n") {
+			if line == "unpack ok" {
+				continue
+			}
+			if !bytes.Contains(pbody, []byte(line)) {
+				t.Errorf("proxy body %q lacks simulated line %q", pbody, line)
+			}
+		}
+		return
+	}
+	if s.Sees != string(pbody) {
+		t.Errorf("sees %q != proxy body %q", s.Sees, pbody)
+	}
 }
 
 func pkt(s string) string { return fmt.Sprintf("%04x%s", len(s)+4, s) }
@@ -180,6 +215,14 @@ func TestSimulatorMatchesProxy(t *testing.T) {
 		{"raw push no report-status", map[string]interface{}{"mode": "raw", "method": "POST", "path": "/OWNER/REPO.git/git-receive-pack",
 			"body_hex": hex.EncodeToString([]byte(pushBody("", [3]string{oidA, oidB, "refs/heads/main"})))}, "refused", "branch_rules"},
 		{"raw push unparseable", map[string]interface{}{"mode": "raw", "method": "POST", "path": "/OWNER/REPO.git/git-receive-pack", "body_text": "zzzz"}, "refused", "uncheckable"},
+		{"raw proxy prefix and query", map[string]interface{}{"mode": "raw", "method": "GET", "path": "/proxy/github/repos/OWNER/REPO/pulls?state=open"}, "allowed", ""},
+		{"raw query override", map[string]interface{}{"mode": "raw", "method": "POST", "path": "/proxy/github/repos/OWNER/REPO/pulls?_method=PATCH", "body_text": "{}"}, "refused", "uncheckable"},
+		{"raw tag create by push", map[string]interface{}{"mode": "raw", "method": "POST", "path": "/OWNER/REPO.git/git-receive-pack",
+			"body_hex": hex.EncodeToString([]byte(pushBody("report-status", [3]string{oid0, oidB, "refs/tags/v9"})))}, "allowed", ""},
+		{"raw tag create not allowed by push", map[string]interface{}{"mode": "raw", "method": "POST", "path": "/OWNER/REPO.git/git-receive-pack",
+			"body_hex": hex.EncodeToString([]byte(pushBody("report-status", [3]string{oid0, oidB, "refs/tags/nightly"})))}, "refused", "branch_rules"},
+		{"raw tag moved by push", map[string]interface{}{"mode": "raw", "method": "POST", "path": "/OWNER/REPO.git/git-receive-pack",
+			"body_hex": hex.EncodeToString([]byte(pushBody("report-status", [3]string{oidA, oidB, "refs/tags/v9"})))}, "refused", "branch_rules"},
 		{"raw push gzip", map[string]interface{}{"mode": "raw", "method": "POST", "path": "/OWNER/REPO.git/git-receive-pack", "headers": map[string]string{"Content-Encoding": "gzip"},
 			"body_hex": hex.EncodeToString([]byte(pushBody("report-status", [3]string{oidA, oidB, "refs/heads/agent/x"})))}, "refused", "uncheckable"},
 	}
@@ -196,27 +239,7 @@ func TestSimulatorMatchesProxy(t *testing.T) {
 			if h, ok := tc.req["headers"].(map[string]string); ok {
 				hdrs = h
 			}
-			pcode, pbody := e.replay(t, s, hdrs)
-			if got := proxyRefused(pcode, pbody); got != (s.Verdict == "refused") {
-				t.Fatalf("proxy refused=%v (status %d body %q), simulator says %q", got, pcode, pbody, s.Verdict)
-			}
-			if s.Verdict != "refused" {
-				return
-			}
-			if strings.HasPrefix(s.Sees, "unpack ok\n") {
-				for _, line := range strings.Split(strings.TrimSpace(s.Sees), "\n") {
-					if line == "unpack ok" {
-						continue
-					}
-					if !bytes.Contains(pbody, []byte(line)) {
-						t.Errorf("proxy body %q lacks simulated line %q", pbody, line)
-					}
-				}
-				return
-			}
-			if s.Sees != string(pbody) {
-				t.Errorf("sees %q != proxy body %q", s.Sees, pbody)
-			}
+			e.expectParity(t, s, hdrs)
 		})
 	}
 }
@@ -587,3 +610,112 @@ func TestAccessSummaryNonGitHub(t *testing.T) {
 
 var _ = sql.ErrNoRows
 var _ = queries.DecisionACLDenied
+
+// approveGatedConfig is builderConfig with an approve rule on pull request
+// creation, so branch rules and approval holds meet.
+func approveGatedConfig(t *testing.T) string {
+	t.Helper()
+	var cfg services.PermissionConfig
+	if err := json.Unmarshal([]byte(builderConfig(t, false, false)), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for ri := range cfg.Rules {
+		for ei := range cfg.Rules[ri].Endpoints {
+			ep := &cfg.Rules[ri].Endpoints[ei]
+			if ep.Method == "POST" && strings.HasSuffix(ep.Path, "/pulls/*") {
+				ep.Allow, ep.Approve = false, true
+				n++
+			}
+		}
+	}
+	if n == 0 {
+		t.Fatal("no pulls endpoint to gate")
+	}
+	b, _ := json.Marshal(cfg)
+	return string(b)
+}
+
+// Held cases: an approve rule holds a request that branch rules would allow
+// (and does not hold one they definitely refuse), and a token-wide approval
+// holds everything. The proxy must agree, and the held result must not claim a
+// branch-rules step ran.
+func TestSimulatorHeldMatchesProxy(t *testing.T) {
+	e := newBrEnv(t, approveGatedConfig(t))
+	sim := newSimFor(e.f)
+	pr := func(base string) map[string]interface{} {
+		return map[string]interface{}{"mode": "action", "repo": "OWNER/REPO", "action": "open_pr_into", "ref": base}
+	}
+	_, held := simCall(t, sim, e.f.placeholderID, pr("agent/x"))
+	if held.Verdict != "held" || held.Kind != "approval" || held.Layer != "placeholder" {
+		t.Fatalf("approve rule: %+v", held)
+	}
+	e.expectParity(t, held, nil)
+	var branchStep, hold string
+	order := []string{}
+	for _, st := range held.Steps {
+		order = append(order, st.Label)
+		if st.Label == "Branch rules" {
+			branchStep = st.Detail
+		}
+		if st.Label == "Approval hold" {
+			hold = st.Status
+		}
+	}
+	if !strings.Contains(branchStep, "Held before the default branch") || hold != "stop" {
+		t.Errorf("held steps: %+v", held.Steps)
+	}
+	wantOrder := []string{"Token status", "Token-wide approval", "Service rules", "Credential rules", "Token rules", "Capability toggles", "Branch rules", "Approval hold"}
+	if strings.Join(order, "|") != strings.Join(wantOrder, "|") {
+		t.Errorf("step order %v", order)
+	}
+	// Definitely refused by branch rules: refused, not held.
+	_, no := simCall(t, sim, e.f.placeholderID, pr("a..b"))
+	if no.Verdict != "refused" {
+		t.Fatalf("definite refusal wins over a hold: %+v", no)
+	}
+	e.expectParity(t, no, nil)
+
+	// Token-wide approval: held until approved.
+	if _, err := e.f.rawDB.Exec(`UPDATE placeholder_keys SET requires_approval = 1`); err != nil {
+		t.Fatal(err)
+	}
+	_, wide := simCall(t, sim, e.f.placeholderID, map[string]interface{}{"mode": "action", "repo": "OWNER/REPO", "action": "clone"})
+	if wide.Verdict != "held" || wide.Kind != "approval" {
+		t.Fatalf("token-wide: %+v", wide)
+	}
+	e.expectParity(t, wide, nil)
+}
+
+// A held result on a service without a guard has no branch-rules step text.
+func TestSimulatorHeldNonGitHubHasNoBranchStep(t *testing.T) {
+	rig := newApproveRig(t, simApproveACL)
+	sim := newSimFor(rig.f)
+	_, s := simCall(t, sim, rig.f.placeholderID, map[string]interface{}{"mode": "raw", "method": "POST", "path": "/v1/messages", "body_text": "{}"})
+	if s.Verdict != "held" {
+		t.Fatalf("%+v", s)
+	}
+	for _, st := range s.Steps {
+		if strings.Contains(st.Detail, "Held before") {
+			t.Errorf("unexpected step %+v", st)
+		}
+	}
+	if len(s.Steps) != 8 {
+		t.Errorf("canonical steps: %+v", s.Steps)
+	}
+}
+
+// Unknown @default fails closed in the simulator and the proxy alike.
+func TestSimulatorUnknownDefaultFailsClosedLikeProxy(t *testing.T) {
+	e := newBrEnv(t, builderConfig(t, false, false))
+	sim := newSimFor(e.f)
+	e.apiFail.Store(true)
+	_, s := simCall(t, sim, e.f.placeholderID, map[string]interface{}{"mode": "action", "repo": "OWNER/REPO", "action": "push", "ref": "agent/x"})
+	if s.Verdict != "refused" || s.Kind != "uncheckable" {
+		t.Fatalf("%+v", s)
+	}
+	e.expectParity(t, s, nil)
+	if !s.DependsOnDefaultBranch {
+		t.Error("must report the dependency on the default branch")
+	}
+}

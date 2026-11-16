@@ -180,3 +180,138 @@ func TestEnrichNamesRuleFromDefault(t *testing.T) {
 		t.Fatal("a policy with an @default rule depends on the default branch")
 	}
 }
+
+func TestParseHexBodyReportsTheCharacterNotAByte(t *testing.T) {
+	_, err := parseHexBody("ab€c")
+	if err == nil || err.offset == nil || *err.offset != 2 || !strings.Contains(err.msg, "'€'") || !strings.Contains(err.msg, "offset 2") {
+		t.Fatalf("multi-byte character: %+v", err)
+	}
+	// The offset counts characters, not bytes: two 2-byte letters precede the problem.
+	_, err = parseHexBody("ééz")
+	if err == nil || *err.offset != 0 {
+		t.Fatalf("first character is already invalid: %+v", err)
+	}
+	_, err = parseHexBody("0 1\n2")
+	if err == nil || *err.offset != 4 || !strings.Contains(err.msg, "odd number") {
+		t.Fatalf("odd digits: %+v", err)
+	}
+}
+
+func TestBuildRawRequestPathChecks(t *testing.T) {
+	for path, want := range map[string]string{
+		"/repos/o/r#frag":         "fragment",
+		"/repos/o/r?x=1#frag":     "fragment",
+		"/repos/o/../x":           "redirect this path to /repos/x",
+		"/repos//o/r":             "redirect this path to /repos/o/r",
+		"/proxy/github/a/./b":     "redirect this path to /a/b",
+		"/repos/o/r/../../..":     "redirect",
+		"/repos/o/r/contents/%23": "invalid character",
+	} {
+		_, err := buildRawRequest(simulateRequest{Mode: "raw", Method: "GET", Path: path}, "github")
+		if err == nil || err.status != http.StatusBadRequest || !strings.Contains(err.msg, want) {
+			t.Errorf("%s: %+v (want %q)", path, err, want)
+		}
+	}
+	if sr, err := buildRawRequest(simulateRequest{Mode: "raw", Method: "GET", Path: "/repos/o/r/contents/dir/"}, "github"); err != nil || sr.Path != "/repos/o/r/contents/dir/" {
+		t.Errorf("a trailing slash needs no cleaning: %v %+v", err, sr)
+	}
+}
+
+// Every message the guard can produce for a request classifies as the kind and
+// cause the decision reports; driving the real evaluator keeps guardKind and
+// causeRule honest if a message changes.
+func TestGuardKindsAndCausesForRealRefusals(t *testing.T) {
+	pols, err := services.ParseGitHubBranchPolicies(internalPolicyConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pol := pols["o/r"]
+	known := func() (string, error) { return "main", nil }
+	cases := []struct {
+		name, method string
+		rest         []string
+		body         string
+		def          defaultBranchFn
+		kind, cause  string
+	}{
+		{"merge off", "PUT", []string{"pulls", "1", "merge"}, "", known, "capability", ""},
+		{"approve off", "POST", []string{"pulls", "1", "reviews"}, `{"event":"APPROVE"}`, known, "capability", ""},
+		{"unclassified write", "DELETE", []string{"branches", "main", "protection"}, "", known, "uncheckable", ""},
+		{"unsupported refs write", "DELETE", []string{"git", "refs"}, "", known, "uncheckable", ""},
+		{"body not an object", "POST", []string{"git", "refs"}, "[]", known, "uncheckable", ""},
+		{"missing field", "POST", []string{"git", "refs"}, `{}`, known, "uncheckable", ""},
+		{"wrong field type", "POST", []string{"git", "refs"}, `{"ref":1}`, known, "uncheckable", ""},
+		{"default unknown", "POST", []string{"pulls"}, `{"base":"x"}`, func() (string, error) { return "", errors.New("down") }, "uncheckable", ""},
+		{"branch role", "POST", []string{"git", "refs"}, `{"ref":"refs/heads/feature"}`, known, "branch_rules", ""},
+		{"tag not allowed", "POST", []string{"git", "refs"}, `{"ref":"refs/tags/x"}`, known, "branch_rules", ""},
+		{"neither branch nor tag", "POST", []string{"git", "refs"}, `{"ref":"refs/notes/x"}`, known, "branch_rules", "ref type not allowed"},
+		{"invalid branch name", "POST", []string{"git", "refs"}, `{"ref":"refs/heads/a..b"}`, known, "branch_rules", "invalid ref name"},
+		{"existing tag", "PATCH", []string{"git", "refs", "tags", "v1"}, `{}`, known, "branch_rules", "existing tags never move"},
+		{"other ref namespace", "PATCH", []string{"git", "refs", "notes", "x"}, `{}`, known, "branch_rules", "ref type not allowed"},
+		{"dispatch on a tag", "POST", []string{"actions", "workflows", "ci.yml", "dispatches"}, `{"ref":"refs/tags/v1"}`, known, "branch_rules", "ref type not allowed"},
+	}
+	for _, tc := range cases {
+		msg := evaluateGitHubGuardREST(pol, tc.def, tc.method, tc.rest, []byte(tc.body))
+		if msg == "" {
+			t.Errorf("%s: expected a refusal", tc.name)
+			continue
+		}
+		if got := guardKind(msg); got != tc.kind {
+			t.Errorf("%s: kind %s want %s (%q)", tc.name, got, tc.kind, msg)
+		}
+		st := &gatewayState{guard: &githubGuard{policy: pol}}
+		rule := st.ruleBehind(guardKind(msg), msg)
+		switch {
+		case tc.kind == "capability":
+			if rule != "pull_requests_merge" && rule != "pull_requests_approve" {
+				t.Errorf("%s: capability rule %q", tc.name, rule)
+			}
+		case tc.cause != "":
+			if rule != tc.cause {
+				t.Errorf("%s: rule %q want cause %q (%q)", tc.name, rule, tc.cause, msg)
+			}
+		case tc.kind == "uncheckable":
+			if rule != "" {
+				t.Errorf("%s: an uncheckable request has no deciding rule, got %q", tc.name, rule)
+			}
+		default:
+			if rule == "" {
+				t.Errorf("%s: rule-bearing refusal has no rule (%q)", tc.name, msg)
+			}
+		}
+	}
+	// Push commands: invalid, outside and tag refusals are cause-only; rule
+	// refusals name a rule; a ref decided by no rule never names one.
+	e := &guardEval{policy: pol, def: known}
+	st := &gatewayState{guard: &githubGuard{policy: pol}}
+	for ref, wantRule := range map[string]bool{
+		"refs/heads/feature/x": true, "refs/heads/main": true, "refs/tags/new": true,
+		"refs/heads/a..b": false, "refs/notes/x": false, strings.Repeat("r", 300): false,
+	} {
+		cmd := receivePackCommand{Old: oidZero, New: strings.Repeat("a", 40), Ref: ref}
+		reason := e.checkPushCommand(cmd)
+		if reason == "" {
+			t.Errorf("%s: expected refusal", ref)
+			continue
+		}
+		p, r := st.refRule(e, DecisionRef{Ref: ref, Verdict: "refused", Reason: reason})
+		if (p != "" || r != "") != wantRule {
+			t.Errorf("%s: pattern %q role %q for %q", ref, p, r, reason)
+		}
+	}
+	// An existing tag moved is refused for a cause, never by a rule.
+	reason := e.checkPushCommand(receivePackCommand{Old: strings.Repeat("b", 40), New: strings.Repeat("a", 40), Ref: "refs/tags/v1"})
+	if p, r := st.refRule(e, DecisionRef{Ref: "refs/tags/v1", Verdict: "refused", Reason: reason}); p != "" || r != "" || causeRule(reason) != "existing tags never move" {
+		t.Errorf("tag move: %q %q %q", p, r, reason)
+	}
+}
+
+const oidZero = "0000000000000000000000000000000000000000"
+
+func TestRefuseGuardComparesMethodCaseInsensitively(t *testing.T) {
+	st := &gatewayState{in: gatewayInput{Method: "post", Path: "/o/r.git/git-receive-pack"}}
+	d := st.refuseGuard(nil, nil, "pushes are refused", false, nil)
+	if !d.receive || d.Sees != "duckway: pushes are refused\n" {
+		t.Fatalf("%+v", d)
+	}
+}
