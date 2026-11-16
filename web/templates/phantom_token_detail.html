@@ -30,10 +30,19 @@
   <div class="pt-pagetabs" role="tablist" aria-label="Phantom token sections" id="pt-pagetablist">
     <button type="button" role="tab" class="pt-ptab" id="pt-ptab-overview" aria-selected="true" aria-controls="pt-panel-overview" data-action="ptPageTab" data-ptab="overview">Overview</button>
     <button type="button" role="tab" class="pt-ptab" id="pt-ptab-test" aria-selected="false" tabindex="-1" aria-controls="pt-panel-test" data-action="ptPageTab" data-ptab="test">Test access</button>
+    <button type="button" role="tab" class="pt-ptab" id="pt-ptab-history" aria-selected="false" tabindex="-1" aria-controls="pt-panel-history" data-action="ptPageTab" data-ptab="history">History</button>
   </div>
 
   <div id="pt-panel-test" role="tabpanel" aria-labelledby="pt-ptab-test" hidden>
     <div id="as-root"></div>
+  </div>
+
+  <div id="pt-panel-history" role="tabpanel" aria-labelledby="pt-ptab-history" hidden>
+    <section class="card pt-card" aria-labelledby="pt-hist-h">
+      <h2 id="pt-hist-h">History</h2>
+      <p class="text-sm text-muted">Changes to this token's rules and approval settings, and approval decisions. Read-only.</p>
+      <div id="pt-history" data-audit-history></div>
+    </section>
   </div>
 
   <div id="pt-panel-overview" role="tabpanel" aria-labelledby="pt-ptab-overview">
@@ -204,6 +213,7 @@
 <script nonce="{{$.CSPNonce}}" src="/static/refusal-log.js"></script>
 <script nonce="{{$.CSPNonce}}" src="/static/access-sim-hex.js"></script>
 <script nonce="{{$.CSPNonce}}" src="/static/access-sim-api.js"></script>
+<script nonce="{{$.CSPNonce}}" src="/static/audit.js"></script>
 <script nonce="{{$.CSPNonce}}" src="/static/access-sim.js"></script>
 {{end}}
 {{end}}

@@ -1366,6 +1366,41 @@ curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$F4_CC" > /dev/null 2>&1 
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$F4_BOT" > /dev/null 2>&1 || true
 
 
+# === Test 22: audit log API (fx1116) ===
+echo ""
+echo -e "${YELLOW}[Test 22]${NC} Audit log API"
+AU_ALL=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/audit?limit=200")
+assert_not_empty "audit: list returns entries" "$(echo "$AU_ALL" | jq -r '.entries[0].id // empty')"
+AU_SIGNIN=$(echo "$AU_ALL" | jq '[.entries[] | select(.action=="signin.success")] | length')
+assert_eq "audit: the e2e sign-in is recorded" "true" "$([ "$AU_SIGNIN" -ge 1 ] && echo true || echo false)"
+AU_FAILED=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/audit?kind=signins&q=wrong" | jq '[.entries[] | select(.action=="signin.failed")] | length')
+assert_eq "audit: failed sign-ins are throttled into one row per IP per minute" "1" "$AU_FAILED"
+AU_SVC=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/services" -H 'Content-Type: application/json' \
+  -d '{"name":"e2e-audit-svc","display_name":"E2E Audit","upstream_url":"https://api.e2e-audit.example"}' | jq -r '.id')
+curl -s -b /tmp/dw-e2e-cookies -X PUT "$BASE/api/services/$AU_SVC" -H 'Content-Type: application/json' \
+  -d '{"default_acl":"{\"version\":\"1\",\"provider\":\"e2e\",\"rules\":[{\"name\":\"r\",\"endpoints\":[{\"method\":\"GET\",\"path\":\"/*\",\"allow\":true}]}]}"}' > /dev/null
+AU_HIST=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/audit?resource_type=service&resource_id=$AU_SVC")
+assert_eq "audit: service history has create and update" "2" "$(echo "$AU_HIST" | jq '.entries | length')"
+AU_ID=$(echo "$AU_HIST" | jq -r '.entries[0].id')
+AU_DETAIL=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/audit/$AU_ID")
+assert_eq "audit: detail names the actor" "admin:duckway" "$(echo "$AU_DETAIL" | jq -r '.actor')"
+assert_contains "audit: detail shows the new default ACL" "e2e" "$(echo "$AU_DETAIL" | jq -c '.after')"
+AU_KEY=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H 'Content-Type: application/json' \
+  -d "{\"service_id\":\"$AU_SVC\",\"name\":\"e2e-audit-key\",\"key\":\"sk-e2e-audit-SECRET-0123456789\"}" | jq -r '.id')
+AU_KEYLOG=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/audit/$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/audit?resource_type=api_key&resource_id=$AU_KEY" | jq -r '.entries[0].id')")
+assert_eq "audit: a credential's value is never stored" "false" "$(echo "$AU_KEYLOG" | grep -q 'SECRET' && echo true || echo false)"
+AU_PAGE1=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/audit?limit=2")
+AU_NEXT=$(echo "$AU_PAGE1" | jq -r '.next_cursor // empty')
+assert_not_empty "audit: cursor paging returns a next cursor" "$AU_NEXT"
+AU_PAGE2_FIRST=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/audit?limit=2&cursor=$AU_NEXT" | jq -r '.entries[0].id')
+assert_eq "audit: the second page is older than the first" "true" "$([ "$AU_PAGE2_FIRST" -lt "$(echo "$AU_PAGE1" | jq -r '.entries[1].id')" ] && echo true || echo false)"
+assert_eq "audit: bad kind is rejected" "400" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/dw-e2e-cookies "$BASE/api/audit?kind=nope")"
+assert_eq "audit: needs a session" "401" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/audit")"
+assert_eq "audit: page renders" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/dw-e2e-cookies "$BASE/admin/audit")"
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$AU_KEY" > /dev/null 2>&1 || true
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/services/$AU_SVC" > /dev/null 2>&1 || true
+
+
 # === Test 15: Unit Tests ===
 echo ""
 echo -e "${YELLOW}[15] Unit Tests${NC}"

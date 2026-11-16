@@ -1,0 +1,168 @@
+{{define "content"}}
+<div class="page-header">
+  <div>
+    <h1>Audit log</h1>
+    <p class="text-muted text-sm">Who changed what: rule and access edits, credentials, clients, approval decisions, settings and sign-ins. Read-only. Secrets are never stored. Rows are kept for the retention period set in <a href="/admin/settings">Settings</a>.</p>
+  </div>
+</div>
+
+<div class="card lg-filters" id="au-filters">
+  <div class="lg-row">
+    <div class="lg-seg" role="group" aria-label="What changed" id="au-kinds"></div>
+    <div class="lg-seg" role="group" aria-label="Time range">
+      <button type="button" data-action="auditRange" data-range="24h" aria-pressed="false">24h</button>
+      <button type="button" data-action="auditRange" data-range="7d" aria-pressed="false">7d</button>
+      <button type="button" data-action="auditRange" data-range="30d" aria-pressed="false">30d</button>
+      <button type="button" data-action="auditRange" data-range="all" aria-pressed="true">All</button>
+    </div>
+  </div>
+  <div class="lg-row">
+    <label class="lg-search"><span class="sr-only">Search summary, resource or action</span><input type="text" id="au-q" class="mono" maxlength="200" autocomplete="off" placeholder="Search summary, resource or action" data-on-input="auditFilter"></label>
+    <label class="lg-search"><span class="sr-only">Actor, for example admin:alice</span><input type="text" id="au-actor" class="mono" maxlength="200" autocomplete="off" placeholder="Actor, e.g. admin:alice" data-on-input="auditFilter"></label>
+  </div>
+</div>
+
+<div class="lg-split" id="au-split">
+  <section class="card lg-list" aria-label="Audit entries">
+    <div class="lg-listhead"><span id="au-count" class="text-muted text-sm" role="status" aria-live="polite"></span></div>
+    <div id="au-empty" class="lg-empty" role="status" hidden></div>
+    <div class="table-wrap" id="au-tablewrap">
+      <table class="lg-table">
+        <thead><tr><th>Time</th><th>Who</th><th>Resource</th><th>What</th><th>Result</th></tr></thead>
+        <tbody id="au-body"></tbody>
+      </table>
+    </div>
+    <div class="lg-pager">
+      <span></span>
+      <button type="button" class="btn btn-sm" id="au-more" data-action="auditMore" hidden>Older entries</button>
+    </div>
+  </section>
+
+  <div class="lg-scrim" id="au-scrim" data-action="auditClose" hidden></div>
+  <aside class="card lg-detail" id="au-detail" aria-labelledby="au-det-h" tabindex="-1">
+    <div class="lg-dethead">
+      <h2 id="au-det-h" tabindex="-1">Entry detail</h2>
+      <button type="button" class="btn btn-sm" data-action="auditClose" aria-label="Close detail">Close</button>
+    </div>
+    <div id="au-det-body"><p class="text-muted text-sm">Select an entry to see what changed.</p></div>
+  </aside>
+</div>
+
+<script nonce="{{$.CSPNonce}}" src="/static/audit.js"></script>
+<script nonce="{{$.CSPNonce}}">
+(function() {
+'use strict';
+var S = {kind: '', range: 'all', q: '', actor: '', cursor: ''};
+var rows = [], nextCursor = '', seq = 0, selected = 0, opener = null, timer = null, loading = false;
+function $(id) { return document.getElementById(id); }
+
+function readURL() {
+  var p = new URLSearchParams(window.location.search);
+  var k = p.get('kind') || '';
+  S.kind = AUDIT.KINDS.some(function(x) { return x[0] === k; }) ? k : '';
+  var r = p.get('range');
+  S.range = ['24h', '7d', '30d', 'all'].indexOf(r) >= 0 ? r : 'all';
+  S.q = (p.get('q') || '').slice(0, 200);
+  S.actor = (p.get('actor') || '').slice(0, 200);
+}
+function writeURL() {
+  var p = new URLSearchParams();
+  if (S.kind) p.set('kind', S.kind);
+  if (S.range !== 'all') p.set('range', S.range);
+  if (S.q) p.set('q', S.q);
+  if (S.actor) p.set('actor', S.actor);
+  var qs = p.toString();
+  try { history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : '')); } catch (e) { /* ignore */ }
+}
+function syncControls() {
+  DW.setHTML($('au-kinds'), DW.html`${AUDIT.KINDS.map(function(k) {
+    return DW.html`<button type="button" data-action="auditKind" data-kind="${k[0]}" aria-pressed="${String(k[0] === S.kind)}">${k[1]}</button>`;
+  })}`);
+  document.querySelectorAll('[data-action="auditRange"]').forEach(function(b) {
+    b.setAttribute('aria-pressed', String(b.dataset.range === S.range));
+  });
+  $('au-q').value = S.q;
+  $('au-actor').value = S.actor;
+}
+
+function query(cursor) {
+  return AUDIT.buildQuery({kind: S.kind, actor: S.actor, q: S.q, since: AUDIT.sinceFor(S.range), cursor: cursor, limit: 50});
+}
+function statusBadge(r) {
+  return r.status === 'failed' ? DW.html`<span class="badge badge-red">Failed</span>` : DW.html`<span class="badge badge-green">Done</span>`;
+}
+function paint(err) {
+  var empty = $('au-empty');
+  if (err) {
+    empty.hidden = false; $('au-tablewrap').hidden = true;
+    DW.setHTML(empty, DW.html`<p>${err}</p><button type="button" class="btn btn-sm" data-action="auditRetry">Retry</button>`);
+    $('au-count').textContent = '';
+    return;
+  }
+  $('au-tablewrap').hidden = !rows.length;
+  empty.hidden = !!rows.length || loading;
+  if (!rows.length && !loading) {
+    DW.setHTML(empty, DW.html`<p><strong>No entries match.</strong></p><p class="text-muted text-sm">${S.kind || S.q || S.actor || S.range !== 'all' ? 'Widen the filters to see more.' : 'Changes made in the console will appear here.'}</p>`);
+  }
+  $('au-count').textContent = rows.length ? 'Showing ' + rows.length + ' ' + (rows.length === 1 ? 'entry' : 'entries') + (nextCursor ? ', more available' : '') : '';
+  $('au-more').hidden = !nextCursor;
+  DW.setHTML($('au-body'), DW.html`${rows.map(function(r) {
+    return DW.html`<tr class="lg-tr${r.id === selected ? ' is-selected' : ''}">
+      <td class="lg-t">${AUDIT.fmtTime(r.created_at)}</td>
+      <td>${AUDIT.actorLabel(r.actor)}${r.via ? DW.html` <span class="lg-tag">${r.via}</span>` : ''}</td>
+      <td><span class="text-muted text-sm">${AUDIT.typeLabel(r.resource_type)}</span><br>${r.resource_name || r.resource_id}</td>
+      <td><button type="button" class="lg-rowbtn" data-action="auditSelect" data-id="${r.id}" aria-label="${'Open entry: ' + r.summary}">${r.summary || AUDIT.actionLabel(r.action)}</button></td>
+      <td>${statusBadge(r)}</td></tr>`;
+  })}`);
+}
+function load(append) {
+  var my = ++seq;
+  loading = true;
+  if (!append) { rows = []; nextCursor = ''; paint(); }
+  return fetch('/api/audit?' + query(append ? nextCursor : ''), {credentials: 'same-origin', headers: {Accept: 'application/json'}})
+    .then(function(r) { if (!r.ok) throw new Error('Could not load the audit log (' + r.status + ')'); return r.json(); })
+    .then(function(d) {
+      if (my !== seq) return;
+      loading = false;
+      rows = rows.concat(d.entries || []); nextCursor = d.next_cursor || '';
+      paint();
+    })
+    .catch(function(e) { if (my !== seq) return; loading = false; paint(e.message); });
+}
+function refilter() { writeURL(); closePanel(false); load(false); }
+
+DW.actions.auditKind = function(el) { S.kind = el.dataset.kind; syncControls(); refilter(); };
+DW.actions.auditRange = function(el) { S.range = el.dataset.range; syncControls(); refilter(); };
+DW.actions.auditFilter = function() {
+  clearTimeout(timer);
+  timer = setTimeout(function() { S.q = $('au-q').value.trim(); S.actor = $('au-actor').value.trim(); refilter(); }, 250);
+};
+DW.actions.auditMore = function() { if (nextCursor && !loading) load(true); };
+DW.actions.auditRetry = function() { load(false); };
+DW.actions.auditSelect = function(el) {
+  opener = el; selected = parseInt(el.dataset.id, 10);
+  var mine = selected;
+  $('au-detail').classList.add('open'); $('au-split').classList.add('lg-has-detail'); $('au-scrim').hidden = false;
+  DW.setHTML($('au-det-body'), DW.html`<p class="text-muted text-sm" role="status">Loading…</p>`);
+  paint();
+  fetch('/api/audit/' + mine, {credentials: 'same-origin'})
+    .then(function(r) { if (!r.ok) throw new Error('failed'); return r.json(); })
+    .then(function(d) { if (mine === selected) AUDIT.renderDetail($('au-det-body'), d); })
+    .catch(function() { if (mine === selected) DW.setHTML($('au-det-body'), DW.html`<p class="text-sm" role="alert">Could not load this entry.</p>`); });
+  $('au-det-h').focus();
+};
+function closePanel(restore) {
+  if (!$('au-detail').classList.contains('open')) return;
+  selected = 0;
+  $('au-detail').classList.remove('open'); $('au-split').classList.remove('lg-has-detail'); $('au-scrim').hidden = true;
+  paint();
+  if (restore && opener && opener.isConnected) opener.focus();
+  opener = null;
+}
+DW.actions.auditClose = function() { closePanel(true); };
+document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closePanel(true); });
+
+readURL(); syncControls(); load(false);
+})();
+</script>
+{{end}}
