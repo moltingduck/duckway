@@ -32,7 +32,12 @@ type tgMessageRef struct {
 	botToken string
 	chatID   string
 	msgID    int64
+	at       time.Time
 }
+
+// tgMessageTTL bounds how long an undecided Telegram message ref is kept (a
+// decision made by another process never reaches this one's map).
+const tgMessageTTL = 48 * time.Hour
 
 func NewNotifier(channels *queries.NotificationQueries) *Notifier {
 	return &Notifier{
@@ -172,7 +177,14 @@ func (n *Notifier) sendTelegram(configJSON string, notif ApprovalNotification) e
 	if b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20)); json.Unmarshal(b, &sent) == nil && sent.Result.MessageID != 0 {
 		refs, _ := n.tgMessages.Load(notif.ApprovalID)
 		list, _ := refs.([]tgMessageRef)
-		n.tgMessages.Store(notif.ApprovalID, append(list, tgMessageRef{cfg.BotToken, cfg.ChatID, sent.Result.MessageID}))
+		now := time.Now()
+		n.tgMessages.Range(func(k, v any) bool { // drop refs nobody decided in this process
+			if refs, _ := v.([]tgMessageRef); len(refs) > 0 && now.Sub(refs[0].at) > tgMessageTTL {
+				n.tgMessages.Delete(k)
+			}
+			return true
+		})
+		n.tgMessages.Store(notif.ApprovalID, append(list, tgMessageRef{cfg.BotToken, cfg.ChatID, sent.Result.MessageID, now}))
 	}
 	return nil
 }
