@@ -23,7 +23,21 @@ type Notifier struct {
 	client   *http.Client
 	// Discord gateways by channel ID — used for reaction-based approvals
 	Gateways sync.Map // channelID → *DiscordGateway
+	// Telegram held-request messages by approval ID, so a decision made
+	// elsewhere can still update them (best effort, in-memory, this process only).
+	tgMessages sync.Map // approvalID → []tgMessageRef
 }
+
+type tgMessageRef struct {
+	botToken string
+	chatID   string
+	msgID    int64
+	at       time.Time
+}
+
+// tgMessageTTL bounds how long an undecided Telegram message ref is kept (a
+// decision made by another process never reaches this one's map).
+const tgMessageTTL = 48 * time.Hour
 
 func NewNotifier(channels *queries.NotificationQueries) *Notifier {
 	return &Notifier{
@@ -131,13 +145,14 @@ func (n *Notifier) sendTelegram(configJSON string, notif ApprovalNotification) e
 	keyboard := map[string]interface{}{
 		"inline_keyboard": [][]map[string]string{
 			{
-				{"text": "✅ Approve (24h)", "callback_data": "approve:" + notif.ApprovalID},
+				{"text": "✅ Approve", "callback_data": "approve:" + notif.ApprovalID},
+				{"text": "✅ Approve for 1 h", "callback_data": "approve1h:" + notif.ApprovalID},
 				{"text": "❌ Reject", "callback_data": "reject:" + notif.ApprovalID},
 			},
 		},
 	}
 
-	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", cfg.BotToken)
+	apiURL := fmt.Sprintf("%s/bot%s/sendMessage", telegramAPIBase(), cfg.BotToken)
 	body, _ := json.Marshal(map[string]interface{}{
 		"chat_id":      cfg.ChatID,
 		"text":         text,
@@ -153,6 +168,23 @@ func (n *Notifier) sendTelegram(configJSON string, notif ApprovalNotification) e
 
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("telegram API returned %d", resp.StatusCode)
+	}
+	var sent struct {
+		Result struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
+	}
+	if b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20)); json.Unmarshal(b, &sent) == nil && sent.Result.MessageID != 0 {
+		refs, _ := n.tgMessages.Load(notif.ApprovalID)
+		list, _ := refs.([]tgMessageRef)
+		now := time.Now()
+		n.tgMessages.Range(func(k, v any) bool { // drop refs nobody decided in this process
+			if refs, _ := v.([]tgMessageRef); len(refs) > 0 && now.Sub(refs[0].at) > tgMessageTTL {
+				n.tgMessages.Delete(k)
+			}
+			return true
+		})
+		n.tgMessages.Store(notif.ApprovalID, append(list, tgMessageRef{cfg.BotToken, cfg.ChatID, sent.Result.MessageID, now}))
 	}
 	return nil
 }
@@ -214,14 +246,15 @@ func (n *Notifier) sendDiscordBot(configJSON string, notif ApprovalNotification)
 		"title":       "🔑 Duckway Approval Required",
 		"color":       16750848,
 		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`", notif.ClientName, notif.ServiceName, notif.Method, notif.requestTarget(), notif.ApprovalID) + ruleLine(notif.Rule) + bodyLine(notif.BodyHash),
-		"footer":      map[string]string{"text": "Reply: !approve " + notif.ApprovalID + "  or  !reject " + notif.ApprovalID},
+		"footer":      map[string]string{"text": "Use the buttons, or reply: !approve " + notif.ApprovalID + "  or  !reject " + notif.ApprovalID},
 	}
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"embeds": []interface{}{embed},
+		"embeds":     []interface{}{embed},
+		"components": ApprovalComponents(notif.ApprovalID),
 	})
 
-	apiURL := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", cfg.ChannelID)
+	apiURL := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase(), cfg.ChannelID)
 	req, err := http.NewRequest("POST", apiURL, bytes.NewReader(body))
 	if err != nil {
 		return scrubNetErr(err)
@@ -240,6 +273,39 @@ func (n *Notifier) sendDiscordBot(configJSON string, notif ApprovalNotification)
 		return fmt.Errorf("discord bot API returned %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
+}
+
+// DecisionMade updates the held-request messages of an approval that was
+// decided somewhere other than the chat surface that shows them (web console,
+// TUI, expiry, or the other chat). It is a DecisionHook body: best effort, never
+// blocks the decider, and only touches messages this process sent.
+func (n *Notifier) DecisionMade(approvalID, decidedBy, via, status string) {
+	line := describeDecision(status, decidedBy, 0, time.Now())
+	go func() {
+		n.Gateways.Range(func(_, v any) bool {
+			if via != ViaDiscord {
+				if gw, ok := v.(*DiscordGateway); ok {
+					gw.MarkDecided(approvalID, "**"+line+"**")
+				}
+			}
+			return true
+		})
+		refs, ok := n.tgMessages.LoadAndDelete(approvalID)
+		if !ok || via == ViaTelegram {
+			return
+		}
+		for _, r := range refs.([]tgMessageRef) {
+			body, _ := json.Marshal(map[string]interface{}{"chat_id": r.chatID, "message_id": r.msgID,
+				"text": "Duckway approval " + approvalID + ": " + line})
+			resp, err := n.client.Post(fmt.Sprintf("%s/bot%s/editMessageText", telegramAPIBase(), r.botToken), "application/json", bytes.NewReader(body))
+			if err != nil {
+				log.Printf("[notifier] telegram result edit failed: %v", scrubNetErr(err))
+				continue
+			}
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}()
 }
 
 // TestChannel sends a test message to a specific channel and optionally
@@ -525,13 +591,21 @@ var ErrChannelNotAuthoritative = errors.New("this notification channel is disabl
 
 // sameConfig compares two config JSON documents semantically, so a
 // formatting-only change (whitespace, key order) does not count as an edit.
+//
+// The approver allowlist keys are ignored: they are read live from the database
+// on every decision (see GuardChannelDecision), so editing who may approve
+// takes effect at once and does not need a listener restart.
 func sameConfig(a, b string) bool {
 	if a == b {
 		return true
 	}
-	var x, y interface{}
+	var x, y map[string]interface{}
 	if json.Unmarshal([]byte(a), &x) != nil || json.Unmarshal([]byte(b), &y) != nil {
 		return false
+	}
+	for _, m := range []map[string]interface{}{x, y} {
+		delete(m, ApproverUsersKey)
+		delete(m, ApproverRolesKey)
 	}
 	return reflect.DeepEqual(x, y)
 }
@@ -551,6 +625,23 @@ func GuardChannelAction(q *queries.NotificationQueries, channelID, startedConfig
 	}
 }
 
+// GuardChannelDecision is GuardChannelAction for decisions that carry the
+// actor: besides the active/unchanged-config checks it requires the actor to be
+// on the channel's approver list, read from the database on every call. An
+// empty list refuses everyone (ErrNotApprover).
+func GuardChannelDecision(q *queries.NotificationQueries, channelID, startedConfig string, fn DecisionFunc) DecisionFunc {
+	return func(approvalID string, approve bool, minutes int, actor ChatActor) error {
+		cur, err := q.GetByID(channelID)
+		if err != nil || !cur.IsActive || !sameConfig(cur.Config, startedConfig) {
+			return ErrChannelNotAuthoritative
+		}
+		if !ParseApprovers(cur.Config).Allows(actor) {
+			return ErrNotApprover
+		}
+		return fn(approvalID, approve, minutes, actor)
+	}
+}
+
 // ruleLine is the extra notification line naming the approve rule that held a
 // request ("" for token-wide approvals).
 func ruleLine(rule string) string {
@@ -559,3 +650,7 @@ func ruleLine(rule string) string {
 	}
 	return "\n**Rule:** `" + strings.ReplaceAll(rule, "`", "'") + "`"
 }
+
+// SameChannelConfig reports whether two channel configs are equal apart from
+// the approver allowlist (which is read live and needs no listener restart).
+func SameChannelConfig(a, b string) bool { return sameConfig(a, b) }

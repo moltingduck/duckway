@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
+	svc "github.com/hackerduck/duckway/internal/server/services"
 )
 
 // Notification channel configs hold secrets (bot tokens, webhook URLs that
@@ -129,6 +130,11 @@ func validateNotificationConfig(channelType, config string) string {
 			return k + " is required"
 		}
 	}
+	if channelType == "telegram" || channelType == "discord_bot" {
+		if msg := validateApprovers(channelType, m); msg != "" {
+			return msg
+		}
+	}
 	urlKey := map[string]string{"discord": "webhook_url", "webhook": "url"}[channelType]
 	if urlKey != "" {
 		u, err := url.Parse(configString(m, urlKey))
@@ -191,10 +197,20 @@ type NotificationView struct {
 	IsActive    bool   `json:"is_active"`
 	CreatedAt   string `json:"created_at"`
 	Summary     string `json:"summary"`
+	// ChatDecides: the channel takes approve/reject from chat (Discord bot,
+	// Telegram). ApproverCount is the size of its approver allowlist; with none
+	// it never decides (NeedsApprovers, shown as a banner).
+	ChatDecides    bool `json:"chat_decides"`
+	ApproverCount  int  `json:"approver_count"`
+	NeedsApprovers bool `json:"needs_approvers"`
 }
 
 func notificationView(c queries.NotificationChannel) NotificationView {
+	chat := listenerChannel(c.ChannelType)
+	al := svc.ParseApprovers(c.Config)
+	n := len(al.Users) + len(al.Roles)
 	return NotificationView{
+		ChatDecides: chat, ApproverCount: n, NeedsApprovers: chat && c.IsActive && n == 0,
 		ID: c.ID, ChannelType: c.ChannelType, Name: c.Name,
 		Config:    maskNotificationConfig(c.ChannelType, c.Config),
 		IsActive:  c.IsActive,
@@ -210,4 +226,31 @@ func NotificationViews(list []queries.NotificationChannel) []NotificationView {
 		out = append(out, notificationView(c))
 	}
 	return out
+}
+
+// maxApprovers bounds each allowlist.
+const maxApprovers = 100
+
+// validateApprovers checks the approver allowlist of a chat channel: numeric
+// IDs only, roles only for Discord.
+func validateApprovers(channelType string, m map[string]interface{}) string {
+	check := func(key, what string) string {
+		ids := svc.SplitApproverIDs(configString(m, key))
+		if len(ids) > maxApprovers {
+			return what + ": at most 100 entries"
+		}
+		for _, id := range ids {
+			if !svc.ValidApproverID(id) {
+				return what + ": " + id + " is not a numeric ID"
+			}
+		}
+		return ""
+	}
+	if msg := check(svc.ApproverUsersKey, "approver user IDs"); msg != "" {
+		return msg
+	}
+	if channelType != "discord_bot" && configString(m, svc.ApproverRolesKey) != "" {
+		return "approver role IDs are only supported for Discord bot channels"
+	}
+	return check(svc.ApproverRolesKey, "approver role IDs")
 }

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -38,6 +37,7 @@ type AdminHandler struct {
 	keySuites     *queries.KeySuiteQueries
 	crypto        *svc.Crypto
 	auth          *middleware.AdminAuth
+	decider       *svc.ApprovalDecider
 	db            *sql.DB
 	audit         *audit.Recorder
 }
@@ -424,13 +424,22 @@ func (h *AdminHandler) NotificationsPage(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func (h *AdminHandler) approvalDecider() *svc.ApprovalDecider {
+	if h.decider == nil {
+		h.decider = svc.NewApprovalDecider(h.approvals)
+	}
+	return h.decider
+}
+
+// WithDecider shares the server's approval decider (decision observers).
+func (h *AdminHandler) WithDecider(d *svc.ApprovalDecider) *AdminHandler {
+	h.decider = d
+	return h
+}
+
 func (h *AdminHandler) ApproveAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	minutes := queries.DefaultApprovalMinutes
-	if a, err := h.approvals.GetByID(id); err == nil {
-		minutes = h.approvals.PlaceholderApprovalMinutes(a.PlaceholderID)
-	}
-	if err := h.approvals.Approve(id, queries.ApprovalExpiry(time.Duration(queries.ClampApprovalMinutes(minutes))*time.Minute)); err != nil {
+	if err := h.approvalDecider().Approve(r.Context(), id, 0, adminActor(r), svc.ViaWeb); err != nil {
 		if errors.Is(err, queries.ErrApprovalNotPending) {
 			http.Redirect(w, r, "/admin/approvals?notice=already-decided", http.StatusSeeOther)
 			return
@@ -442,7 +451,7 @@ func (h *AdminHandler) ApproveAction(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminHandler) RejectAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := h.approvals.Reject(id); err != nil {
+	if err := h.approvalDecider().Reject(r.Context(), id, adminActor(r), svc.ViaWeb); err != nil {
 		if errors.Is(err, queries.ErrApprovalNotPending) {
 			http.Redirect(w, r, "/admin/approvals?notice=already-decided", http.StatusSeeOther)
 			return

@@ -3,10 +3,13 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +22,8 @@ type TelegramPoller struct {
 	chatID    string
 	onApprove func(approvalID string) error
 	onReject  func(approvalID string) error
+	decide    DecisionFunc // when set, handles decisions with the actor (allowlist enforced by the guard)
+	base      string       // Telegram API base URL (tests override)
 	client    *http.Client
 	offset    int
 	stopCh    chan struct{}
@@ -34,9 +39,34 @@ func NewTelegramPoller(botToken, chatID string, onApprove, onReject func(string)
 		chatID:    chatID,
 		onApprove: onApprove,
 		onReject:  onReject,
+		base:      telegramAPIBase(),
 		client:    &http.Client{Timeout: 35 * time.Second},
 		stopCh:    make(chan struct{}),
 	}
+}
+
+// WithDecider routes every button press through fn (which receives the actor
+// and enforces the approver allowlist) instead of the plain callbacks.
+func (p *TelegramPoller) WithDecider(fn DecisionFunc) *TelegramPoller {
+	p.decide = fn
+	return p
+}
+
+func telegramAPIBase() string {
+	if b := os.Getenv("DUCKWAY_TELEGRAM_BASE_URL"); b != "" {
+		return strings.TrimRight(b, "/")
+	}
+	return "https://api.telegram.org"
+}
+
+func (p *TelegramPoller) decideAs(approvalID string, approve bool, minutes int, actor ChatActor) error {
+	if p.decide != nil {
+		return p.decide(approvalID, approve, minutes, actor)
+	}
+	if approve {
+		return p.onApprove(approvalID)
+	}
+	return p.onReject(approvalID)
 }
 
 func (p *TelegramPoller) Start() {
@@ -93,6 +123,7 @@ type tgCallbackQuery struct {
 	ID   string `json:"id"`
 	Data string `json:"data"`
 	From struct {
+		ID       int64  `json:"id"`
 		Username string `json:"username"`
 	} `json:"from"`
 	Message struct {
@@ -110,23 +141,41 @@ func (p *TelegramPoller) handleCallback(cb *tgCallbackQuery) {
 	defer func() { p.answerCallback(cb.ID, reply) }()
 
 	data := cb.Data
-	if strings.HasPrefix(data, "approve:") {
-		approvalID := strings.TrimPrefix(data, "approve:")
-		if err := p.onApprove(approvalID); err != nil {
-			reply = decisionFailure(err)
-			return
-		}
-		p.editMessage(cb.Message.Chat.ID, cb.Message.MessageID,
-			fmt.Sprintf("✅ Approved `%s` for 24h by @%s", approvalID, cb.From.Username))
-	} else if strings.HasPrefix(data, "reject:") {
-		approvalID := strings.TrimPrefix(data, "reject:")
-		if err := p.onReject(approvalID); err != nil {
-			reply = decisionFailure(err)
-			return
-		}
-		p.editMessage(cb.Message.Chat.ID, cb.Message.MessageID,
-			fmt.Sprintf("🚫 Rejected `%s` by @%s", approvalID, cb.From.Username))
+	var approve bool
+	var minutes int
+	var approvalID string
+	switch {
+	case strings.HasPrefix(data, "approve1h:"):
+		approve, minutes, approvalID = true, 60, strings.TrimPrefix(data, "approve1h:")
+	case strings.HasPrefix(data, "approve:"):
+		approve, approvalID = true, strings.TrimPrefix(data, "approve:")
+	case strings.HasPrefix(data, "reject:"):
+		approvalID = strings.TrimPrefix(data, "reject:")
+	default:
+		return
 	}
+	actor := ChatActor{Kind: "telegram", UserID: strconv.FormatInt(cb.From.ID, 10), Username: cb.From.Username}
+	if err := p.decideAs(approvalID, approve, minutes, actor); err != nil {
+		if errors.Is(err, ErrNotApprover) {
+			reply = "Not an approver"
+			return
+		}
+		reply = decisionFailure(err)
+		return
+	}
+	who := "@" + cb.From.Username
+	if cb.From.Username == "" {
+		who = "user " + actor.UserID
+	}
+	verb := "🚫 Rejected"
+	if approve {
+		verb = "✅ Approved"
+		if minutes > 0 {
+			verb += " for " + fmtMinutes(minutes)
+		}
+	}
+	p.editMessage(cb.Message.Chat.ID, cb.Message.MessageID,
+		fmt.Sprintf("%s `%s` by %s at %s UTC", verb, approvalID, who, time.Now().UTC().Format("2006-01-02 15:04")))
 }
 
 // decisionFailure is the short reply for a button press that did not change
@@ -139,8 +188,8 @@ func decisionFailure(err error) string {
 }
 
 func (p *TelegramPoller) getUpdates() ([]tgUpdate, error) {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30&allowed_updates=[\"callback_query\"]",
-		p.botToken, p.offset)
+	url := fmt.Sprintf("%s/bot%s/getUpdates?offset=%d&timeout=30&allowed_updates=[\"callback_query\"]",
+		p.base, p.botToken, p.offset)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // always release the context goroutine
@@ -168,7 +217,7 @@ func (p *TelegramPoller) getUpdates() ([]tgUpdate, error) {
 }
 
 func (p *TelegramPoller) answerCallback(callbackID, text string) {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/answerCallbackQuery", p.botToken)
+	url := fmt.Sprintf("%s/bot%s/answerCallbackQuery", p.base, p.botToken)
 	body, _ := json.Marshal(map[string]string{
 		"callback_query_id": callbackID,
 		"text":              text,
@@ -182,7 +231,7 @@ func (p *TelegramPoller) answerCallback(callbackID, text string) {
 }
 
 func (p *TelegramPoller) editMessage(chatID int64, messageID int, text string) {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/editMessageText", p.botToken)
+	url := fmt.Sprintf("%s/bot%s/editMessageText", p.base, p.botToken)
 	body, _ := json.Marshal(map[string]interface{}{
 		"chat_id":    chatID,
 		"message_id": messageID,

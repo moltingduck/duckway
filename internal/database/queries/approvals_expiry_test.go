@@ -16,7 +16,7 @@ func TestApproveStoresGoComputedUTCExpiry(t *testing.T) {
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`CREATE TABLE approvals (id TEXT PRIMARY KEY, placeholder_id TEXT, status TEXT NOT NULL DEFAULT 'pending', approved_at TEXT, expires_at TEXT, request_info TEXT, scope TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')))`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE approvals (id TEXT PRIMARY KEY, placeholder_id TEXT, status TEXT NOT NULL DEFAULT 'pending', approved_at TEXT, expires_at TEXT, request_info TEXT, scope TEXT NOT NULL DEFAULT '', decided_by TEXT NOT NULL DEFAULT '', decided_via TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')))`); err != nil {
 		t.Fatal(err)
 	}
 	q := NewApprovalQueries(db)
@@ -84,7 +84,7 @@ func decisionDB(t *testing.T) (*ApprovalQueries, *sql.DB) {
 	}
 	t.Cleanup(func() { db.Close() })
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`CREATE TABLE approvals (id TEXT PRIMARY KEY, placeholder_id TEXT, status TEXT NOT NULL DEFAULT 'pending', approved_at TEXT, expires_at TEXT, request_info TEXT, scope TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')))`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE approvals (id TEXT PRIMARY KEY, placeholder_id TEXT, status TEXT NOT NULL DEFAULT 'pending', approved_at TEXT, expires_at TEXT, request_info TEXT, scope TEXT NOT NULL DEFAULT '', decided_by TEXT NOT NULL DEFAULT '', decided_via TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')))`); err != nil {
 		t.Fatal(err)
 	}
 	return NewApprovalQueries(db), db

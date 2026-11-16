@@ -158,7 +158,9 @@ func (h *NotificationHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noStore(w)
-	jsonResponse(w, map[string]interface{}{"status": "ok", "restart_required": listenerChannel(stored.ChannelType)})
+	// Approver-list edits apply immediately; any other change to a listener
+	// channel needs a restart.
+	jsonResponse(w, map[string]interface{}{"status": "ok", "restart_required": listenerChannel(stored.ChannelType) && !svc.SameChannelConfig(stored.Config, config)})
 }
 
 // SetActive enables or disables delivery to a channel without touching its config.

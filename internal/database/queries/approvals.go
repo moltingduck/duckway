@@ -195,18 +195,28 @@ func ApprovalExpiry(d time.Duration) string {
 	return time.Now().UTC().Add(d).Format(ApprovalTimeLayout)
 }
 
-// Approve marks a PENDING approval granted until expiresAt (anything already
+// Approve marks a PENDING approval granted without recording who decided it.
+// Production paths use ApproveBy; this form remains for callers (tests) that
+// do not attribute the decision.
+func (q *ApprovalQueries) Approve(id string, expiresAt string) error {
+	return q.ApproveBy(id, expiresAt, "", "")
+}
+
+// ApproveBy marks a PENDING approval granted until expiresAt (anything already
 // decided is left untouched and ErrApprovalNotPending is returned), a UTC timestamp in
 // ApprovalTimeLayout (see ApprovalExpiry). Anything else is an error: the
 // value is stored as text and compared with datetime('now'), so an
-// unrecognised string would sort wrongly and might never expire.
-func (q *ApprovalQueries) Approve(id string, expiresAt string) error {
+// unrecognised string would sort wrongly and might never expire. decidedBy
+// ("admin:alice", "approver:ci", "discord:123", ...) and decidedVia ("web",
+// "tui", "discord", "telegram") are stored in the same statement as the status
+// change, so the first decider always wins and is the one reported.
+func (q *ApprovalQueries) ApproveBy(id string, expiresAt string, decidedBy, decidedVia string) error {
 	if _, err := time.Parse(ApprovalTimeLayout, expiresAt); err != nil {
 		return fmt.Errorf("approval expiry %q must be a UTC timestamp %q", expiresAt, ApprovalTimeLayout)
 	}
 	res, err := q.db.Exec(
-		"UPDATE approvals SET status = 'approved', approved_at = datetime('now'), expires_at = ? WHERE id = ? AND status = 'pending'",
-		expiresAt, id,
+		"UPDATE approvals SET status = 'approved', approved_at = datetime('now'), expires_at = ?, decided_by = ?, decided_via = ? WHERE id = ? AND status = 'pending'",
+		expiresAt, decidedBy, decidedVia, id,
 	)
 	if err != nil {
 		return err
@@ -214,15 +224,40 @@ func (q *ApprovalQueries) Approve(id string, expiresAt string) error {
 	return requireOneRow(res)
 }
 
-// Reject marks a PENDING approval rejected. Anything already decided
+// Reject marks a PENDING approval rejected without recording who decided it
+// (see RejectBy).
+func (q *ApprovalQueries) Reject(id string) error {
+	return q.RejectBy(id, "", "")
+}
+
+// RejectBy marks a PENDING approval rejected. Anything already decided
 // (approved, rejected, ignored) is left untouched and ErrApprovalNotPending is
 // returned, so a stale form or chat button cannot overturn a decision.
-func (q *ApprovalQueries) Reject(id string) error {
-	res, err := q.db.Exec("UPDATE approvals SET status = 'rejected' WHERE id = ? AND status = 'pending'", id)
+func (q *ApprovalQueries) RejectBy(id string, decidedBy, decidedVia string) error {
+	res, err := q.db.Exec("UPDATE approvals SET status = 'rejected', decided_by = ?, decided_via = ? WHERE id = ? AND status = 'pending'", decidedBy, decidedVia, id)
 	if err != nil {
 		return err
 	}
 	return requireOneRow(res)
+}
+
+// ApprovalDecision is the outcome recorded on an approval.
+type ApprovalDecision struct {
+	Status     string `json:"status"`
+	DecidedBy  string `json:"decided_by"`
+	DecidedVia string `json:"decided_via"`
+	ApprovedAt string `json:"approved_at,omitempty"`
+}
+
+// GetDecision returns the status and decider of an approval (sql.ErrNoRows
+// when it does not exist). DecidedBy is "" for pending rows and for rows
+// decided before attribution existed.
+func (q *ApprovalQueries) GetDecision(id string) (ApprovalDecision, error) {
+	var d ApprovalDecision
+	var at sql.NullString
+	err := q.db.QueryRow(`SELECT status, decided_by, decided_via, approved_at FROM approvals WHERE id = ?`, id).Scan(&d.Status, &d.DecidedBy, &d.DecidedVia, &at)
+	d.ApprovedAt = at.String
+	return d, err
 }
 
 // ErrApprovalNotPending means the approval was already decided (approved,
@@ -240,6 +275,12 @@ func requireOneRow(res sql.Result) error {
 	return nil
 }
 
+// SweeperDecidedBy / SweeperDecidedVia attribute expiry decisions.
+const (
+	SweeperDecidedBy  = "system:sweeper"
+	SweeperDecidedVia = "sweeper"
+)
+
 // MarkExpiredAsIgnored finds all pending approvals older than ttlMinutes and
 // transitions them to "ignored". Returns the number of rows affected.
 //
@@ -247,20 +288,46 @@ func requireOneRow(res sql.Result) error {
 // reply within the timeout. Useful audit signal: lots of ignored = admin is
 // overwhelmed or the channel is dead.
 func (q *ApprovalQueries) MarkExpiredAsIgnored(ttlMinutes int) (int64, error) {
+	ids, err := q.ExpirePending(ttlMinutes)
+	return int64(len(ids)), err
+}
+
+// ExpirePending is MarkExpiredAsIgnored that returns the IDs it transitioned
+// (attributed to system:sweeper), so callers can report each decision.
+func (q *ApprovalQueries) ExpirePending(ttlMinutes int) ([]string, error) {
 	if ttlMinutes <= 0 {
-		return 0, nil
+		return nil, nil
 	}
-	res, err := q.db.Exec(
-		`UPDATE approvals
-		 SET status = 'ignored'
-		 WHERE status = 'pending'
-		   AND created_at < datetime('now', '-' || ? || ' minutes')`,
-		strconv.Itoa(ttlMinutes),
-	)
+	cutoff := `created_at < datetime('now', '-' || ? || ' minutes')`
+	rows, err := q.db.Query(`SELECT id FROM approvals WHERE status = 'pending' AND `+cutoff, strconv.Itoa(ttlMinutes))
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return res.RowsAffected()
+	var candidates []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		candidates = append(candidates, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var done []string
+	for _, id := range candidates {
+		res, err := q.db.Exec(`UPDATE approvals SET status = 'ignored', decided_by = ?, decided_via = ? WHERE id = ? AND status = 'pending'`,
+			SweeperDecidedBy, SweeperDecidedVia, id)
+		if err != nil {
+			return done, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			done = append(done, id)
+		}
+	}
+	return done, nil
 }
 
 // ApprovalListItem is the enriched row used by the admin page — joins through
@@ -287,6 +354,10 @@ type ApprovalListItem struct {
 	// ApprovalTTLMinutes is how long an approval granted from the console lasts
 	// (the token's approval_ttl_minutes).
 	ApprovalTTLMinutes int `json:"approval_ttl_minutes"`
+	// DecidedBy / DecidedVia record who decided and through which surface
+	// ("" while pending and for rows decided before attribution existed).
+	DecidedBy  string `json:"decided_by"`
+	DecidedVia string `json:"decided_via"`
 }
 
 // ListEnriched returns approvals filtered by status (any of the given values)
@@ -299,11 +370,28 @@ func (q *ApprovalQueries) ListEnriched(statuses []string, limit int) ([]Approval
 // filters applied in SQL before the limit, newest first (created_at, then id
 // as a deterministic tie-breaker).
 func (q *ApprovalQueries) ListEnrichedFiltered(statuses []string, clientID, serviceID string, limit int) ([]ApprovalListItem, error) {
+	return q.listEnriched(statuses, clientID, serviceID, "", limit)
+}
+
+// GetEnriched returns one approval with its client and service info
+// (sql.ErrNoRows when it does not exist).
+func (q *ApprovalQueries) GetEnriched(id string) (*ApprovalListItem, error) {
+	list, err := q.listEnriched(nil, "", "", id, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return &list[0], nil
+}
+
+func (q *ApprovalQueries) listEnriched(statuses []string, clientID, serviceID, approvalID string, limit int) ([]ApprovalListItem, error) {
 	query := `SELECT a.id, a.placeholder_id, p.env_name,
 	          p.client_id, COALESCE(c.name, ''),
 	          p.service_id, COALESCE(s.name, ''),
 	          a.status, a.request_info, a.created_at, a.approved_at, a.expires_at,
-	          COALESCE(k.name, g.name, ''), p.requires_approval, c.last_seen_at, COALESCE(rs.version, ''), p.approval_ttl_minutes
+	          COALESCE(k.name, g.name, ''), p.requires_approval, c.last_seen_at, COALESCE(rs.version, ''), p.approval_ttl_minutes, a.decided_by, a.decided_via
 	          FROM approvals a
 	          JOIN placeholder_keys p ON a.placeholder_id = p.id
 	          LEFT JOIN clients c ON p.client_id = c.id
@@ -333,6 +421,10 @@ func (q *ApprovalQueries) ListEnrichedFiltered(statuses []string, clientID, serv
 		conds = append(conds, "p.service_id = ?")
 		args = append(args, serviceID)
 	}
+	if approvalID != "" {
+		conds = append(conds, "a.id = ?")
+		args = append(args, approvalID)
+	}
 	if len(conds) > 0 {
 		query += " WHERE " + strings.Join(conds, " AND ")
 	}
@@ -355,7 +447,7 @@ func (q *ApprovalQueries) ListEnrichedFiltered(statuses []string, clientID, serv
 		if err := rows.Scan(&a.ID, &a.PlaceholderID, &a.EnvName,
 			&a.ClientID, &a.ClientName, &a.ServiceID, &a.ServiceName,
 			&a.Status, &a.RequestInfo, &a.CreatedAt, &a.ApprovedAt, &a.ExpiresAt,
-			&a.CredentialName, &requires, &a.ClientLastSeenAt, &a.ClientVersion, &a.ApprovalTTLMinutes); err != nil {
+			&a.CredentialName, &requires, &a.ClientLastSeenAt, &a.ClientVersion, &a.ApprovalTTLMinutes, &a.DecidedBy, &a.DecidedVia); err != nil {
 			return nil, err
 		}
 		a.RequiresApproval = requires != 0

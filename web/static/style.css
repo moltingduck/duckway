@@ -2629,3 +2629,16 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
   .rp-cards { display: flex; }
   .rp-tab, .rp-card .btn, .rp-bar .btn { min-height: 44px; }
 }
+/* Settings -> Approvers */
+.ap-create { max-width: 32rem; }
+.ap-reveal { margin: 1rem 0; padding: 0.85rem 1rem; border: 1px solid color-mix(in srgb, var(--warn, #b7791f) 55%, var(--line)); border-radius: var(--radius); background: color-mix(in srgb, var(--warn, #b7791f) 8%, transparent); }
+.ap-reveal[hidden] { display: none; }
+.ap-reveal .nt-input-row { margin: 0.5rem 0; }
+.ap-list-h { font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+#ap-list[hidden], #ap-empty[hidden], #ap-load[hidden], #ap-error[hidden] { display: none; }
+@media (max-width: 900px) { .ap-reveal .btn, .nt-item .nt-del { min-height: 44px; } }
+/* Approvals banner: chat channels that cannot decide */
+.appr-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; margin: 0 0 1rem; padding: 0.65rem 1rem; border: 1px solid color-mix(in srgb, var(--danger) 55%, var(--line)); border-radius: var(--radius); background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--danger-text); }
+.appr-banner[hidden] { display: none; }
+.nt-noapprovers { margin: 0.35rem 0 0; color: var(--danger-text); }
+.appr-by { margin-left: auto; max-width: 40%; }

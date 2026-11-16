@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -49,6 +50,9 @@ type SharedServices struct {
 	Refresher   *services.TokenRefresher
 	CCHub       *services.CCEventHub         // CC live-tail pub/sub
 	CCApprovals *services.CCApprovalRegistry // discord_request_approval state
+	// Decider is the one place approval status changes (attribution, 409s,
+	// decision observers).
+	Decider *services.ApprovalDecider
 
 	AdminAuth  *middleware.AdminAuth
 	ClientAuth *middleware.ClientAuth
@@ -85,8 +89,19 @@ func (s *Server) initShared() *SharedServices {
 	adminAuth := middleware.NewAdminAuth(s.config.SessionSecret).WithEpochStore(settingsQ)
 	clientAuth := middleware.NewClientAuth(clientQ)
 
+	decider := services.NewApprovalDecider(approvalQ)
+	// Chat messages of an approval decided elsewhere are updated best effort.
+	decider.AddObserver(func(_ context.Context, id, by, via, status string) { notifier.DecisionMade(id, by, via, status) })
+	// Extension point (audit recorder): Server.OnDecision, set before serving.
+	decider.AddObserver(func(ctx context.Context, id, by, via, status string) {
+		if s.OnDecision != nil {
+			s.OnDecision(ctx, id, by, via, status)
+		}
+	})
+
 	return &SharedServices{
-		UserQ: userQ, ServiceQ: serviceQ, APIKeyQ: apiKeyQ,
+		Decider: decider,
+		UserQ:   userQ, ServiceQ: serviceQ, APIKeyQ: apiKeyQ,
 		PlaceholderQ: placeholderQ, ClientQ: clientQ, GroupQ: groupQ,
 		ApprovalQ: approvalQ, RequestLogQ: requestLogQ,
 		NotifQ: notifQ, CanaryQ: canaryQ, SettingsQ: settingsQ, ConvUsageQ: convUsageQ,
@@ -128,14 +143,14 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	clientDraftH := handlers.NewClientDraftHandler(clientH, queries.NewClientDraftQueries(s.db))
 	clientUpdateH := handlers.NewClientUpdateHandler(queries.NewClientUpdateQueries(s.db), ss.ClientQ, configuredDownloadDir())
 	groupH := handlers.NewGroupHandler(ss.GroupQ, ss.ServiceQ)
-	approvalH := handlers.NewApprovalHandler(ss.ApprovalQ, ss.PlaceholderQ)
+	approvalH := handlers.NewApprovalHandler(ss.ApprovalQ, ss.PlaceholderQ).WithDecider(ss.Decider)
 	notifH := handlers.NewNotificationHandler(ss.NotifQ, ss.Notifier)
 	canaryH := handlers.NewCanaryHandler(ss.CanaryQ, ss.CanarySvc)
 	ccQ := queries.NewControlChannelQueries(s.db)
 	ccH := handlers.NewControlChannelHandler(ccQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ, ss.SettingsQ, ss.Crypto, services.NewDiscordBot())
 	ccH.SetHub(ss.CCHub)
 	ccH.SetApprovals(ss.CCApprovals)
-	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth).WithDB(s.db).WithKeySuites(ss.KeySuiteQ).WithCrypto(ss.Crypto).WithAudit(auditRec)
+	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth).WithDB(s.db).WithKeySuites(ss.KeySuiteQ).WithCrypto(ss.Crypto).WithAudit(auditRec).WithDecider(ss.Decider)
 
 	// Static files
 	staticFS, err := fs.Sub(contentFS, "static")
@@ -308,6 +323,13 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/approvals/{id}/approve", approvalH.Approve)
 	adminAPIMux.HandleFunc("POST /api/approvals/{id}/reject", approvalH.Reject)
 
+	approverQ := queries.NewApproverTokenQueries(s.db)
+	approverAuth := middleware.NewApproverAuth(approverQ)
+	approverAdminH := handlers.NewApproverAdminHandler(approverQ)
+	adminAPIMux.HandleFunc("GET /api/approvers", approverAdminH.List)
+	adminAPIMux.HandleFunc("POST /api/approvers", approverAdminH.Create)
+	adminAPIMux.HandleFunc("DELETE /api/approvers/{id}", approverAdminH.Revoke)
+
 	adminAPIMux.HandleFunc("GET /api/notifications", notifH.List)
 	adminAPIMux.HandleFunc("POST /api/notifications", notifH.Create)
 	adminAPIMux.HandleFunc("GET /api/notifications/{id}", notifH.Get)
@@ -446,6 +468,34 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.Handle("GET /api/events", eventsSvc.Handler(events.HandlerConfig{ValidateSession: ss.AdminAuth.SessionUser}))
 
 	s.mux.Handle("/api/", middleware.SameOrigin(ss.AdminAuth.Middleware(auditMux(adminAPIMux, auditRec, auditSnaps))))
+
+	// Approver API: Bearer dwa_ tokens only, no session cookie and no CSRF
+	// check (it is not a browser surface). It lives on the admin listener, which
+	// agent hosts do not reach, and accepts no client token.
+	approverAPI := handlers.NewApproverAPIHandler(ss.ApprovalQ, ss.Decider)
+	approverMux := http.NewServeMux()
+	approverMux.HandleFunc("GET /approver/approvals", approverAPI.List)
+	approverMux.HandleFunc("GET /approver/approvals/{id}", approverAPI.Get)
+	approverMux.HandleFunc("POST /approver/approvals/{id}/approve", approverAPI.Approve)
+	approverMux.HandleFunc("POST /approver/approvals/{id}/reject", approverAPI.Reject)
+	approverMux.Handle("GET /approver/events", eventsSvc.Handler(events.HandlerConfig{
+		Topics: []string{events.TopicApprovals},
+		SessionKey: func(r *http.Request) string {
+			t, _ := approverAuth.Lookup(r)
+			if t == nil {
+				return ""
+			}
+			return "approver:" + t.ID
+		},
+		ValidateSession: func(r *http.Request) (string, bool) {
+			t, ok := approverAuth.Lookup(r)
+			if !ok {
+				return "", false
+			}
+			return "approver:" + t.Name, true
+		},
+	}))
+	s.mux.Handle("/approver/", approverAuth.Middleware(approverMux))
 
 	// Root redirect
 	s.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {

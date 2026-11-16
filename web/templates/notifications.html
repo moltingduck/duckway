@@ -17,7 +17,8 @@
     <li>a key loan (<code>LOAN</code>) for a binding that requires approval.</li>
   </ul>
   <p class="text-sm text-muted">The message names the approval ID, client, service, method and path. Nothing else is sent to these channels. Canary alerts use the canary email instead. Telegram and Discord bot channels also take Approve / Reject replies; webhooks are send-only.</p>
-  <p class="text-sm text-muted">Disabling a channel stops alerts to it immediately, and a disabled or edited Telegram or Discord bot channel can no longer approve or reject requests (checked on every reply). Its listener process stops at the next server restart; a new or re-enabled channel starts listening after a restart.</p>
+  <p class="text-sm text-muted">Telegram and Discord bot channels decide only for the <strong>approvers</strong> listed on the channel: buttons, reactions and <code>!approve</code> from anyone else get &ldquo;not an approver&rdquo;. A channel with no approvers cannot decide at all. The approver list is checked on every press, so editing it takes effect immediately.</p>
+  <p class="text-sm text-muted">Disabling a channel stops alerts to it immediately, and a disabled Telegram or Discord bot channel, or one whose bot token or target was edited, can no longer approve or reject requests (checked on every reply). Its listener process stops at the next server restart; a new or re-enabled channel starts listening after a restart.</p>
 </section>
 
 <section class="card nt-listcard" aria-labelledby="nt-list-h">
@@ -81,13 +82,16 @@
     telegram: { label: 'Telegram bot', help: 'Sends alerts with Approve / Reject buttons through a Telegram bot.',
       fields: [
         { key: 'bot_token', label: 'Bot token', secret: true, ph: '123456:ABC-DEF…', hint: 'From @BotFather. Stored encrypted-at-rest by the database; never shown again.' },
-        { key: 'chat_id', label: 'Chat ID', ph: '-1001234567890' }] },
+        { key: 'chat_id', label: 'Chat ID', ph: '-1001234567890' },
+        { key: 'approver_user_ids', label: 'Approver user IDs', optional: true, ids: true, ph: '123456789, 987654321', hint: 'Telegram user IDs (numbers) who may approve or reject with the buttons. Separate with commas. Empty means nobody can decide from this channel. Changes apply at once.' }] },
     discord: { label: 'Discord webhook', help: 'Posts alerts to a Discord channel through a webhook. Send-only.',
       fields: [{ key: 'webhook_url', label: 'Webhook URL', secret: true, url: true, ph: 'https://discord.com/api/webhooks/…', hint: 'The URL contains a secret token, so it is masked after saving.' }] },
-    discord_bot: { label: 'Discord bot', help: 'Posts alerts through a Discord bot and accepts reaction replies.',
+    discord_bot: { label: 'Discord bot', help: 'Posts alerts through a Discord bot with Approve / Reject buttons. Only listed approvers can decide.',
       fields: [
         { key: 'bot_token', label: 'Bot token', secret: true, ph: 'MTIzNDU2…' },
-        { key: 'channel_id', label: 'Channel ID', ph: '1234567890123456789' }] },
+        { key: 'channel_id', label: 'Channel ID', ph: '1234567890123456789' },
+        { key: 'approver_user_ids', label: 'Approver user IDs', optional: true, ids: true, ph: '1234567890123456789', hint: 'Discord user IDs who may approve or reject with the buttons, reactions or !approve. Separate with commas.' },
+        { key: 'approver_role_ids', label: 'Approver role IDs', optional: true, ids: true, ph: '1234567890123456789', hint: 'Anyone holding one of these roles may decide too. Empty lists everywhere mean nobody can decide from this channel. Changes apply at once.' }] },
     webhook: { label: 'Generic webhook', help: 'POSTs a JSON body to your server. Send-only.',
       fields: [
         { key: 'url', label: 'URL', secret: true, url: true, ph: 'https://example.com/hooks/duckway', hint: 'Webhook URLs often embed a token, so it is masked after saving.' },
@@ -123,7 +127,8 @@
     return DW.html`<li class="nt-item${on ? '' : ' nt-off'}" data-id="${ch.id}">
       <div class="nt-main">
         <div class="nt-name"><strong>${ch.name}</strong> <span class="badge badge-blue">${typ}</span></div>
-        <div class="nt-summary text-sm text-muted">${ch.summary || ''}</div>
+        <div class="nt-summary text-sm text-muted">${ch.summary || ''}${ch.chat_decides && ch.approver_count ? ' · ' + ch.approver_count + (ch.approver_count === 1 ? ' approver' : ' approvers') : ''}</div>
+        ${ch.needs_approvers ? DW.raw('<p class="nt-noapprovers text-sm" role="note"><strong>No approvers.</strong> This channel cannot approve or reject anything until you add at least one user or role (Edit).</p>') : ''}
         <div class="nt-status text-sm" role="status" aria-live="polite" data-status-for="${ch.id}">${statusFor(ch.id)}</div>
       </div>
       <div class="nt-actions">
@@ -378,6 +383,7 @@
       var v = cfg[f.key] || '';
       var isStored = v === MASK;
       if (!v && !f.optional) msg = f.label + ' is required.';
+      else if (v && f.ids && !/^[0-9]{1,24}([,;\s]+[0-9]{1,24})*[,;\s]*$/.test(v)) msg = f.label + ' must be numeric IDs separated by commas.';
       else if (v && !isStored && f.url) {
         try { var u = new URL(v); if (u.protocol !== 'https:' && u.protocol !== 'http:') msg = f.label + ' must start with http:// or https://.'; }
         catch (e) { msg = f.label + ' must be a full URL, for example https://example.com/hook.'; }

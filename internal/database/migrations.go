@@ -148,6 +148,17 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_admin_audit_resource ON admin_audit_log(resource_type, resource_id, created_at)`,
 
 	`CREATE INDEX IF NOT EXISTS idx_approvals_lookup ON approvals(placeholder_id, status)`,
+
+	// Scoped approver tokens (dwa_...): authenticate only /approver/. Only the
+	// SHA-256 of the token is stored; revoking sets revoked_at.
+	`CREATE TABLE IF NOT EXISTS approver_tokens (
+		id            TEXT PRIMARY KEY,
+		name          TEXT NOT NULL UNIQUE,
+		token_hash    TEXT NOT NULL UNIQUE,
+		created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+		last_used_at  TEXT,
+		revoked_at    TEXT
+	)`,
 	`CREATE INDEX IF NOT EXISTS idx_request_log_time ON request_log(created_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_placeholder_client ON placeholder_keys(client_id, service_id)`,
 
@@ -477,6 +488,11 @@ func runMigrations(db *sql.DB) error {
 	safeAlters := []string{
 		// '' = token-wide approval; otherwise the request signature an approve rule gated.
 		"ALTER TABLE approvals ADD COLUMN scope TEXT NOT NULL DEFAULT ''",
+		// Who decided: admin:<user>, approver:<name>, discord:<id>, telegram:<id>
+		// or system:sweeper; and through which surface (web, tui, discord,
+		// telegram, sweeper). '' on rows decided before these columns existed.
+		"ALTER TABLE approvals ADD COLUMN decided_by TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE approvals ADD COLUMN decided_via TEXT NOT NULL DEFAULT ''",
 		// Gateway decision per request: '' (legacy), allowed, approved_forward,
 		// acl_denied or held. approval_id links a held row to its approval.
 		"ALTER TABLE request_log ADD COLUMN decision TEXT NOT NULL DEFAULT ''",

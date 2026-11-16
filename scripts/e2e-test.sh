@@ -1441,6 +1441,50 @@ assert_eq "audit: page renders" "200" "$(curl -s -o /dev/null -w '%{http_code}' 
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$AU_KEY" > /dev/null 2>&1 || true
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/services/$AU_SVC" > /dev/null 2>&1 || true
 
+# === Test 23: approver tokens + approver API ===
+echo ""
+echo -e "${YELLOW}[23] Approver tokens and approver API${NC}"
+
+AP_CLIENT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" -d "name=approver-e2e-client")
+AP_CLIENT_ID=$(echo "$AP_CLIENT" | jq -r '.id')
+AP_CLIENT_TOKEN=$(echo "$AP_CLIENT" | jq -r '.token')
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders" \
+  -H "Content-Type: application/json" \
+  -d "{\"service_id\":\"$OPENAI_ID\",\"api_key_id\":\"$KEY1_ID\",\"client_id\":\"$AP_CLIENT_ID\",\"requires_approval\":true,\"env_name\":\"OPENAI_APPROVER_E2E\"}" >/dev/null
+curl -s -X POST "$BASE/proxy/openai/v1/models" -H "X-Duckway-Token: $AP_CLIENT_TOKEN" >/dev/null
+
+AP_CREATE=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/approvers" \
+  -H "Content-Type: application/json" -d '{"name":"e2e approver"}')
+AP_ID=$(echo "$AP_CREATE" | jq -r '.id')
+AP_TOKEN=$(echo "$AP_CREATE" | jq -r '.token')
+assert_contains "Approver token has the dwa_ prefix" "^dwa_" "$AP_TOKEN"
+AP_LIST=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/approvers")
+assert_eq "Approver list never returns the token" "0" "$(echo "$AP_LIST" | grep -c "$AP_TOKEN" || true)"
+
+# Isolation: client token and no token get 401 on /approver/; approver token gets 401 elsewhere.
+assert_eq "Client token refused on /approver/" "401" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AP_CLIENT_TOKEN" "$BASE/approver/approvals")"
+assert_eq "Anonymous refused on /approver/" "401" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/approver/approvals")"
+assert_eq "Approver token refused on /api/" "401" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AP_TOKEN" "$BASE/api/approvals/list")"
+assert_eq "Approver token refused on /client/" "401" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AP_TOKEN" "$BASE/client/keys")"
+assert_eq "Approver token refused on /proxy/" "401" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AP_TOKEN" "$BASE/proxy/openai/v1/models")"
+
+AP_PENDING=$(curl -s -H "Authorization: Bearer $AP_TOKEN" "$BASE/approver/approvals?status=pending")
+AP_APPROVAL_ID=$(echo "$AP_PENDING" | jq -r '[.[] | select(.client_name=="approver-e2e-client")][0].id')
+assert_not_empty "Approver API lists the held request" "$AP_APPROVAL_ID"
+assert_eq "Approver API omits credential fields" "0" "$(echo "$AP_PENDING" | grep -c -e 'OPENAI_APPROVER_E2E' -e 'key_encrypted' -e 'placeholder' || true)"
+
+AP_DECIDE=$(curl -s -X POST -H "Authorization: Bearer $AP_TOKEN" -H "Content-Type: application/json" \
+  -d '{"duration_minutes":30}' "$BASE/approver/approvals/$AP_APPROVAL_ID/approve")
+assert_eq "Approver approve records the decider" "approver:e2e approver" "$(echo "$AP_DECIDE" | jq -r '.decided_by')"
+AP_AGAIN=$(curl -s -w '\n%{http_code}' -X POST -H "Authorization: Bearer $AP_TOKEN" "$BASE/approver/approvals/$AP_APPROVAL_ID/reject")
+assert_eq "Second decision is a 409" "409" "$(echo "$AP_AGAIN" | tail -1)"
+assert_contains "409 names the existing decider" "approver:e2e approver" "$AP_AGAIN"
+AP_WEB=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/approvals/list?status=approved")
+assert_eq "Web history shows decided_by" "approver:e2e approver" "$(echo "$AP_WEB" | jq -r --arg id "$AP_APPROVAL_ID" '.[] | select(.id==$id) | .decided_by')"
+
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/approvers/$AP_ID" >/dev/null
+assert_eq "Revoked approver token is refused" "401" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AP_TOKEN" "$BASE/approver/approvals")"
+
 
 # === Test 15: Unit Tests ===
 echo ""
