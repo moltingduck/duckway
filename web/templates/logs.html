@@ -38,6 +38,7 @@
     <button type="button" class="lg-chip" id="chip-acl" data-action="toggleDecision" data-decision="acl_denied" aria-pressed="false" title="Only requests the gateway refused because an ACL denied them">ACL denied only</button>
     <span class="lg-capline text-sm text-muted">Body capture: <strong id="capture-state">…</strong> · <a href="#capture-panel" data-action="openCapture">Capture settings…</a></span>
   </div>
+  <div class="lg-row" id="lg-kinds" role="group" aria-label="Refused by"></div>
 </div>
 
 <section class="card" id="capture-panel" hidden aria-labelledby="capture-h">
@@ -114,6 +115,7 @@
   <div class="modal"><div id="phantom-detail-body"></div></div>
 </div>
 
+<script nonce="{{$.CSPNonce}}" src="/static/refusal-log.js"></script>
 <script nonce="{{$.CSPNonce}}">
 (function() {
 'use strict';
@@ -134,7 +136,7 @@ var facets = {clients: [], services: [], credentials: []};
 
 function newState() {
   return {range: DEFAULT_RANGE, since: '', until: '', q: '', client: '', service: '', credential: '',
-          status: [], decision: '', before: 0, after: 0};
+          status: [], decision: '', kind: '', before: 0, after: 0};
 }
 function $(id) { return document.getElementById(id); }
 
@@ -155,6 +157,8 @@ function readURL() {
   if (DECISIONS.indexOf(dec) >= 0) s.decision = dec;
   else if (p.get('acl_denied') === '1') s.decision = 'acl_denied';
   else if (p.get('held') === '1') s.decision = 'held';
+  var dk = p.get('deny_kind');
+  if (dk && RLOG.validKind(dk)) s.kind = dk;
   var b = parseInt(p.get('before_id'), 10), a = parseInt(p.get('after_id'), 10);
   if (b > 0) s.before = b; else if (a > 0) s.after = a;
   return s;
@@ -172,6 +176,7 @@ function toParams(s, forAPI) {
   if (s.credential) p.set('credential', s.credential);
   if (s.status.length) p.set('status', s.status.join(','));
   if (s.decision) p.set('decision', s.decision);
+  if (s.kind) p.set('deny_kind', s.kind);
   if (s.before) p.set('before_id', String(s.before));
   else if (s.after) p.set('after_id', String(s.after));
   if (forAPI) p.set('limit', '50');
@@ -201,6 +206,9 @@ function syncControls() {
   });
   $('chip-held').setAttribute('aria-pressed', String(S.decision === 'held'));
   $('chip-acl').setAttribute('aria-pressed', String(S.decision === 'acl_denied'));
+  document.querySelectorAll('[data-action="toggleKind"]').forEach(function(b) {
+    b.setAttribute('aria-pressed', String(b.dataset.kind === S.kind));
+  });
 }
 function toLocalInput(iso) {
   var d = new Date(iso);
@@ -284,6 +292,15 @@ DW.actions.toggleDecision = function(el) {
   S.decision = S.decision === el.dataset.decision ? '' : el.dataset.decision;
   resetCursor(); syncControls(); writeURL(false); load();
 };
+DW.actions.toggleKind = function(el) {
+  S.kind = S.kind === el.dataset.kind ? '' : el.dataset.kind;
+  resetCursor(); syncControls(); writeURL(false); load();
+};
+function paintKinds() {
+  DW.setHTML($('lg-kinds'), DW.html`<span class="text-sm text-muted">Refused by</span>${RLOG.KINDS.map(function(k) {
+    return DW.html`<button type="button" class="lg-chip" data-action="toggleKind" data-kind="${k[0]}" aria-pressed="false">${k[1]}</button>`;
+  })}`);
+}
 DW.actions.pageOlder = function() {
   clearTimeout(searchTimer);
   if (!data || data.next_before_id == null) return;
@@ -380,7 +397,25 @@ function decisionCell(l) {
   var label = DECISION_LABEL[l.decision];
   if (!label) return DW.raw('<span class="text-muted">\u2014</span>');
   if (l.decision === 'held' && l.approval_id) return DW.html`<a class="lg2-dec lg2-dec-held" href="${approvalHref(l)}">${label}</a>`;
+  if (l.decision === 'acl_denied') {
+    var rd = RLOG.adapt(l), n = RLOG.repeatsOf(l);
+    return DW.html`<span class="lg2-dec lg2-dec-acl_denied">${rd ? 'Refused \u00b7 ' + rd.kindLabel : label}</span>${n > 1 ? DW.html` <span class="lg-rep" title="${n + ' identical refusals within a minute'}">\u00d7${n}</span>` : ''}`;
+  }
   return DW.html`<span class="lg2-dec lg2-dec-${l.decision}">${label}</span>`;
+}
+// Detail panel: why a request was refused (spec rlog1116 section 2).
+function refusalBlock(l) {
+  if (l.decision !== 'acl_denied') return '';
+  var r = RLOG.adapt(l);
+  if (!r) return DW.html`<h3>Why it was refused</h3><p class="text-muted text-sm">No reason was recorded for this request. Reasons are stored for refusals made after this version.</p>`;
+  var refs = '';
+  if (r.refs.length || r.more) {
+    refs = DW.html`<h4 class="lg-sub">Refs in this push</h4><p class="text-muted text-sm">Git pushes are all-or-nothing, so one refused ref rejects the whole push.</p><ul class="lg-refs">${r.refs.map(function(x) {
+      return DW.html`<li class="lg-ref"><span class="mono lg-ref-n">${x.ref}</span><span class="lg-pill ${x.ok ? 'lg-pill-ok' : 'lg-pill-bad'}">${x.ok ? 'OK' : 'Refused'}</span><span class="text-sm text-muted lg-ref-why">${[x.pattern, x.role, x.reason].filter(Boolean).join(' \u00b7 ')}</span></li>`;
+    })}</ul>${r.more ? DW.html`<p class="text-muted text-sm">${'+ ' + r.more + ' more refs not shown'}</p>` : ''}`;
+  }
+  var href = RLOG.simulatorHref(l);
+  return DW.html`<h3>Why it was refused</h3><p class="lg-why"><span class="lg-pill lg-pill-bad">403</span> <strong>${r.kindLabel}</strong></p>${r.summary ? DW.html`<p class="lg-summary">${r.summary}</p>` : ''}<dl class="lg-dl">${r.rule ? DW.html`<dt>Decided by</dt><dd>${r.rule}</dd>` : ''}${r.layer ? DW.html`<dt>Layer</dt><dd>${r.layer}</dd>` : ''}${r.repeats > 1 ? DW.html`<dt>Repeats</dt><dd>${'\u00d7' + r.repeats} <span class="text-muted text-sm">within a minute, folded into this row</span></dd>` : ''}</dl>${refs}${r.sees ? DW.html`<h4 class="lg-sub">What the agent saw</h4><pre class="lg-sees mono">${r.sees}</pre>` : ''}${href ? DW.html`<a class="btn btn-sm" href="${href}">Test this in the simulator</a>` : ''}`;
 }
 function pill(l) {
   if (l.decision === 'held') return DW.raw('<span class="lg-pill lg-pill-info">Held</span>');
@@ -584,7 +619,7 @@ function renderDetail(l, d) {
     bodyBlock = DW.html`<h3>Request headers</h3>${fmtHeaders(d.request_headers)}<h3>Request body${trunc}</h3>${decodeNote(d.request_headers)}${fmtBody(d.request_body)}<h3>Response headers</h3>${fmtHeaders(d.response_headers)}<h3>Response body</h3>${decodeNote(d.response_headers)}${fmtBody(d.response_body)}`;
   }
   var sizes = d && d !== null ? DW.html`<dt>Sizes</dt><dd>req ${d.request_size} B · resp ${d.response_size} B</dd>` : '';
-  DW.setHTML($('det-body'), DW.html`<div class="lg-dline"><span class="lg-tag">${l.method || '?'}</span><span class="mono lg-path">${l.path || ''}</span></div><dl class="lg-dl"><dt>Client</dt><dd>${clientCell}</dd><dt>Service</dt><dd>${l.service_name || dash}</dd><dt>Credential</dt><dd>${l.credential || dash}</dd><dt>Phantom token</dt><dd>${ph || dash}</dd><dt>Decision</dt><dd>${decisionCell(l)}</dd><dt>Approval</dt><dd>${gate}</dd><dt>Time</dt><dd>${l.created_at} UTC</dd><dt>Latency</dt><dd>${latency}</dd>${sizes}</dl>${bodyBlock}`);
+  DW.setHTML($('det-body'), DW.html`<div class="lg-dline"><span class="lg-tag">${l.method || '?'}</span><span class="mono lg-path">${l.path || ''}</span></div><dl class="lg-dl"><dt>Client</dt><dd>${clientCell}</dd><dt>Service</dt><dd>${l.service_name || dash}</dd><dt>Credential</dt><dd>${l.credential || dash}</dd><dt>Phantom token</dt><dd>${ph || dash}</dd><dt>Decision</dt><dd>${decisionCell(l)}</dd><dt>Approval</dt><dd>${gate}</dd><dt>Time</dt><dd>${l.created_at} UTC</dd><dt>Latency</dt><dd>${latency}</dd>${sizes}</dl>${refusalBlock(l)}${bodyBlock}`);
 }
 
 DW.actions.openPhantomDetail = function(el) { openPhantomDetail(el.dataset.phId); };
@@ -696,6 +731,7 @@ function loadFacets() {
     .catch(function() {});
 }
 document.addEventListener('DOMContentLoaded', function() {
+  paintKinds();
   S = readURL();
   syncControls();
   writeURL(true);
