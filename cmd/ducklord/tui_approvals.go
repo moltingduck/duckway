@@ -15,6 +15,11 @@ var approvalDurations = []struct {
 	minutes int
 }{{"15 minutes", 15}, {"1 hour", 60}, {"4 hours", 240}, {"24 hours", 1440}}
 
+// approvalsDecisionGuard is how long y, Y and n are ignored after the panel
+// opens or the selected approval changes under the cursor, so a keystroke meant
+// for something else cannot decide a request the operator has not looked at.
+const approvalsDecisionGuard = 300 * time.Millisecond
+
 // approvalsClock is replaceable so rendering tests are deterministic.
 var approvalsClock = time.Now
 
@@ -44,6 +49,7 @@ type approvalsState struct {
 	busy         string // approval ID being decided
 	loading      bool
 	generation   uint64 // fences list responses
+	guardUntil   time.Time
 }
 
 // approvalsCmd is what a key press asks the run loop to do.
@@ -52,6 +58,11 @@ type approvalsCmd struct {
 	id      string
 	minutes int
 }
+
+// guardKeys starts the decision guard.
+func (a *approvalsState) guardKeys() { a.guardUntil = approvalsClock().Add(approvalsDecisionGuard) }
+
+func (a *approvalsState) guarded() bool { return approvalsClock().Before(a.guardUntil) }
 
 func (a *approvalsState) visible() []ducklord.ApproverApproval {
 	if a.showHistory {
@@ -88,6 +99,12 @@ func (a *approvalsState) setItems(items []ducklord.ApproverApproval) {
 			}
 		}
 		a.clamp()
+		if now, ok := a.current(); ok && now.ID != selectedID || !ok && selectedID != "" {
+			// The selection shifted under the cursor: a picker for the old
+			// item is void and decisions pause briefly.
+			a.picker = false
+			a.guardKeys()
+		}
 	}
 }
 
@@ -174,6 +191,9 @@ func (s *tuiState) handleApprovalsInput(b []byte) approvalsCmd {
 func (a *approvalsState) decidable() (ducklord.ApproverApproval, bool) {
 	it, ok := a.current()
 	switch {
+	case ok && a.guarded():
+		a.message, a.messageErr = "list just changed; decision ignored, press again", true
+		return it, false
 	case !ok:
 		a.message = "nothing selected"
 	case a.showHistory || it.Status != "pending":
@@ -196,6 +216,16 @@ func (a *approvalsState) decide(kind string, minutes int) approvalsCmd {
 }
 
 // approvalsHeaderLabel is the status-bar fragment: state as words, no color.
+// approvalsHint is the status-line text that points at the panel.
+func (s *tuiState) approvalsHint() string {
+	a := &s.approvals
+	n := a.pendingCount
+	if !a.countKnown {
+		return "approvals pending — press " + s.cfg.Shortcut("approvals")
+	}
+	return fmt.Sprintf("%d approvals pending — press %s", n, s.cfg.Shortcut("approvals"))
+}
+
 func (s *tuiState) approvalsHeaderLabel() string {
 	a := &s.approvals
 	switch {

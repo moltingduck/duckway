@@ -87,7 +87,7 @@ func (s *tuiState) closeCommandPalette() {
 func (s *tuiState) commandPaletteItems() []commandPaletteItem {
 	items := []commandPaletteItem{{"Notes", "notes", "", ""}, {"Help", "help", "", ""}, {"Host list", "host", "", ""}, {"Project files", "project-files", "", ""}, {"Refresh sessions and hosts", "refresh", "", ""}}
 	if !s.hostScoped {
-		items = append(items, commandPaletteItem{"Add host configuration", "host-add", "", ""}, commandPaletteItem{"Create session", "create-session", "", ""})
+		items = append(items, commandPaletteItem{"Add host configuration", "host-add", "", ""}, commandPaletteItem{"Create session", "create-session", "", ""}, commandPaletteItem{"Approvals", "approvals", "", ""})
 	}
 	if s.activityState != nil {
 		for _, p := range s.activity().ProjectLayout.Projects {
@@ -200,7 +200,7 @@ func (s *tuiState) handleCommandPaletteInput(input []byte) bool {
 			s.beginHostMenu()
 		case "project-files":
 			s.openProjectFiles()
-		case "host-add", "create-session", "refresh":
+		case "host-add", "create-session", "refresh", "approvals":
 			// These actions need event-loop resources (context and refresh callbacks).
 			s.commandPaletteAction = item.kind
 		case "project":

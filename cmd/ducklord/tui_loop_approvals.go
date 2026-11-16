@@ -71,6 +71,7 @@ func (l *tuiLoop) openApprovals() {
 		l.startApprovals()
 	}
 	a.open, a.detail, a.picker, a.message = true, false, false, ""
+	a.guardKeys()
 	if a.loggedIn {
 		l.refreshApprovals()
 	}
@@ -215,28 +216,20 @@ func shortApprovalID(id string) string {
 	return id
 }
 
-// maybeOpenApprovalsFromNotification makes an agent "approval required"
-// notification open the panel when approvals are actually pending and nothing
-// else (modal, focused terminal) would be interrupted; otherwise it leaves a
-// hint on the status line.
-func (l *tuiLoop) maybeOpenApprovalsFromNotification() {
+// maybeHintApprovalsFromNotification reacts to an agent "approval required"
+// notification. It never opens the panel: a panel appearing by itself while the
+// operator types could turn a stray y or n into a decision on a request they
+// never saw. It only leaves a status-line hint; the panel opens on an explicit
+// shortcut (or the command palette entry).
+func (l *tuiLoop) maybeHintApprovalsFromNotification() {
 	state := l.state
 	if !state.approvalNotifyPending {
 		return
 	}
 	state.approvalNotifyPending = false
 	a := &state.approvals
-	if !a.loggedIn {
+	if !a.loggedIn || a.open || (a.countKnown && a.pendingCount == 0) {
 		return
 	}
-	hint := "approval required · " + state.cfg.Shortcut("approvals") + " opens approvals"
-	if a.countKnown && a.pendingCount == 0 {
-		return
-	}
-	if state.focused || state.blockingModalOpen() || state.copyMode || state.helpMode {
-		state.outputErr = hint
-		return
-	}
-	l.openApprovals()
-	state.render(os.Stdout)
+	state.outputErr = state.approvalsHint()
 }

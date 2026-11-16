@@ -64,6 +64,15 @@ func TestDucklordApprovalsPTYE2E(t *testing.T) {
 		func() string { return "header: " + strings.SplitN(capture.currentText(), "\n", 3)[0] })
 	writePTY(t, terminal, "I")
 	capture.waitCurrent(t, "Approvals · pending", 10*time.Second)
+	// A decision key typed right as the panel opens does nothing.
+	writePTY(t, terminal, "n")
+	capture.waitCurrent(t, "decision ignored", 10*time.Second)
+	f.mu.Lock()
+	early := strings.Join(f.calls, "|")
+	f.mu.Unlock()
+	if strings.Contains(early, "/reject") || strings.Contains(early, "/approve") {
+		t.Fatalf("early key decided a request: %s", early)
+	}
 	capture.waitCurrent(t, "› pending", 10*time.Second)
 	capture.waitCurrent(t, "POST /repos/x/y/issues", 10*time.Second)
 
@@ -75,10 +84,17 @@ func TestDucklordApprovalsPTYE2E(t *testing.T) {
 	f.events <- "event: approvals\ndata: {\"pending\":3,\"total\":3}\n\n"
 	capture.waitCurrent(t, "3 pending", 10*time.Second)
 
+	// Decision keys are ignored for ~300 ms after the panel opens or the
+	// selection shifts: a quick n must not reject anything.
+	time.Sleep(400 * time.Millisecond)
 	writePTY(t, terminal, "n")
 	capture.waitCurrent(t, "rejected approval", 10*time.Second)
 	capture.waitCurrent(t, "2 pending", 10*time.Second)
 
+	// Rejecting shifted the selection; an immediate Y is ignored.
+	writePTY(t, terminal, "Y")
+	capture.waitCurrent(t, "decision ignored", 10*time.Second)
+	time.Sleep(400 * time.Millisecond)
 	writePTY(t, terminal, "Y")
 	capture.waitCurrent(t, "Approve for how long?", 10*time.Second)
 	writePTY(t, terminal, "3")

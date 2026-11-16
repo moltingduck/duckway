@@ -29,8 +29,17 @@ func sampleApprovals() []ducklord.ApproverApproval {
 	}
 }
 
+var approvalsTestNow = time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+
+func advanceApprovals(d time.Duration) { approvalsTestNow = approvalsTestNow.Add(d) }
+
+func setApprovalsTestClock() {
+	approvalsTestNow = time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	approvalsClock = func() time.Time { return approvalsTestNow }
+}
+
 func approvalsTestState() *tuiState {
-	approvalsClock = func() time.Time { return time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC) }
+	setApprovalsTestClock()
 	s := &tuiState{cfg: &ducklord.Config{}}
 	s.approvals = approvalsState{open: true, loggedIn: true, server: "https://duck.example.com", conn: "live", items: sampleApprovals()}
 	s.approvals.pendingCount, s.approvals.countKnown = 2, true
@@ -355,7 +364,7 @@ func approvalsTestLoop(t *testing.T, f *approverFixture, login bool) *tuiLoop {
 	oldStdout := os.Stdout
 	os.Stdout = devnull
 	t.Cleanup(func() { os.Stdout = oldStdout; _ = devnull.Close() })
-	approvalsClock = func() time.Time { return time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC) }
+	setApprovalsTestClock()
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	if login {
 		if err := ducklord.SaveApproverCredentials(approverCredentialsFor(cfgPath), ducklord.ApproverCredentials{Server: f.srv.URL, Token: "dwa_fixture"}); err != nil {
@@ -409,6 +418,12 @@ func TestApprovalsLoopLiveUpdatesApproveAndConflict(t *testing.T) {
 	l.openApprovals()
 	pumpApprovals(t, l, func() bool { return !a.loading })
 
+	// Decisions are ignored right after the panel opens; wait out the guard.
+	_, _ = l.onInput([]byte("y"))
+	if len(f.calls) != 0 && strings.Contains(strings.Join(f.calls, "|"), "approve") {
+		t.Fatal("y inside the guard window decided a request")
+	}
+	advanceApprovals(time.Second)
 	// Approve for 4 hours through the key path.
 	for _, k := range []string{"Y", "\x1b[B", "\r"} {
 		if exit, err := l.onInput([]byte(k)); exit || err != nil {
@@ -430,6 +445,7 @@ func TestApprovalsLoopLiveUpdatesApproveAndConflict(t *testing.T) {
 	f.mu.Lock()
 	f.conflict = true
 	f.mu.Unlock()
+	advanceApprovals(time.Second) // the list shifted after the approval: wait out the guard
 	_, _ = l.onInput([]byte("y"))
 	pumpApprovals(t, l, func() bool { return a.busy == "" && strings.Contains(a.message, "already decided") })
 	if a.message != "already decided by discord:7 via discord" || !a.messageErr {
@@ -470,44 +486,85 @@ func TestApprovalsLoopRevokedTokenAndNotLoggedIn(t *testing.T) {
 	}
 }
 
-func TestApprovalRequiredNotificationOpensPanelOnlyWhenSafe(t *testing.T) {
+func TestApprovalRequiredNotificationOnlyHintsNeverOpens(t *testing.T) {
 	f := newApproverFixture(t)
 	l := approvalsTestLoop(t, f, true)
 	l.startApprovals()
 	a := &l.state.approvals
 	pumpApprovals(t, l, func() bool { return a.countKnown })
 
-	// Focused terminal: never steal the keyboard; leave a hint.
-	l.state.focused, l.state.approvalNotifyPending = true, true
-	l.maybeOpenApprovalsFromNotification()
-	if a.open || !strings.Contains(l.state.outputErr, "I opens approvals") {
-		t.Fatalf("focused: open=%v hint=%q", a.open, l.state.outputErr)
-	}
-	// Another modal open: same.
-	l.state.focused, l.state.helpMode, l.state.approvalNotifyPending = false, true, true
-	l.state.searchMode = true
-	l.maybeOpenApprovalsFromNotification()
-	if a.open {
-		t.Fatal("opened over another modal")
-	}
-	// Free navigation: opens.
-	l.state.helpMode, l.state.searchMode, l.state.approvalNotifyPending = false, false, true
-	l.maybeOpenApprovalsFromNotification()
-	if !a.open {
-		t.Fatal("notification should open the panel")
-	}
-	// Nothing pending: no panel.
-	a.open, a.pendingCount = false, 0
+	// Free navigation, approvals pending: hint only, the panel stays closed.
 	l.state.approvalNotifyPending = true
-	l.maybeOpenApprovalsFromNotification()
-	if a.open {
-		t.Fatal("opened with nothing pending")
+	l.maybeHintApprovalsFromNotification()
+	if a.open || l.state.outputErr != "2 approvals pending — press I" {
+		t.Fatalf("open=%v hint=%q", a.open, l.state.outputErr)
 	}
-	// Not logged in: no panel, no hint.
+	// Nothing pending: no hint.
+	l.state.outputErr, a.pendingCount, l.state.approvalNotifyPending = "", 0, true
+	l.maybeHintApprovalsFromNotification()
+	if a.open || l.state.outputErr != "" {
+		t.Fatalf("nothing pending: open=%v hint=%q", a.open, l.state.outputErr)
+	}
+	// Not logged in: no-op.
 	l2 := approvalsTestLoop(t, f, false)
 	l2.state.approvalNotifyPending = true
-	l2.maybeOpenApprovalsFromNotification()
+	l2.maybeHintApprovalsFromNotification()
 	if l2.state.approvals.open || l2.state.outputErr != "" {
 		t.Fatal("logged-out notification must be a no-op")
+	}
+}
+
+func TestApprovalsDecisionGuardAfterOpenAndSelectionShift(t *testing.T) {
+	s := approvalsTestState()
+	a := &s.approvals
+	a.guardKeys() // as when the panel opens
+	for _, k := range []string{"y", "n", "Y"} {
+		if cmd := s.handleApprovalsInput([]byte(k)); cmd.kind != "" || a.picker || a.busy != "" {
+			t.Fatalf("%s inside the guard = %+v", k, cmd)
+		}
+	}
+	advanceApprovals(approvalsDecisionGuard + time.Millisecond)
+	if cmd := s.handleApprovalsInput([]byte("y")); cmd.kind != "approve" {
+		t.Fatalf("y after the guard = %+v", cmd)
+	}
+	a.busy = ""
+	advanceApprovals(time.Second)
+	// The selected item disappears in a live update: guard again, and an open
+	// picker for the old item is void.
+	s.handleApprovalsInput([]byte("Y"))
+	if !a.picker {
+		t.Fatal("picker should open")
+	}
+	a.setItems(a.items[1:])
+	if a.picker || !a.guarded() {
+		t.Fatalf("selection shift: picker=%v guarded=%v", a.picker, a.guarded())
+	}
+	if cmd := s.handleApprovalsInput([]byte("n")); cmd.kind != "" {
+		t.Fatalf("n right after the shift = %+v", cmd)
+	}
+	advanceApprovals(time.Second)
+	if cmd := s.handleApprovalsInput([]byte("n")); cmd.kind != "reject" || cmd.id != "approval-bbbb" {
+		t.Fatalf("n after the guard = %+v", cmd)
+	}
+	// An update that keeps the same selection does not guard.
+	a.busy = ""
+	advanceApprovals(time.Second)
+	a.setItems(append([]ducklord.ApproverApproval{}, a.items...))
+	if a.guarded() {
+		t.Fatal("unchanged selection must not re-arm the guard")
+	}
+}
+
+func TestApprovalsCommandPaletteEntryOpensPanel(t *testing.T) {
+	s := &tuiState{cfg: &ducklord.Config{}}
+	s.openCommandPalette()
+	s.commandPaletteQuery = "Approvals"
+	items := s.commandPaletteItems()
+	if len(items) != 1 || items[0].kind != "approvals" {
+		t.Fatalf("palette items = %+v", items)
+	}
+	s.handleCommandPaletteInput([]byte("\r"))
+	if s.commandPaletteAction != "approvals" {
+		t.Fatalf("palette action = %q", s.commandPaletteAction)
 	}
 }
