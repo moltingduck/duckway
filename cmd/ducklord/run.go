@@ -33,6 +33,8 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 	switch args[0] {
 	case "update":
 		return runDucklordUpdate(args[1:], out)
+	case "approver":
+		return runApproverCommand(args[1:], os.Stdin, out)
 	case "ssh-hosts":
 		path := ""
 		rest := args[1:]
