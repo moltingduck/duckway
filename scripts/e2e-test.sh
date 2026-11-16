@@ -1,5 +1,8 @@
 #!/bin/bash
-set -euo pipefail
+set -Eeuo pipefail
+# Under set -e a failing command substitution exits the script with no output.
+# Always name the failing command and line so such exits are never silent.
+trap 'rc=$?; echo "e2e-test.sh: command failed (exit $rc) at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Duckway End-to-End Test Suite
 # Tests the full flow: server → admin panel → client → proxy
@@ -1297,17 +1300,22 @@ else
   ERRORS="$ERRORS\n  - automated Discord Gateway E2E failed"
 fi
 
+# Capture the exit status explicitly: a bare UNIT=$(go test ...) aborts the whole
+# script silently under set -e when any unit test fails or times out.
+UNIT_RC=0
 UNIT=$(env -u DUCKWAY_DATABASE_DRIVER -u DUCKWAY_DATABASE_URL \
-  go test ./internal/server/services/ ./internal/database/queries/ ./internal/server/handlers/ ./internal/client/ 2>&1)
+  go test ./internal/server/services/ ./internal/database/queries/ ./internal/server/handlers/ ./internal/client/ 2>&1) || UNIT_RC=$?
 UNIT_OK=$(echo "$UNIT" | grep -c "^ok" || true)
 UNIT_FAIL=$(echo "$UNIT" | grep -c "^FAIL" || true)
-if [ "$UNIT_FAIL" = "0" ] && [ "$UNIT_OK" -ge "1" ]; then
+if [ "$UNIT_RC" = "0" ] && [ "$UNIT_FAIL" = "0" ] && [ "$UNIT_OK" -ge "1" ]; then
   PASS=$((PASS + 1))
   echo -e "  ${GREEN}PASS${NC} Unit tests pass ($UNIT_OK packages)"
 else
   FAIL=$((FAIL + 1))
-  echo -e "  ${RED}FAIL${NC} Unit tests failed"
-  ERRORS="$ERRORS\n  - Unit tests: $UNIT"
+  echo -e "  ${RED}FAIL${NC} Unit tests failed (go test exit $UNIT_RC)"
+  echo "  --- go test output (last 40 lines) ---"
+  echo "$UNIT" | tail -40
+  ERRORS="$ERRORS\n  - Unit tests (go test exit $UNIT_RC): $(echo "$UNIT" | tail -15)"
 fi
 
 
