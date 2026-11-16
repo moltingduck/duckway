@@ -9,6 +9,7 @@ LIVE_CREDENTIALS_DIR="$(duckway_resolve_live_credentials_dir "$ROOT")"
 CODEX_AUTH="${CODEX_AUTH:-$LIVE_CREDENTIALS_DIR/codex-auth.json}"
 CLAUDE_AUTH="${CLAUDE_AUTH:-$LIVE_CREDENTIALS_DIR/claude-credentials.json}"
 source "$ROOT/scripts/container-runtime.sh"
+source "$ROOT/scripts/live-cli-versions.sh"
 source "$ROOT/scripts/ducklord-demo-common.sh"
 duckway_init_container_runtime
 REQUIRE_OWNED_NETWORK=0
@@ -50,6 +51,12 @@ case "$CREDENTIAL_CLIENTS" in all|client-a|client-b|client-c|client-d) ;; *) ech
 case "$INCLUDE_CLIENT_D" in 0|1) ;; *) echo "invalid DUCKLORD_DEMO_INCLUDE_CLIENT_D=$INCLUDE_CLIENT_D" >&2; exit 2;; esac
 if [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = codex ]; then ducklord_require_demo_secret "$CODEX_AUTH"; fi
 if [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = claude ]; then ducklord_require_demo_secret "$CLAUDE_AUTH"; fi
+preflight_agents=()
+if [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = codex ]; then preflight_agents+=(codex); fi
+if [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = claude ]; then preflight_agents+=(claude); fi
+if [ "${#preflight_agents[@]}" -gt 0 ]; then
+  CODEX_AUTH="$CODEX_AUTH" CLAUDE_AUTH="$CLAUDE_AUTH" "$ROOT/scripts/live-credentials-preflight.sh" "${preflight_agents[@]}"
+fi
 
 if [ "${DUCKLORD_DEMO_LOCK_HELD:-0}" != 1 ]; then
 	ducklord_reexec_with_demo_lock "$0" "$@"
@@ -78,8 +85,11 @@ printf '%s\n' '{"hasCompletedOnboarding":true,"theme":"dark","installMethod":"gl
 
 cat >"$WORK/Containerfile" <<'EOF'
 FROM alpine:3.21
+ARG CODEX_CLI_VERSION=latest
+ARG CLAUDE_CLI_VERSION=latest
 RUN apk add --no-cache openssh openssh-client bash zsh vim ca-certificates ncurses nodejs npm \
- && npm install -g @openai/codex@0.153.4 @anthropic-ai/claude-code@2.1.263 \
+ && npm install -g @openai/codex@"$CODEX_CLI_VERSION" @anthropic-ai/claude-code@"$CLAUDE_CLI_VERSION" \
+ && codex --version && claude --version \
  && npm cache clean --force
 RUN adduser -D duck && echo "duck:duck-demo-password" | chpasswd && ssh-keygen -A
 RUN install -d -m 700 /home/duck/.ssh /root/.ssh /root/.ducklord && chown -R duck:duck /home/duck/.ssh
@@ -93,7 +103,8 @@ CMD ["/usr/sbin/sshd", "-D", "-e"]
 EOF
 
 echo "[ducklord-demo] building demo image with $RUNTIME"
-"$RUNTIME" build -t "$IMAGE" -f "$WORK/Containerfile" "$WORK" >/dev/null
+"$RUNTIME" build --build-arg "CODEX_CLI_VERSION=$CODEX_CLI_VERSION" --build-arg "CLAUDE_CLI_VERSION=$CLAUDE_CLI_VERSION" -t "$IMAGE" -f "$WORK/Containerfile" "$WORK" >/dev/null
+duckway_print_cli_versions "$("$RUNTIME" run --rm "$IMAGE" codex --version)" "$("$RUNTIME" run --rm "$IMAGE" claude --version)"
 
 cleanup_existing
 # A caller may own NET (the TUI E2E does). Inspect first and only create when
