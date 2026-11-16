@@ -23,7 +23,7 @@ The proxy and the simulator reach the same verdict for the same request because 
 
 ### Delivery modes and the ACL layers
 
-The three ACL layers, approve rules, the GitHub guard and the key's upstream proxy apply only to services in the default `proxy` delivery mode, where every request passes through the gateway. In `loan_proxy` mode (`/client/loan`, `issueGroupLoan` for key groups) the gateway hands the real token to the sidecar, which calls the upstream directly. The gateway then checks only that the token and binding are active and applies the coarse approval gate once, at loan time. The service, api_key and placeholder ACLs, branch rules and the key's upstream proxy are not enforced per request, and the simulator does not describe loan requests. Use `proxy` for any service that needs those controls.
+The three ACL layers, approve rules, the GitHub guard and the key's upstream proxy apply only to services in the default `proxy` delivery mode, where every request passes through the gateway. In `loan_proxy` mode (`/client/loan`, `issueGroupLoan` for key groups) the gateway hands the real token to the sidecar, which calls the upstream directly. The gateway then checks only that the token and binding are active and applies the coarse approval gate once, at loan time. Key-group loans (`issueGroupLoan`) have no approval gate at all. The service, api_key and placeholder ACLs, branch rules and the key's upstream proxy are not enforced per request, and the simulator does not describe loan requests. Use `proxy` for any service that needs those controls.
 
 ### Kinds, layers and the deciding rule
 

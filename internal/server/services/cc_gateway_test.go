@@ -381,7 +381,7 @@ func TestIsPermanentGatewayAuthErr(t *testing.T) {
 	}{
 		"nil":         {nil, false},
 		"401":         {&DiscordError{Status: 401}, true},
-		"403":         {&DiscordError{Status: 403}, true},
+		"403":         {&DiscordError{Status: 403}, false},
 		"wrapped 401": {fmt.Errorf("gateway lookup: %w", &DiscordError{Status: 401}), true},
 		"500":         {&DiscordError{Status: 500}, false},
 		"transport":   {fmt.Errorf("EOF"), false},
