@@ -97,6 +97,22 @@ func TestSimulatorAndSummaryNegativeCacheAndDeadline(t *testing.T) {
 		t.Fatalf("the failing upstream was called %d times, want 1 (negative cache)", n)
 	}
 
+	// An explicit refresh bypasses the remembered failure for that request only.
+	r := httptest.NewRequest(http.MethodGet, "/x?refresh=1", nil)
+	r.SetPathValue("id", e.f.placeholderID)
+	sim.AccessSummary(httptest.NewRecorder(), r)
+	if n := atomic.LoadInt32(&calls); n != 2 {
+		t.Fatalf("summary refresh=1: %d lookups, want 2", n)
+	}
+	simCall(t, sim, e.f.placeholderID, map[string]interface{}{"mode": "action", "repo": "OWNER/REPO", "action": "push", "ref": "agent/x"})
+	if n := atomic.LoadInt32(&calls); n != 2 {
+		t.Fatalf("a plain simulation must still use the negative cache: %d lookups", n)
+	}
+	simCall(t, sim, e.f.placeholderID, map[string]interface{}{"mode": "action", "repo": "OWNER/REPO", "action": "push", "ref": "agent/x", "refresh": true})
+	if n := atomic.LoadInt32(&calls); n != 3 {
+		t.Fatalf("simulate refresh:true: %d lookups, want 3", n)
+	}
+
 	// Deadline: with the overall deadline already exceeded no lookup is issued.
 	e2 := newBrEnv(t, simPolicyConfig)
 	var calls2 int32
@@ -107,10 +123,10 @@ func TestSimulatorAndSummaryNegativeCacheAndDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
 	defer cancel()
 	time.Sleep(2 * time.Millisecond)
-	r := httptest.NewRequest(http.MethodGet, "/x", nil).WithContext(ctx)
-	r.SetPathValue("id", e2.f.placeholderID)
+	r2 := httptest.NewRequest(http.MethodGet, "/x", nil).WithContext(ctx)
+	r2.SetPathValue("id", e2.f.placeholderID)
 	w := httptest.NewRecorder()
-	sim2.AccessSummary(w, r)
+	sim2.AccessSummary(w, r2)
 	if atomic.LoadInt32(&calls2) != 0 {
 		t.Fatalf("lookups issued after the deadline: %d", calls2)
 	}

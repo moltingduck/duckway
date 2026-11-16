@@ -199,7 +199,7 @@ func TestParseHexBodyReportsTheCharacterNotAByte(t *testing.T) {
 
 func TestBuildRawRequestPathChecks(t *testing.T) {
 	for path, want := range map[string]string{
-		"/repos/o/r#frag":         "fragment",
+		"/repos/o/r#frag":         "only be sent in the query string",
 		"/repos/o/r?x=1#frag":     "fragment",
 		"/repos/o/../x":           "redirect this path to /repos/x",
 		"/repos//o/r":             "redirect this path to /repos/o/r",

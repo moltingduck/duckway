@@ -81,7 +81,7 @@ Request:
   - `path` is what the agent sends to the upstream API. A `/proxy/<service>` prefix is accepted and stripped; a `?query` may be inside `path` (not both).
   - `body_hex` takes hex digits with optional whitespace. `body_text` and `body_hex` together are a 400.
   - Only the `Content-Encoding` header changes a decision.
-  - Paths are validated like the proxy does: a `#` is rejected (a client never sends a fragment), `%2f` is rejected, and a path the gateway's mux would clean (`.` or `..` segments, `//`) is a 400 that says the proxy would redirect it before checking it.
+  - Paths are validated like the proxy does: a `#` is rejected (a client never sends a fragment; a literal `#` can only be sent in the query string, as `%23`), `%2f` is rejected, and a path the gateway's mux would clean (`.` or `..` segments, `//`) is a 400 that says the proxy would redirect it before checking it.
 
 Response:
 
@@ -99,7 +99,7 @@ Response:
 - `held` (kind `approval`) means: a token-wide approval is missing, or an approve rule matched and nothing refused. It is reported as the production proxy would (an approval store is always present). The simulator cannot know whether an approval for this exact request (scoped to the full body) already exists, so a gating approve rule is always `held`. A request an approve rule gates is held before the branch rules that need `@default` run; the Branch rules step then says so (only when the request has a guard that depends on the default branch).
 - `depends_on_default_branch` is true when the repository's rules mention `@default`.
 - The synthetic request is never forwarded and nothing is written: no request-log row, approval, usage counter or rate-limit count.
-- Outbound: only the default-branch lookup, per candidate credential, with a 15 s overall deadline. A failed lookup is remembered for 60 seconds so a down upstream is not hit again on every simulation.
+- Outbound: only the default-branch lookup, per candidate credential, with a 15 s overall deadline. A failed lookup is remembered for 60 seconds so a down upstream is not hit again on every simulation. `"refresh": true` in the request body bypasses that remembered failure for this request only (still single-flight and bounded by the deadline).
 
 Errors (`{"error":"…"}`): 400 invalid request (unknown mode/action, bad repo, bad path or headers, invalid hex); invalid hex adds `"offset"`, the 0-based character (rune) index of the first bad character, and the message names the character; 404 unknown token; 413 request or decoded body larger than 16 MiB (the proxy's inspect cap).
 
@@ -116,7 +116,7 @@ GitHub tokens only (otherwise 400); 422 when the stored permission config is inv
 ```
 
 - The rule booleans are already narrowed by what the repo's capabilities open at all. A grant without branch rules has `legacy:true`, no rules and its `ref_allowlist`.
-- `default_branch` is set only for repositories whose rules mention `@default`, from the same read-only, cached lookup as the simulator with the token's first active key (4 s per lookup, 8 s for the whole summary; lookups stop once the deadline passes). It is `null` when unknown.
+- `default_branch` is set only for repositories whose rules mention `@default`, from the same read-only, cached lookup as the simulator with the token's first active key (4 s per lookup, 8 s for the whole summary; lookups stop once the deadline passes). It is `null` when unknown. Failed lookups are remembered for 60 seconds; `?refresh=1` bypasses that for the request (same deadlines, single-flight).
 
 ## 4. Simulator UI ("Test access" tab)
 

@@ -81,6 +81,9 @@ type simulateRequest struct {
 	Action   string `json:"action"`
 	Ref      string `json:"ref"`
 	Workflow string `json:"workflow"`
+	// Refresh bypasses the remembered failure of a default-branch lookup for
+	// this request (still single-flight and bounded by the deadlines).
+	Refresh bool `json:"refresh"`
 
 	// raw mode
 	Method   string            `json:"method"`
@@ -333,7 +336,7 @@ func buildRawRequest(req simulateRequest, serviceName string) (*simReq, *simHTTP
 		return nil, simErr(http.StatusBadRequest, "path must contain no whitespace")
 	}
 	if strings.Contains(raw+query, "#") {
-		return nil, simErr(http.StatusBadRequest, "a # starts a URL fragment, which a client never sends; remove it (write %%23 for a literal #)")
+		return nil, simErr(http.StatusBadRequest, "a # starts a URL fragment, which a client never sends; remove it (a literal # can only be sent in the query string, written %%23)")
 	}
 	prefix := "/proxy/" + serviceName
 	if strings.HasPrefix(raw, "/proxy/") {
@@ -684,6 +687,9 @@ func (a *AccessSimulator) Simulate(w http.ResponseWriter, r *http.Request) {
 	// The default-branch lookups are the only outbound calls; bound them.
 	ctx, cancel := context.WithTimeout(r.Context(), simEvalTimeout)
 	defer cancel()
+	if req.Refresh {
+		ctx = withFreshDefault(ctx)
+	}
 	resp, herr := a.evaluate(ctx, ph, svc, sr)
 	if herr != nil {
 		writeSimError(w, herr)

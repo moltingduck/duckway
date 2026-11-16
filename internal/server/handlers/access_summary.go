@@ -181,6 +181,9 @@ func (a *AccessSimulator) AccessSummary(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), summaryTotalTimeout)
 	defer cancel()
+	if v := r.URL.Query().Get("refresh"); v == "1" || v == "true" {
+		ctx = withFreshDefault(ctx)
+	}
 	a.fillDefaultBranches(ctx, ph, svc, cfg, repos)
 	jsonResponse(w, accessSummaryResponse{Service: svc.Name, Repos: repos})
 }

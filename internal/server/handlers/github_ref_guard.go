@@ -138,7 +138,7 @@ func (c *githubDefaultBranchCache) get(ctx context.Context, key string, fetch fu
 		delete(c.entries, key)
 	}
 	if f, ok := c.fails[key]; ok {
-		if c.now().Before(f.expires) {
+		if c.now().Before(f.expires) && !freshDefaultRequested(ctx) {
 			c.mu.Unlock()
 			return "", f.err
 		}
@@ -213,6 +213,20 @@ func (h *ProxyHandler) githubDefaultBranchPeek(credentialID, repo string) defaul
 		}
 		return "", errDefaultNotCached
 	}
+}
+
+type freshDefaultKey struct{}
+
+// withFreshDefault marks ctx so a lookup ignores a remembered failure (a
+// cached success and the single in-flight lookup are still shared). Used by
+// the simulator and summary when the admin explicitly asks to refresh.
+func withFreshDefault(ctx context.Context) context.Context {
+	return context.WithValue(ctx, freshDefaultKey{}, true)
+}
+
+func freshDefaultRequested(ctx context.Context) bool {
+	v, _ := ctx.Value(freshDefaultKey{}).(bool)
+	return v
 }
 
 // WithGitHubDefaultFailureTTL makes failed default-branch lookups be
