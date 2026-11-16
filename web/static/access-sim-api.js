@@ -47,11 +47,13 @@
     var def = actionDef(st.action), r = { mode: 'action', repo: st.repo, action: def.id };
     if (def.ref && st.ref) r.ref = st.ref;
     if (def.workflow && st.workflow) r.workflow = st.workflow;
+    if (st.refresh) r.refresh = true;
     return r;
   }
   // st: {method, path, headers (object), bytes (Uint8Array)}
   function rawRequest(st) {
     var r = { mode: 'raw', method: st.method, path: st.path };
+    if (st.refresh) r.refresh = true;
     if (st.headers && Object.keys(st.headers).length) r.headers = st.headers;
     if (st.bytes && st.bytes.length) {
       // body_hex errors carry an offset into the text sent, so send the textarea's own text when given.
@@ -89,6 +91,7 @@
         return { ref: str(x.ref), ok: x.verdict === 'allowed', pattern: R.friendly(str(x.pattern)), role: roleLabel(x.role), reason: str(x.reason) };
       }),
       sees: str(r.sees),
+      defaultUnresolved: r.kind === 'uncheckable' && /default branch could not be determined/i.test([r.reason, r.title, r.rule, r.sees].join(' ')),
       dependsOnDefault: !!r.depends_on_default_branch,
       perKey: (Array.isArray(r.per_key) ? r.per_key : []).map(function (k) {
         k = k || {};

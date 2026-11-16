@@ -254,4 +254,16 @@ check('credential result and role map', () => {
   assert.strictEqual(A.adaptResult({ verdict: 'allowed', kind: '' }).kindLabel, '');
   assert.strictEqual(A.adaptResult({ rule: 'existing tags never move' }).rule, 'existing tags never move');
 });
+check('refresh flags', () => {
+  assert.strictEqual(A.actionRequest({ repo: 'a/b', action: 'push', ref: 'x', refresh: true }).refresh, true);
+  assert.strictEqual(A.actionRequest({ repo: 'a/b', action: 'push', ref: 'x' }).refresh, undefined);
+  assert.strictEqual(A.rawRequest({ method: 'GET', path: '/', bytes: u8(), refresh: true }).refresh, true);
+  assert.strictEqual(A.rawRequest({ method: 'GET', path: '/', bytes: u8() }).refresh, undefined);
+});
+check('unresolved default branch is detected', () => {
+  const r = A.adaptResult({ verdict: 'refused', kind: 'uncheckable', title: "Refused: the repository's default branch could not be determined" });
+  assert.strictEqual(r.defaultUnresolved, true);
+  assert.strictEqual(A.adaptResult({ verdict: 'refused', kind: 'branch_rules', reason: 'default branch could not be determined' }).defaultUnresolved, false);
+  assert.strictEqual(A.adaptResult({ verdict: 'allowed' }).defaultUnresolved, false);
+});
 console.log('access-sim JS: ' + n + ' checks passed');

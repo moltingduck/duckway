@@ -2554,6 +2554,8 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
 /* rlog1116: simulator loading state and can-do cards */
 .as-checking { margin: 0; font-size: 0.875rem; font-weight: 600; color: var(--accent-text); }
 .as-stale { opacity: 0.5; }
+.btn[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
+#as-verdict-h:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .as-rcards { list-style: none; margin: 0; padding: 0; display: none; flex-direction: column; gap: 0.5rem; }
 .as-rcard { padding: 0.65rem 0.75rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--track); }
 .as-rcard-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.4rem 0.75rem; margin-bottom: 0.45rem; }

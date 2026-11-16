@@ -20,9 +20,10 @@
 
   var S = {
     shown: false, mode: D.is_github ? 'action' : 'raw',
-    summary: [], summaryErr: '', summaryLoaded: false,
+    summary: [], summaryErr: '', summaryLoaded: false, sumState: D.is_github ? 'idle' : 'ok', summaryP: null, refreshNext: false,
+    lastBody: null, lastSubject: '', busy: false,
     repo: '', action: 'push', ref: 'main', workflow: 'deploy.yml',
-    result: null, busy: false, err: '', seq: 0, timer: 0,
+    result: null, err: '', seq: 0, timer: 0,
     view: 'text', bytes: new Uint8Array(0), hexErr: ''
   };
 
@@ -78,24 +79,46 @@
   }
 
   /* ---------- action mode ---------- */
+  // 'idle' and 'loading' both show a loading state; 'ok' and 'error' are final until a retry.
+  function summaryPending() { return S.sumState === 'idle' || S.sumState === 'loading'; }
   function paintRepos() {
     var sel = $('as-repo'); if (!sel) return;
+    sel.setAttribute('aria-busy', summaryPending() ? 'true' : 'false');
+    if (summaryPending()) { DW.setHTML(sel, DW.html`<option value="">Loading\u2026</option>`); return; }
+    if (!S.summary.length) { DW.setHTML(sel, DW.html`<option value="">${S.summaryErr ? 'Could not load repositories' : 'No repositories on this token'}</option>`); return; }
     DW.setHTML(sel, DW.html`${S.summary.map(function (r) { return DW.html`<option value="${r.repo}"${r.repo === S.repo ? DW.raw(' selected') : ''}>${r.repo}</option>`; })}`);
-    if (!S.summary.length) DW.setHTML(sel, DW.html`<option value="">${S.summaryErr ? 'Could not load repositories' : 'No repositories on this token'}</option>`);
   }
+  // Chips are re-rendered only when their set changes (a repository switch or the summary
+  // arriving). Otherwise aria-pressed/disabled are updated in place, so keyboard focus stays
+  // on the chip that was just activated.
+  var chipKey = '', actionsBuilt = false;
   function paintChips() {
     var def = A.actionDef(S.action);
     var ex = A.refExamples(repoSummary());
     var refBox = $('as-refchips'); if (!refBox) return;
-    DW.setHTML(refBox, DW.html`${ex.map(function (x) { return DW.html`<button type="button" class="lg-chip mono" data-action="asRefChip" data-ref="${x}" aria-pressed="${x === S.ref ? 'true' : 'false'}"${def.ref ? '' : DW.raw(' disabled')}>${x}</button>`; })}`);
-    DW.setHTML($('as-actions'), DW.html`${A.ACTIONS.map(function (a) { return DW.html`<button type="button" class="lg-chip" data-action="asAction" data-act="${a.id}" aria-pressed="${a.id === S.action ? 'true' : 'false'}">${a.label}</button>`; })}`);
+    var key = ex.join('\u0000');
+    if (key !== chipKey) {
+      chipKey = key;
+      DW.setHTML(refBox, DW.html`${ex.map(function (x) { return DW.html`<button type="button" class="lg-chip mono" data-action="asRefChip" data-ref="${x}" aria-pressed="false">${x}</button>`; })}`);
+    }
+    refBox.querySelectorAll('[data-ref]').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.dataset.ref === S.ref));
+      b.disabled = !def.ref;
+    });
+    if (!actionsBuilt) {
+      actionsBuilt = true;
+      DW.setHTML($('as-actions'), DW.html`${A.ACTIONS.map(function (a) { return DW.html`<button type="button" class="lg-chip" data-action="asAction" data-act="${a.id}" aria-pressed="false">${a.label}</button>`; })}`);
+    }
+    $('as-actions').querySelectorAll('[data-act]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.act === S.action)); });
     $('as-ref').disabled = !def.ref;
-    $('as-ref-hint').textContent = def.ref ? 'Chips show this token’s own branch patterns, then generic examples.' : 'This action does not depend on a branch or tag.';
+    $('as-ref-hint').textContent = def.ref ? 'Chips show this token\u2019s own branch patterns, then generic examples.' : 'This action does not depend on a branch or tag.';
     $('as-wf-row').hidden = !def.workflow;
   }
   function paintCan() {
     var box = $('as-can'); if (!box) return;
     var r = repoSummary();
+    box.setAttribute('aria-busy', summaryPending() ? 'true' : 'false');
+    if (summaryPending()) { DW.setHTML(box, DW.html`<h2 id="as-can-h">What this token can do</h2><p class="text-muted text-sm" role="status">Loading\u2026</p>`); return; }
     if (!r) {
       if (S.summaryErr) DW.setHTML(box, DW.html`<h2 id="as-can-h">What this token can do</h2><p class="pt-bad pt-hint" role="alert">${'Could not load this token\u2019s access summary: ' + S.summaryErr}</p><button type="button" class="btn btn-sm" data-action="asRetrySummary">Retry</button>`);
       else DW.setHTML(box, DW.html`<h2 id="as-can-h">What this token can do</h2><p class="text-muted text-sm">No repository is granted on this token.</p>`);
@@ -123,8 +146,9 @@
       return DW.html`<li class="lg-ref"><span class="mono lg-ref-n">${x.ref}</span><span class="lg-pill ${x.ok ? 'lg-pill-ok' : 'lg-pill-bad'}">${x.ok ? 'OK' : 'Refused'}</span>${[x.pattern, x.role, x.reason].filter(Boolean).length ? DW.html`<span class="text-sm text-muted lg-ref-why">${[x.pattern, x.role, x.reason].filter(Boolean).join(' · ')}</span>` : ''}</li>`;
     })}</ul>` : '';
     var perKey = r.perKey.length ? DW.html`<h3 class="as-sub">The result differs by key</h3><ul class="as-perkey">${r.perKey.map(function (k) { return DW.html`<li><span class="mono">${k.key}</span> &mdash; <strong>${k.verdictLabel}</strong>${k.kind ? ' (' + k.kind.replace(/_/g, ' ') + ')' : ''}${k.title ? ' ' + k.title : ''}${k.sees ? DW.html`<pre class="lg-sees mono">${k.sees}</pre>` : ''}</li>`; })}</ul>` : '';
-    return DW.html`<section class="card pt-card as-verdict as-v-${r.verdict}" aria-labelledby="as-verdict-h"><div class="as-vhead"><span class="cl-pill cl-pill-${cls} as-vpill">${r.verdictLabel}</span>${r.kindLabel ? DW.html`<span class="cl-pill cl-pill-mute">${r.kindLabel}</span>` : ''}<h2 id="as-verdict-h">${r.title || subject}</h2></div>
+    return DW.html`<section class="card pt-card as-verdict as-v-${r.verdict}" aria-labelledby="as-verdict-h"><div class="as-vhead"><span class="cl-pill cl-pill-${cls} as-vpill">${r.verdictLabel}</span>${r.kindLabel ? DW.html`<span class="cl-pill cl-pill-mute">${r.kindLabel}</span>` : ''}<h2 id="as-verdict-h" tabindex="-1">${r.title || subject}</h2></div>
       ${r.reason && r.reason !== r.title ? DW.html`<p class="as-reason">${r.reason}</p>` : ''}${r.rule ? DW.html`<p class="as-reason text-muted"><strong>Decided by</strong> ${r.rule}</p>` : ''}${steps.length ? DW.html`<ol class="as-steps">${steps}</ol>` : ''}${refs}${perKey}
+      ${r.defaultUnresolved ? DW.html`<p class="pt-hint">The default branch could not be read from GitHub. <button type="button" class="btn btn-sm" data-action="asRetryLookup">Retry lookup</button></p>` : ''}
       ${r.dependsOnDefault ? DW.html`<p class="pt-hint">This result depends on the repository’s current default branch, read from GitHub and cached for up to 5 minutes.</p>` : ''}
       ${r.sees ? DW.html`<h3 class="as-sub">What the agent would see</h3><pre class="lg-sees mono">${r.sees}</pre>` : ''}</section>`;
   }
@@ -144,9 +168,12 @@
     $('as-out').setAttribute('aria-busy', on ? 'true' : 'false');
     $('as-out').classList.toggle('as-stale', on && !!$('as-out').firstChild);
     $('as-checking').hidden = !on;
-    var go = $('as-raw-go'); if (go) go.disabled = on;
+    S.busy = on;
+    var go = $('as-raw-go'); if (go) { if (on) go.setAttribute('aria-disabled', 'true'); else go.removeAttribute('aria-disabled'); }
   }
-  function run(body, subject) {
+  function run(body, subject, focusHeading) {
+    if (S.refreshNext) { body.refresh = true; S.refreshNext = false; }
+    S.lastBody = body; S.lastSubject = subject;
     var seq = ++S.seq;
     showError('');
     setBusy(true);
@@ -155,6 +182,7 @@
       if (seq !== S.seq) return;
       setBusy(false);
       showResult(res, subject);
+      if (focusHeading && $('as-verdict-h')) $('as-verdict-h').focus();
     }).catch(function (e) {
       if (seq !== S.seq) return;
       setBusy(false);
@@ -166,6 +194,11 @@
       say('The check failed. ' + e.message);
     });
   }
+  DW.actions.asRetryLookup = function () {
+    if (S.busy || !S.lastBody) return;
+    var b = Object.assign({}, S.lastBody, { refresh: true });
+    return run(b, S.lastSubject, true);
+  };
   // The server's offset is a character offset into the body_hex text it received,
   // which is the hex textarea's own text.
   function markHex(off) {
@@ -181,7 +214,8 @@
     he.textContent = 'The server rejected the hex at character ' + (off + 1) + '.'; he.hidden = false;
   }
   function runAction() {
-    if (!S.repo) { showError(S.summaryErr ? 'The repository list could not be loaded. Use Retry under \u201cWhat this token can do\u201d.' : 'This token has no repository to test.'); return; }
+    if (summaryPending()) return;
+    if (!S.repo) { showError(S.sumState === 'error' ? 'The repository list could not be loaded. Use Retry under \u201cWhat this token can do\u201d.' : 'This token has no repository to test.'); return; }
     var def = A.actionDef(S.action);
     return run(A.actionRequest(S), def.label + (def.ref && S.ref ? ' ' + S.ref : '') + ' on ' + S.repo);
   }
@@ -279,6 +313,7 @@
     $('as-path').focus();
   };
   DW.actions.asRawRun = function () {
+    if (S.busy) return;
     if (S.hexErr) { $('as-hex').focus(); say('Fix the hex error first. ' + S.hexErr); return; }
     var path = $('as-path').value.trim();
     if (!path || path.charAt(0) !== '/') { showError('The path must start with /.'); $('as-path').focus(); return; }
@@ -289,26 +324,43 @@
     return run(A.rawRequest({ method: method, path: path, headers: hd.headers, bytes: S.bytes, hexText: $('as-hex').value }), method + ' ' + path);
   };
 
-  DW.actions.asRetrySummary = function () {
-    S.summaryErr = ''; S.summaryLoaded = false;
-    return loadSummary().then(function () { if (S.mode === 'action') runAction(); });
+  // Retry: refresh past the server's remembered lookup failure. The button is marked busy in
+  // place (not re-rendered) so focus stays on it; afterwards focus goes to the repository
+  // select on success or to the new Retry button on failure. A second click while one is in
+  // flight is ignored.
+  DW.actions.asRetrySummary = function (el) {
+    if (S.summaryP) return S.summaryP;
+    el.setAttribute('aria-disabled', 'true');
+    el.textContent = 'Retrying\u2026';
+    return loadSummary(true).then(function () {
+      if (S.sumState === 'ok') {
+        if ($('as-repo')) $('as-repo').focus();
+        if (S.mode === 'action') { S.refreshNext = true; runAction(); }
+      } else {
+        var again = $('as-can').querySelector('[data-action="asRetrySummary"]');
+        if (again) again.focus();
+      }
+    });
   };
 
   /* ---------- summary ---------- */
-  function loadSummary() {
+  // One in-flight summary request at a time; summaryLoaded is true only once it succeeded.
+  function loadSummary(refresh) {
     if (!D.is_github || S.summaryLoaded) return Promise.resolve();
-    S.summaryLoaded = true;
-    return PT.api('GET', SUMMARY_URL).then(function (r) {
+    if (S.summaryP) return S.summaryP;
+    if (!refresh) { S.sumState = 'loading'; paintRepos(); paintCan(); }
+    S.summaryP = PT.api('GET', SUMMARY_URL + (refresh ? '?refresh=1' : '')).then(function (r) {
       S.summary = A.adaptSummary(r);
       if (!S.repo && S.summary.length) S.repo = S.summary[0].repo;
+      S.summaryErr = ''; S.summaryLoaded = true; S.sumState = 'ok';
     }).catch(function (e) {
-      S.summaryErr = e.message;
-      S.summaryLoaded = false;
+      S.summaryErr = e.message; S.sumState = 'error';
     }).then(function () {
+      S.summaryP = null;
       paintRepos(); paintChips(); paintCan();
     });
+    return S.summaryP;
   }
-
   /* ---------- page tab ---------- */
   var TABS = ['overview', 'test'];
   function setURL(tab) {
