@@ -323,8 +323,10 @@
   };
 
   /* ---------- test a request ---------- */
+  var PV = null; // rule-preview.js controller (Preview impact card)
   function clearTest() {
     S.lastTest = null; S.testSeq++;
+    if (PV) PV.invalidate();
     var box = $('pt-test-out');
     if (box.firstChild) {
       DW.setHTML(box, DW.html``);
@@ -605,18 +607,28 @@
   DW.actions.ptSave = function () {
     if (S.saving || S.jsonErr || ruleProblems() || approvalProblem()) return;
     S.saving = true; lockInputs(true); refresh(); showBanner('');
+    // Preview the draft against recent traffic first; ask once when it would
+    // refuse requests that go through today. A failed preview never blocks.
+    var check = PV ? PV.checkBeforeSave() : Promise.resolve(true);
+    return check.then(function (go) {
+      if (!go) { S.saving = false; lockInputs(false); refresh(); return; }
+      return persist();
+    });
+  };
+  function persist() {
     var cfg = draftConfig(), ttl = effTTL(ttlMinutes());
     var payload = { permission_config: cfg, requires_approval: S.approval };
     if (S.approval || S.orig.approval) payload.approval_ttl_minutes = S.approval ? ttl : effTTL(S.orig.ttl);
     return PT.api('PUT', '/api/placeholders/' + encodeURIComponent(ID), payload).then(function (saved) {
       S.orig = { config: cfg, approval: payload.requires_approval, ttl: payload.approval_ttl_minutes !== undefined ? payload.approval_ttl_minutes : S.orig.ttl };
       D.permission_config = cfg;
+      if (PV) PV.reset();
       showBanner('Changes saved.', 'ok');
       DW.toast('Phantom token saved', 'success');
     }).catch(function (e) {
       showBanner('Could not save: ' + e.message, 'bad');
     }).then(function () { S.saving = false; lockInputs(false); refresh(); });
-  };
+  }
   // Editing controls are disabled while a save is in flight so the draft cannot
   // change between the payload being built and the saved state being recorded.
   function lockInputs(on) {
@@ -669,6 +681,17 @@
   S.orig = { config: D.permission_config || '', approval: !!D.requires_approval, ttl: D.approval_ttl_minutes || 0 };
   renderHeader();
   renderClientCard();
+  if ($('pt-impact') && window.RPREV) {
+    PV = window.RPREV.mount($('pt-impact'), {
+      kind: 'token', id: function () { return ID; }, what: 'this token\u2019s rules',
+      hint: 'Replays this token\u2019s requests from the last 7 days against the rules, branch rules and approval setting above. Nothing is sent, saved or counted.',
+      blocked: 'Fix the errors in the draft before previewing.',
+      body: function () {
+        if (S.jsonErr || ruleProblems() || approvalProblem()) return null;
+        return window.RPREV.tokenBody({ config: draftConfig(), approval: S.approval, ttl: effTTL(ttlMinutes()) });
+      }
+    });
+  }
   loadFromOrig();
   if ($('pt-github')) $('pt-github').hidden = !D.is_github;
   refresh();

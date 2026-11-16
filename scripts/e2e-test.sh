@@ -743,6 +743,47 @@ SIM_NOAUTH=$(command curl -s -o /dev/null -w "%{http_code}" -X POST "$SIM_URL" -
 assert_eq "Simulator: anonymous POST is rejected" "401" "$SIM_NOAUTH"
 
 
+# === Test 11g: Rule change preview ===
+echo ""
+echo -e "${YELLOW}[11g] Rule Change Preview${NC}"
+
+PV_LOGS_BEFORE=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/logs?client=$CLIENT_SIM_ID&limit=200" | jq '.items | length')
+PV_APPR_BEFORE=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/approvals/list" | jq 'length')
+# Draft: no @default rule (so no upstream default-branch lookup is needed) and "**" lets
+# the agent push, so the refused push to feature/x would go through.
+GH_POL_DRAFT=$(echo "$GH_POL" | jq -c '.repositories["e2e/repo"].branch_policy.rules = [{"branches":"agent/**","role":"agent"},{"branches":"**","role":"agent"}]')
+PV_TOKEN=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders/$PH_SIM_ID/preview-impact" \
+  -H "Content-Type: application/json" -d "{\"permission_config\":$(echo "$GH_POL_DRAFT" | jq -Rs .),\"requires_approval\":false}")
+assert_eq "Preview: token preview covers the 7 day window" "7" "$(echo "$PV_TOKEN" | jq -r .window_days)"
+assert_eq "Preview: the refused push is newly allowed" "1" "$(echo "$PV_TOKEN" | jq -r '.buckets.newly_allowed')"
+assert_eq "Preview: weight is the repeat_count (2)" "2" "$(echo "$PV_TOKEN" | jq -r '[.items[] | select(.bucket=="newly_allowed")][0].hits')"
+assert_eq "Preview: evaluated per ref" "refs/heads/feature/x" "$(echo "$PV_TOKEN" | jq -r '[.items[] | select(.bucket=="newly_allowed")][0].refs[0].ref')"
+assert_eq "Preview: ref verdict before" "refused" "$(echo "$PV_TOKEN" | jq -r '[.items[] | select(.bucket=="newly_allowed")][0].refs[0].before.verdict')"
+assert_eq "Preview: ref verdict after" "allowed" "$(echo "$PV_TOKEN" | jq -r '[.items[] | select(.bucket=="newly_allowed")][0].refs[0].after.verdict')"
+assert_contains "Preview: simulator link targets the token" "/admin/phantom-tokens/$PH_SIM_ID?tab=test&method=POST" "$(echo "$PV_TOKEN" | jq -r '[.items[] | select(.bucket=="newly_allowed")][0].simulate_url')"
+assert_eq "Preview: unchanged draft changes nothing" "0" "$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders/$PH_SIM_ID/preview-impact" -H "Content-Type: application/json" -d "{\"permission_config\":$(echo "$GH_POL" | jq -Rs .)}" | jq -r '.buckets.newly_allowed + .buckets.newly_refused + .buckets.newly_held')"
+PV_HELD=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders/$PH_SIM_ID/preview-impact" \
+  -H "Content-Type: application/json" -d "{\"permission_config\":$(echo "$GH_POL" | jq -Rs .),\"requires_approval\":true}")
+assert_eq "Preview: token-wide approval holds previously refused traffic" "true" "$(echo "$PV_HELD" | jq '.buckets.newly_held >= 1')"
+PV_BAD=$(curl -s -o /dev/null -w "%{http_code}" -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders/$PH_SIM_ID/preview-impact" -H "Content-Type: application/json" -d '{"permission_config":"{not json"}')
+assert_eq "Preview: invalid draft is 400 like a save" "400" "$PV_BAD"
+
+PV_KEY=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY3_ID/preview-impact" -H "Content-Type: application/json" \
+  -d '{"acl":"{\"version\":\"1\",\"provider\":\"github\",\"rules\":[{\"name\":\"x\",\"endpoints\":[{\"method\":\"POST\",\"path\":\"/e2e/repo.git/git-receive-pack\"}]}]}"}')
+assert_eq "Preview: key preview fans out to its tokens" "$PH_SIM_ID" "$(echo "$PV_KEY" | jq -r '.tokens[] | select(.placeholder_id=="'"$PH_SIM_ID"'") | .placeholder_id')"
+PV_SVC=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/services/$GITHUB_ID/preview-impact" -H "Content-Type: application/json" -d '{"default_acl":""}')
+assert_eq "Preview: service preview answers" "7" "$(echo "$PV_SVC" | jq -r .window_days)"
+PV_BADKEY=$(curl -s -o /dev/null -w "%{http_code}" -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY3_ID/preview-impact" -H "Content-Type: application/json" -d '{"acl":"{not json"}')
+assert_eq "Preview: invalid key ACL is 400" "400" "$PV_BADKEY"
+
+assert_eq "Preview: wrote no request log rows" "$PV_LOGS_BEFORE" "$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/logs?client=$CLIENT_SIM_ID&limit=200" | jq '.items | length')"
+assert_eq "Preview: created no approvals" "$PV_APPR_BEFORE" "$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/approvals/list" | jq 'length')"
+PV_NOCSRF=$(command curl -s -o /dev/null -w "%{http_code}" -b /tmp/dw-e2e-cookies -X POST "$BASE/api/services/$GITHUB_ID/preview-impact" -H "Content-Type: application/json" -H "Origin: http://evil.example" -d '{"default_acl":""}')
+assert_eq "Preview: cross-origin POST is rejected" "403" "$PV_NOCSRF"
+PV_NOAUTH=$(command curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/api/services/$GITHUB_ID/preview-impact" -H "Content-Type: application/json" -H "Origin: $BASE" -d '{"default_acl":""}')
+assert_eq "Preview: anonymous POST is rejected" "401" "$PV_NOAUTH"
+
+
 # === Test 12: Permission System ===
 echo ""
 echo -e "${YELLOW}[12] Permission System${NC}"
