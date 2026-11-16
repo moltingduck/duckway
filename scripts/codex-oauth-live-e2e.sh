@@ -169,7 +169,7 @@ trap cleanup EXIT
 echo "Installing container test tools..."
 apk add --no-cache bash curl jq nodejs npm ca-certificates python3 >/dev/null
 npm install -g "@openai/codex@${CODEX_CLI_VERSION:-latest}" >/dev/null
-echo "[live-e2e] cli codex=$(codex --version 2>&1 | head -n 1) claude=n/a (requested codex=${CODEX_CLI_VERSION:-latest})"
+echo "[live-e2e] cli codex=$(duckway_cli_version codex) claude=n/a (requested codex=${CODEX_CLI_VERSION:-latest})"
 
 echo "Building Duckway binaries..."
 /usr/local/go/bin/go build -buildvcs=false -o /tmp/duckway-server ./cmd/server

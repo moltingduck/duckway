@@ -21,6 +21,10 @@ The proxy and the simulator reach the same verdict for the same request because 
 - The decision has no side effects: it never writes the request log, creates approvals, leases or rotates a key, or forwards anything. The only outbound call is the default-branch lookup, which is read-only, cached for 5 minutes and fails closed.
 - The proxy counts rate limits (`PermissionChecker.Check`); the simulator uses `Explain`, which never does. A rate-limited rule is therefore reported as allowed.
 
+### Delivery modes and the ACL layers
+
+The three ACL layers, approve rules, the GitHub guard and the key's upstream proxy apply only to services in the default `proxy` delivery mode, where every request passes through the gateway. In `loan_proxy` mode (`/client/loan`, `issueGroupLoan` for key groups) the gateway hands the real token to the sidecar, which calls the upstream directly. The gateway then checks only that the token and binding are active and applies the coarse approval gate once, at loan time. The service, api_key and placeholder ACLs, branch rules and the key's upstream proxy are not enforced per request, and the simulator does not describe loan requests. Use `proxy` for any service that needs those controls.
+
 ### Kinds, layers and the deciding rule
 
 `Kind` (`queries.DenyKinds`): `service_acl`, `api_key_acl`, `token_acl`, `capability`, `branch_rules`, `invalid_policy`, `uncheckable`, `approval`.

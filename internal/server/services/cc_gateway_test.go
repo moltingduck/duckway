@@ -373,3 +373,34 @@ func TestRouteMessageEventCommandsDoNotReachDaemon(t *testing.T) {
 		t.Fatalf("command should not be appended to inbox, got %+v", rows)
 	}
 }
+
+func TestIsPermanentGatewayAuthErr(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want bool
+	}{
+		"nil":         {nil, false},
+		"401":         {&DiscordError{Status: 401}, true},
+		"403":         {&DiscordError{Status: 403}, true},
+		"wrapped 401": {fmt.Errorf("gateway lookup: %w", &DiscordError{Status: 401}), true},
+		"500":         {&DiscordError{Status: 500}, false},
+		"transport":   {fmt.Errorf("EOF"), false},
+	}
+	for name, tc := range cases {
+		if got := isPermanentGatewayAuthErr(tc.err); got != tc.want {
+			t.Fatalf("%s: got %v want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestCCAuthFailureDelay(t *testing.T) {
+	want := []time.Duration{5 * time.Minute, 10 * time.Minute, 20 * time.Minute, 40 * time.Minute, time.Hour, time.Hour}
+	for i, w := range want {
+		if got := ccAuthFailureDelay(i + 1); got != w {
+			t.Fatalf("n=%d: got %v want %v", i+1, got, w)
+		}
+	}
+	if got := ccAuthFailureDelay(1000); got != time.Hour {
+		t.Fatalf("cap: got %v", got)
+	}
+}

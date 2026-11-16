@@ -118,7 +118,7 @@ COPY id_ed25519.pub /root/.ssh/authorized_keys
 RUN chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys
 EOF
 "$RUNTIME" build -q --build-arg "CODEX_CLI_VERSION=$CODEX_CLI_VERSION" --build-arg "CLAUDE_CLI_VERSION=$CLAUDE_CLI_VERSION" -t "$IMAGE" -f "$WORK/build/Containerfile" "$WORK/build" >/dev/null
-duckway_print_cli_versions "$("$RUNTIME" run --rm "$IMAGE" codex --version)" "$("$RUNTIME" run --rm "$IMAGE" claude --version)"
+duckway_print_cli_versions "$("$RUNTIME" run --rm "$IMAGE" codex --version 2>/dev/null | grep -m1 -E "[0-9]+\.[0-9]+\.[0-9]+")" "$("$RUNTIME" run --rm "$IMAGE" claude --version)"
 "$RUNTIME" network create "$NET" >/dev/null
 
 echo '[live-e2e] starting credential-isolated server'
