@@ -276,6 +276,9 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) bool {
 		activeFresh := s.sessionFreshlyDisplayed(session)
 		unread, changed := s.reconcileNotificationState(session, activeFresh)
 		session.Unread = unread
+		if deltas[model.NotificationApprovalRequired] > 0 && s.shouldDeliverNotification(session, model.NotificationApprovalRequired) {
+			s.approvalNotifyPending = true // the run loop opens the approvals panel when it can
+		}
 		for category, delta := range deltas {
 			if !s.shouldDeliverNotification(session, category) {
 				continue

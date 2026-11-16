@@ -74,7 +74,7 @@ CONTAINER_RUNTIME="$RUNTIME" "$ROOT/scripts/ducklord-podman-demo.sh" --require-o
 echo "[ducklord-tui-e2e] driving create modal, SSH bridge, and remote PTY"
 # TestDucklordOutputSearchBookmarksContainerE2E
 DEFAULT_PATTERN='^TestDucklord(OutputSearchBookmarksContainer|CommandPaletteContainer|CreateTUIContainer|WorkspacePreviewContainer|WorkspaceDefaultNewShellSplitContainer|FocusedPrefixQuickShell(Horizontal|Vertical|Tab)Container|WorkspaceTwoLivePanesContainer|WorkspaceProjectEnterFocusContainer|SharedProjectNotificationContainer|DetailedListContainer|DetailedUnreadFilterContainer|DetailedOfflineContainer|HostRetentionContainer|HostHookConfigContainer|LocalNotificationContainer|ShellFirstHookContainer|ProjectDeleteContainer|ProjectTransferContainer|ForegroundAgentLabelsContainer|ShellRetirementContainer|ExplicitShellEndRetainsLogContainer|ShellEndModalContainer|DefaultDetachContainer|PaneControlContractContainer|PrefixNavigationContainer|MixedHostProjectContainer|NotesTUIContainer|HostSkillsContainer|HostResourcesContainer'
-DEFAULT_PATTERN+='|FileExchangeContainer|ScrollContainer)E2E$'
+DEFAULT_PATTERN+='|FileExchangeContainer|ScrollContainer|ApprovalsPTY)E2E$'
 # Exact route-manifest names covered by the regex above. Keep this list aligned
 # with docs/ui-routing-verification.md; check-routing-manifest.sh verifies it.
 # TestDucklordPrefixNavigationContainerE2E

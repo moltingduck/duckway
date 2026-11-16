@@ -50,7 +50,7 @@ func (s *tuiState) render(out io.Writer) {
 	if s.resizeStatus != "" {
 		status = "  " + s.resizeStatus
 	}
-	header := fmt.Sprintf("ducklord remote agents  owner:%s%s%s", displayField(s.ownerName), s.hostSyncLabel(), truncate(status, renderWidth/2))
+	header := fmt.Sprintf("ducklord remote agents  owner:%s%s%s%s", displayField(s.ownerName), s.hostSyncLabel(), s.approvalsHeaderLabel(), truncate(status, renderWidth/2))
 	fmt.Fprintf(out, "%s%s%s\n", modalTitle, truncate(header, renderWidth), modalReset)
 	if s.localWarning != "" {
 		fmt.Fprintf(out, "%s%s%s\n", modalDanger, truncate("warning: "+sanitizeTerminalText(s.localWarning), renderWidth), modalReset)
@@ -93,6 +93,7 @@ func (s *tuiState) render(out io.Writer) {
 		s.renderLifecycleModal(out, width, modalHeight)
 		s.renderCommandPalette(out, width, modalHeight)
 		s.renderProjectFilesModal(out, width, modalHeight)
+		s.renderApprovalsModal(out, width, modalHeight)
 		return
 	}
 	if layout.overlay {
@@ -222,6 +223,7 @@ func (s *tuiState) render(out io.Writer) {
 	s.renderLifecycleModal(out, width, modalHeight)
 	s.renderCommandPalette(out, width, modalHeight)
 	s.renderProjectFilesModal(out, width, modalHeight)
+	s.renderApprovalsModal(out, width, modalHeight)
 	if s.focused && s.terminal != nil && !s.outputStale && s.ptyScrollOffset == 0 {
 		if cursorRow, cursorCol, visible := s.terminal.CursorPosition(height-5, contentWidth); visible {
 			fmt.Fprintf(out, "\033[%d;%dH\033[?25h", 6+cursorRow, contentX+cursorCol)

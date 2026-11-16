@@ -97,6 +97,9 @@ func (l *tuiLoop) inputCommandPalette(f *inputFrame) inputFlow {
 			state.commandPaletteAction = ""
 			state.workspaceNewSessionIntent = nil
 			state.beginCreate()
+		case "approvals":
+			state.commandPaletteAction = ""
+			l.openApprovals()
 		case "refresh":
 			state.commandPaletteAction = ""
 			state.refreshSessions(ctx)

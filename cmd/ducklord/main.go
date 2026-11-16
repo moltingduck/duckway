@@ -32,6 +32,7 @@ func printUsage(out io.Writer) {
 
 Usage:
   ducklord [--name <owner>] tui [--config <path>] [--refresh 2s]
+  ducklord approver login [--server <url>] | logout   (approvals panel in the TUI)
   ducklord clients [--config <path>]
   ducklord ssh-hosts [--config-file <ssh_config>]
   ducklord import-ssh-hosts [--ssh-config <ssh_config>] [--config <path>]

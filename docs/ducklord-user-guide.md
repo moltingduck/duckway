@@ -261,6 +261,18 @@ until the current task ends. A Discord Session can take control back with
 controlled from Discord. `E`, `R`, and `X` end, restart, and destroy the
 selected Session, each with a centered confirmation.
 
+## Approve held Duckway requests
+
+Ducklord can approve requests that a Duckway phantom token holds for approval, using a scoped approver token (never an admin login).
+
+1. In the Duckway console, create an approver token. It starts with `dwa_` and is shown once.
+2. Run `ducklord approver login --server https://your-duckway`. The token comes from stdin or a hidden prompt, is checked against the server, and is saved to `approver.json` (mode 0600) next to `config.yaml`. `ducklord approver logout` removes it.
+3. The TUI header shows `approvals: N pending`. Press `I` (Inbox) to open the approvals panel. (`a` already adds a Host, and `d` was the legacy Host-remove key kept by existing configs, so approvals use `I`; rebind it with the `approvals` shortcut.) The panel also has a command palette entry, "Approvals". An agent "approval required" notification never opens the panel by itself; it only leaves the status-line hint "N approvals pending — press I". For the same reason `y`, `Y` and `n` are ignored for about 300 ms after the panel opens or after the selected request changes because of a live update.
+
+Panel keys: `↑`/`↓` select, `y` approve, `Y` approve for 15 minutes, 1 hour, 4 hours or 24 hours, `n` reject, `Enter` shows the request summary (the redacted query and the body hash; approvers never see the body), `h` toggles recently decided approvals, `r` refreshes, `Esc` goes back or closes. The list updates live from `/approver/events`. If someone else decides first, the panel says `already decided by <who> via <where>`. State is always written as words, so the panel reads under `NO_COLOR` and `TERM=dumb`; at 80 columns the detail sits below the list.
+
+The approver token stays in `approver.json`. Ducklord never copies it to Ducklion hosts, agent containers or session environments, and never reads it from the environment.
+
 ## Copy text and manage Hosts
 
 Press `Ctrl+]` if the PTY is focused, then `v` to freeze redraws. Select text

@@ -265,3 +265,11 @@ func waitForText(t *testing.T, m *Manager, name, want string) {
 	text, _ := m.Read(name, 20)
 	t.Fatalf("timed out waiting for %q in %q", want, text)
 }
+
+func TestScrubSessionEnvDropsApproverTokens(t *testing.T) {
+	in := []string{"PATH=/bin", "SSH_AUTH_SOCK=/x", "DUCKLORD_APPROVER_TOKEN=dwa_x", "DUCKWAY_APPROVER_TOKEN=dwa_y", "HOME=/h"}
+	got := scrubSessionEnv(in)
+	if len(got) != 2 || got[0] != "PATH=/bin" || got[1] != "HOME=/h" {
+		t.Fatalf("scrubSessionEnv = %v", got)
+	}
+}

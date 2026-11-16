@@ -26,6 +26,7 @@ func helpCatalog(workspace bool) []helpEntry {
 		{"", "session_end", "End session", ""},
 		{"", "session_destroy", "Destroy session", ""},
 		{"HOST", "host_actions", "Open host list and actions", "Enter opens actions for the selected Host; Connections stages connect/disconnect with Space, then Enter applies; other actions include Reconnect, PTY log retention, Agent notification hooks, and Add/Remove host"},
+		{"", "approvals", "Open the approvals panel", "list Duckway held requests (needs `ducklord approver login`); ↑/↓ select, y approve, Y approve for a chosen duration, n reject, Enter shows the request summary, h history, Esc closes; the header shows the pending count; an agent approval-required notification only shows a status-line hint, it never opens the panel; y/Y/n are ignored for about 300 ms after opening or after the selection shifts; also in the command palette (not bound to a: that is Add host)"},
 		{"", "host_add", "Add host configuration", ""},
 		{"", "host_remove", "Remove host configuration", ""},
 		{"", "shortcut_settings", "Configure shortcuts", "arrows choose an action; Enter edits its binding; Enter saves and Esc returns; after save y/Enter restarts now, n/Esc keeps current bindings"},
@@ -167,7 +168,7 @@ func (s *tuiState) helpActionAvailable(action string) bool {
 	if strings.HasPrefix(action, "project_") || strings.HasPrefix(action, "detail_") || strings.HasPrefix(action, "prefix+") || action == "pane_prefix" || action == "pty_unfocus" || action == "pty_copy" {
 		return false
 	}
-	if s.hostScoped && (action == "host_add" || action == "host_remove" || action == "session_create" || action == "shortcut_settings" || action == "notification_settings") {
+	if s.hostScoped && (action == "host_add" || action == "host_remove" || action == "approvals" || action == "session_create" || action == "shortcut_settings" || action == "notification_settings") {
 		return false
 	}
 	if strings.HasPrefix(action, "session_") && action != "session_create" {

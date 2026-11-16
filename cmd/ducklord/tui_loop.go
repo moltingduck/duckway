@@ -57,6 +57,8 @@ type tuiLoop struct {
 	hostHookStatusDone      chan hostHookStatusEvent
 	hostSkillsDone          chan hostSkillsEvent
 	projectFilesDone        chan projectFilesEvent
+	approvalsDone           chan approvalsEvent
+	approvalsCancel         context.CancelFunc
 	createDone              chan createDiscoveryEvent
 	pathSuggestionsDone     chan pathSuggestionEvent
 	addClientDone           chan addClientDoneEvent

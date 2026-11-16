@@ -92,6 +92,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	l.hostSkillsDone = make(chan hostSkillsEvent)
 	state.hostSkillsDone = l.hostSkillsDone
 	l.projectFilesDone = make(chan projectFilesEvent, 8)
+	l.approvalsDone = make(chan approvalsEvent, 16)
 	state.projectFiles.done = l.projectFilesDone
 	state.projectFiles.lifecycle = ctx
 	l.createDone = make(chan createDiscoveryEvent, 1)
@@ -129,6 +130,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	}
 	defer l.stopPanePrefixTimer()
 	l.lastOutputRender = time.Time{}
+	l.startApprovals()
 	for {
 		l.queueDeferredReplays()
 		// A continuously producing PTY can keep its output channel ready and
@@ -158,6 +160,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			l.onHostSkillsDone(event)
 		case event := <-l.projectFilesDone:
 			l.onProjectFilesDone(event)
+		case event := <-l.approvalsDone:
+			l.onApprovalsEvent(event)
 		case <-l.workspaceRepaint:
 			l.onWorkspaceRepaint()
 		case <-ctx.Done():
