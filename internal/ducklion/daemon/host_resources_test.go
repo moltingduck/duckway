@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"testing"
 )
 
 func TestHostResourcesAuthorizationAndFields(t *testing.T) {
-	s, err := Open(context.Background(), Options{Root: t.TempDir()})
+	s, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

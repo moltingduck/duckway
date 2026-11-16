@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"testing"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 )
 
 func TestForegroundVisibilityIsAdvisoryAndGenerationFenced(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +23,7 @@ func TestForegroundVisibilityIsAdvisoryAndGenerationFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UnixMilli()
-	session := model.Session{ID: "ABC123", Handle: "shell", Kind: model.KindShell, CWD: t.TempDir(), Status: model.StatusRecovering,
+	session := model.Session{ID: "ABC123", Handle: "shell", Kind: model.KindShell, CWD: testutil.ShortDir(t), Status: model.StatusRecovering,
 		RuntimeGeneration: 1, TaskState: model.TaskIdle, AdapterState: model.AdapterUnavailable, RecoveryPublicKey: publicKey,
 		CreatedAtMS: now, UpdatedAtMS: now}
 	if _, _, err := server.service.CreateSession(context.Background(), "terminal:desk", "create-foreground", session); err != nil {

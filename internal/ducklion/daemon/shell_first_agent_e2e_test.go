@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"io"
 	"net"
 	"os"
@@ -37,7 +38,7 @@ func TestShellFirstHookDaemonEmitter(t *testing.T) {
 }
 
 func TestShellFirstHookUpdatesDaemonActivityWithoutEndingShell(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
@@ -92,7 +93,7 @@ func TestShellFirstHookUpdatesDaemonActivityWithoutEndingShell(t *testing.T) {
 // service. The fixture commands stand in for short-lived Codex/Claude CLI
 // processes launched by the user inside one long-lived interactive shell.
 func TestShellFirstAgentCommandsReturnToSamePTYWithoutFalseCompletion(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	for _, fixture := range []struct{ name, marker string }{
 		{"fake-codex", "CODEX_CHILD_EXITED"},
 		{"fake-claude", "CLAUDE_CHILD_EXITED"},

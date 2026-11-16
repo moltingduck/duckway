@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +15,7 @@ import (
 )
 
 func TestRetiredShellOutputIsFencedAndSwept(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {

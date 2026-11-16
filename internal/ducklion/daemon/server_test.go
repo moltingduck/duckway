@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,7 @@ type fakeRuntimeController struct {
 }
 
 func TestManagementQuiesceRejectsSpoofedPeerAndNewWork(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	server, err := Open(context.Background(), Options{Root: root})
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +125,7 @@ func (c *fakeRuntimeController) UpdateOwnership(epoch, generation uint64) error 
 }
 
 func TestServerStatusAndSingleInstanceLock(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	server, err := Open(context.Background(), Options{Root: root})
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +166,7 @@ func TestServerStatusAndSingleInstanceLock(t *testing.T) {
 }
 
 func TestServerRejectsDuplicateLiveDucklordPrincipal(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +206,7 @@ func TestServerRejectsDuplicateLiveDucklordPrincipal(t *testing.T) {
 }
 
 func TestDucklordProcessAllowsObserverButFencesOtherProcesses(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +302,7 @@ func TestOutputSubscriptionQuotaIsBoundedAndReleased(t *testing.T) {
 }
 
 func TestSessionEventSubscriptionHasAtomicSnapshotAndDurableRevision(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +315,7 @@ func TestSessionEventSubscriptionHasAtomicSnapshotAndDurableRevision(t *testing.
 	}
 	now := time.Now().UnixMilli()
 	owner := model.Owner{Kind: model.OwnerTerminal, ID: "desk-events"}
-	session := model.Session{ID: "ABC123", Handle: "events", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+	session := model.Session{ID: "ABC123", Handle: "events", Kind: model.KindAgent, AgentType: "codex", CWD: testutil.ShortDir(t), Status: model.StatusRecovering,
 		Writer: &owner, OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle, AdapterState: model.AdapterRecovering,
 		RecoveryPublicKey: publicKey, CreatedAtMS: now, UpdatedAtMS: now}
 	if _, _, err := server.service.CreateSession(context.Background(), "terminal:desk-events", "create-events", session); err != nil {
@@ -374,7 +375,7 @@ func TestSessionEventSubscriptionHasAtomicSnapshotAndDurableRevision(t *testing.
 }
 
 func TestSessionEventSubscriptionRejectsFutureRevisionAndCCRole(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +431,7 @@ func TestSessionEventSubscriptionQuotaIsBoundedAndReleased(t *testing.T) {
 }
 
 func TestRecoveredOutputPreservesOriginalGapOffset(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +439,7 @@ func TestRecoveredOutputPreservesOriginalGapOffset(t *testing.T) {
 	go func() { serveDone <- server.Serve() }()
 	defer func() { _ = server.Close(); <-serveDone }()
 	publicKey, privateKey, _ := model.NewRecoveryKey()
-	session := model.Session{ID: "ABC123", Handle: "gap", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+	session := model.Session{ID: "ABC123", Handle: "gap", Kind: model.KindAgent, AgentType: "codex", CWD: testutil.ShortDir(t), Status: model.StatusRecovering,
 		Writer: &model.Owner{Kind: model.OwnerTerminal, ID: "desk"}, OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle,
 		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
 	if _, _, err := server.service.CreateSession(context.Background(), "terminal:desk", "create-gap", session); err != nil {
@@ -472,7 +473,7 @@ func TestRecoveredOutputPreservesOriginalGapOffset(t *testing.T) {
 }
 
 func TestServerRefusesToReplaceNonSocket(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	path := filepath.Join(root, "ducklion.sock")
 	if err := os.WriteFile(path, []byte("do not replace"), 0600); err != nil {
 		t.Fatal(err)
@@ -486,7 +487,7 @@ func TestServerRefusesToReplaceNonSocket(t *testing.T) {
 }
 
 func TestServerRejectsSymlinkLock(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	target := filepath.Join(root, "target")
 	if err := os.WriteFile(target, nil, 0600); err != nil {
 		t.Fatal(err)
@@ -500,7 +501,7 @@ func TestServerRejectsSymlinkLock(t *testing.T) {
 }
 
 func TestServerRejectsWrongInstance(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +527,7 @@ func TestServerRejectsWrongInstance(t *testing.T) {
 }
 
 func TestStalledActivityConnectionDoesNotBlockRawOutput(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +538,7 @@ func TestStalledActivityConnectionDoesNotBlockRawOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: testutil.ShortDir(t), Status: model.StatusRecovering,
 		Writer: &model.Owner{Kind: model.OwnerTerminal, ID: "desk"}, OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle,
 		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
 	if _, _, err := server.service.CreateSession(context.Background(), "terminal:desk", "create-stall", session); err != nil {
@@ -579,7 +580,7 @@ func TestStalledActivityConnectionDoesNotBlockRawOutput(t *testing.T) {
 }
 
 func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -593,7 +594,7 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: testutil.ShortDir(t), Status: model.StatusRecovering,
 		Writer: &model.Owner{Kind: model.OwnerCC, ID: "channel"}, OwnershipEpoch: 1, RuntimeGeneration: 2, TaskState: model.TaskIdle,
 		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
 	if _, _, err := server.service.CreateSession(context.Background(), "cc:channel", "create", session); err != nil {
@@ -836,7 +837,7 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 }
 
 func TestSupervisorRecoveryRejectsWrongPrivateKey(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -845,7 +846,7 @@ func TestSupervisorRecoveryRejectsWrongPrivateKey(t *testing.T) {
 	defer func() { _ = server.Close(); <-serveErr }()
 	publicKey, _, _ := model.NewRecoveryKey()
 	_, wrongPrivateKey, _ := model.NewRecoveryKey()
-	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: testutil.ShortDir(t), Status: model.StatusRecovering,
 		Writer: &model.Owner{Kind: model.OwnerCC, ID: "channel"}, OwnershipEpoch: 1, RuntimeGeneration: 2, TaskState: model.TaskIdle,
 		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
 	if _, _, err := server.service.CreateSession(context.Background(), "cc:channel", "create", session); err != nil {
@@ -857,7 +858,7 @@ func TestSupervisorRecoveryRejectsWrongPrivateKey(t *testing.T) {
 }
 
 func TestDucklordInputAndResizeAreOwnerFenced(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -866,7 +867,7 @@ func TestDucklordInputAndResizeAreOwnerFenced(t *testing.T) {
 	defer func() { _ = server.Close(); <-serveErr }()
 	publicKey, privateKey, _ := model.NewRecoveryKey()
 	owner := model.Owner{Kind: model.OwnerTerminal, ID: "laptop"}
-	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: testutil.ShortDir(t), Status: model.StatusRecovering,
 		Writer: &owner, OwnershipEpoch: 7, RuntimeGeneration: 2, TaskState: model.TaskIdle, AdapterState: model.AdapterRecovering,
 		RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
 	if _, _, err := server.service.CreateSession(context.Background(), "terminal:laptop", "create", session); err != nil {
@@ -992,7 +993,7 @@ func TestDucklordInputAndResizeAreOwnerFenced(t *testing.T) {
 }
 
 func TestSessionRenameNegotiationRouteAndSummary(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1001,7 +1002,7 @@ func TestSessionRenameNegotiationRouteAndSummary(t *testing.T) {
 	defer func() { _ = server.Close(); <-serveErr }()
 
 	now := time.Now().UTC().UnixMilli()
-	session := model.Session{ID: "ABC123", Handle: "before", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(),
+	session := model.Session{ID: "ABC123", Handle: "before", Kind: model.KindAgent, AgentType: "codex", CWD: testutil.ShortDir(t),
 		Status: model.StatusRecovering, Writer: &model.Owner{Kind: model.OwnerTerminal, ID: "laptop"}, OwnershipEpoch: 7,
 		RuntimeGeneration: 2, TaskState: model.TaskIdle, AdapterState: model.AdapterRecovering, CreatedAtMS: now, UpdatedAtMS: now}
 	if _, _, err := server.service.CreateSession(context.Background(), "terminal:laptop", "create-rename-route", session); err != nil {
@@ -1063,7 +1064,7 @@ func TestSessionRenameNegotiationRouteAndSummary(t *testing.T) {
 }
 
 func TestTerminalYieldTransfersCCSessionAndSynchronizesSupervisor(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1071,7 +1072,7 @@ func TestTerminalYieldTransfersCCSessionAndSynchronizesSupervisor(t *testing.T) 
 	go func() { serveDone <- server.Serve() }()
 	defer func() { _ = server.Close(); <-serveDone }()
 	publicKey, privateKey, _ := model.NewRecoveryKey()
-	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: testutil.ShortDir(t), Status: model.StatusRecovering,
 		Writer: &model.Owner{Kind: model.OwnerCC, ID: "channel-1"}, OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle,
 		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
 	if _, _, err := server.service.CreateSession(context.Background(), "cc:channel-1", "create", session); err != nil {
@@ -1207,7 +1208,7 @@ func TestTerminalYieldTransfersCCSessionAndSynchronizesSupervisor(t *testing.T) 
 }
 
 func TestRealPTYInputFlowsThroughDaemonControl(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1216,7 +1217,7 @@ func TestRealPTYInputFlowsThroughDaemonControl(t *testing.T) {
 	defer func() { _ = server.Close(); <-serveErr }()
 	publicKey, privateKey, _ := model.NewRecoveryKey()
 	owner := model.Owner{Kind: model.OwnerTerminal, ID: "laptop"}
-	sessionModel := model.Session{ID: "ABC123", Handle: "real-pty", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+	sessionModel := model.Session{ID: "ABC123", Handle: "real-pty", Kind: model.KindAgent, AgentType: "codex", CWD: testutil.ShortDir(t), Status: model.StatusRecovering,
 		Writer: &owner, OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle, AdapterState: model.AdapterRecovering,
 		RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
 	if _, _, err := server.service.CreateSession(context.Background(), "terminal:laptop", "create-real", sessionModel); err != nil {

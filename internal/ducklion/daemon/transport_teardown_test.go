@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 func TestOldOutputTeardownCannotDowngradeReconnectedControl(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	server, err := Open(ctx, Options{Root: t.TempDir()})
+	server, err := Open(ctx, Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +24,7 @@ func TestOldOutputTeardownCannotDowngradeReconnectedControl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := model.Session{ID: "ABC123", Handle: "teardown", Kind: model.KindShell, CWD: t.TempDir(), Status: model.StatusRecovering,
+	session := model.Session{ID: "ABC123", Handle: "teardown", Kind: model.KindShell, CWD: testutil.ShortDir(t), Status: model.StatusRecovering,
 		OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle, AdapterState: model.AdapterUnavailable,
 		RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
 	if _, _, err := server.service.CreateSession(ctx, "terminal:teardown-owner", "create", session); err != nil {

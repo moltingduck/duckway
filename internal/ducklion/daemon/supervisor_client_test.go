@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"net"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func TestForwardOutputSeedsFreshHubAfterReplayGap(t *testing.T) {
 	for i := 0; i < 16; i++ {
 		hub.Publish([]byte("output"))
 	}
-	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: t.TempDir() + "/supervisor.sock", Net: "unix"})
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: testutil.ShortDir(t) + "/supervisor.sock", Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
 	}

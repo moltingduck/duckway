@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,7 +19,7 @@ import (
 )
 
 func TestHostRetentionRPCSweepsImmediatelyWithoutRestartingShell(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	runtimeCtx, stopRuntime := context.WithCancel(ctx)

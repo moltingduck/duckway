@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"io"
 	"net"
 	"path/filepath"
@@ -34,7 +35,7 @@ func (s *pipeStream) Close() error {
 }
 
 func TestBridgeStdioCopiesOpaqueBytesWithoutDecoration(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "bridge.sock")
+	path := filepath.Join(testutil.ShortDir(t), "bridge.sock")
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +69,7 @@ func TestBridgeStdioCopiesOpaqueBytesWithoutDecoration(t *testing.T) {
 }
 
 func TestBridgeStdioCarriesRealDucklionProtocol(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

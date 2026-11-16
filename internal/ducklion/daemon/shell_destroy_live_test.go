@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,7 +21,7 @@ import (
 )
 
 func TestRunningShellDestroyTerminatesProcessAndBothViewers(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	runtimeCtx, stopRuntime := context.WithCancel(ctx)

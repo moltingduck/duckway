@@ -2,6 +2,7 @@ package ducklioncli
 
 import (
 	"encoding/json"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"net"
 	"path/filepath"
 	"strings"
@@ -17,7 +18,7 @@ func hookReceiver(t *testing.T) <-chan protocol.SupervisorAgentEvent {
 
 func hookReceiverWithToken(t *testing.T, token string) <-chan protocol.SupervisorAgentEvent {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "hook.sock")
+	path := filepath.Join(testutil.ShortDir(t), "hook.sock")
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +185,7 @@ func TestTruncateUTF8BytesPreservesCharacters(t *testing.T) {
 }
 
 func TestRunAgentHookReportsServerRejection(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "hook.sock")
+	path := filepath.Join(testutil.ShortDir(t), "hook.sock")
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
