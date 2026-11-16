@@ -49,7 +49,7 @@ func ccReconnectDelay(prevBase, uptime, min, max, stableAfter time.Duration) (wa
 	return wait, nextBase
 }
 
-// Discord rejecting the bot token (401/403) is a permanent credential failure:
+// Discord rejecting the bot token (401) is a permanent credential failure:
 // retrying every minute only spams logs and Discord. After such a failure the
 // loop waits ccAuthFailureMin, doubling up to ccAuthFailureMax, and logs the
 // actionable message once per failure streak.
@@ -59,10 +59,11 @@ const (
 )
 
 // isPermanentGatewayAuthErr reports whether err is Discord rejecting the bot
-// credential (401 invalid token, 403 forbidden).
+// credential (401 invalid token). A 403 can come from a WAF/Cloudflare
+// and keeps the normal reconnect backoff.
 func isPermanentGatewayAuthErr(err error) bool {
 	var derr *DiscordError
-	return errors.As(err, &derr) && (derr.Status == http.StatusUnauthorized || derr.Status == http.StatusForbidden)
+	return errors.As(err, &derr) && derr.Status == http.StatusUnauthorized
 }
 
 // ccAuthFailureDelay returns the wait after the nth consecutive auth failure
@@ -239,7 +240,7 @@ type ccBotConn struct {
 	botUserID            string
 	awaitingHeartbeatAck bool
 	lastHeartbeatAck     time.Time
-	authFailures         int // consecutive Discord 401/403 failures; guarded by mu
+	authFailures         int // consecutive Discord 401 failures; guarded by mu
 }
 
 // AuthFailed reports whether Discord is currently rejecting this bot's token.
@@ -250,7 +251,7 @@ func (c *ccBotConn) AuthFailed() bool {
 }
 
 // AuthFailedKeys returns the api_key IDs whose bot token Discord is rejecting
-// (401/403), so an admin surface can flag them.
+// (401), so an admin surface can flag them.
 func (m *CCGatewayManager) AuthFailedKeys() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
