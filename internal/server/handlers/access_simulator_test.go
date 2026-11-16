@@ -247,7 +247,7 @@ func TestSimulatorSteps(t *testing.T) {
 	if len(ok.Refs) != 1 || ok.Refs[0].Pattern != "agent/**" || ok.Refs[0].Role != "agent" || ok.Refs[0].Verdict != "allowed" {
 		t.Fatalf("allowed refs: %+v", ok.Refs)
 	}
-	if no.Rule != "@default (protected)" {
+	if no.Rule != "@default \u2192 protected" {
 		t.Fatalf("rule %q", no.Rule)
 	}
 }
@@ -540,6 +540,9 @@ func TestAccessSummary(t *testing.T) {
 	if r["repo"] != "owner/repo" || r["branch_rules"] != true || r["clone"] != true || r["merge"] != false || r["approve"] != false || r["tags"] != true {
 		t.Fatalf("repo flags: %v", r)
 	}
+	if r["default_branch"] != "main" {
+		t.Fatalf("default_branch: %v", r["default_branch"])
+	}
 	rules := r["rules"].([]interface{})
 	if len(rules) != 4 {
 		t.Fatalf("rules: %v", rules)
@@ -555,6 +558,9 @@ func TestAccessSummary(t *testing.T) {
 	e.setConfig(v2LegacyConfig)
 	_, out = get()
 	lr := out["repos"].([]interface{})[0].(map[string]interface{})
+	if lr["default_branch"] != nil {
+		t.Fatalf("legacy grants need no default branch: %v", lr["default_branch"])
+	}
 	if lr["legacy"] != true || lr["branch_rules"] != false || len(lr["rules"].([]interface{})) != 0 {
 		t.Fatalf("legacy: %v", lr)
 	}

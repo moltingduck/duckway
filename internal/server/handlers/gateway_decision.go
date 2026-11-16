@@ -83,6 +83,39 @@ const (
 	msgApproveNotPermitted = "submitting approving reviews is not permitted for this grant"
 )
 
+// ruleText is the "Decided by" text for a branch rule or tag patterns.
+func ruleText(pattern, role string) string {
+	switch {
+	case role == "tag":
+		return pattern
+	case pattern == "":
+		return ""
+	}
+	return pattern + " \u2192 " + role
+}
+
+// capabilityOf names the capability toggle behind a capability refusal.
+func capabilityOf(msg string) string {
+	switch msg {
+	case msgMergeNotPermitted:
+		return "pull_requests_merge"
+	case msgApproveNotPermitted:
+		return "pull_requests_approve"
+	}
+	return ""
+}
+
+func (st *gatewayState) tagRuleText() string {
+	pats := []string{}
+	if st.guard != nil {
+		pats = st.guard.policy.BranchPolicy.Tags.Create
+	}
+	if len(pats) == 0 {
+		return "tag create patterns: (none)"
+	}
+	return "tag create patterns: " + strings.Join(pats, ", ")
+}
+
 func layerKind(layer string) string {
 	switch layer {
 	case "service":
@@ -244,7 +277,12 @@ func (st *gatewayState) refuseGuard(rp *receivePackRequest, reasons []string, re
 	kind := guardKind(reason)
 	rule := ""
 	d := &GatewayDecision{Verdict: GatewayRefused, Kind: kind, Layer: "placeholder", Reason: reason, Refs: []DecisionRef{}, logDenied: true}
-	if st.guard != nil && kind == "branch_rules" && len(reasons) == 0 {
+	switch {
+	case kind == "capability":
+		rule = capabilityOf(reason)
+	case st.guard != nil && strings.Contains(reason, "tag") && strings.Contains(reason, "may not be created"):
+		rule = st.tagRuleText()
+	case st.guard != nil && kind == "branch_rules" && len(reasons) == 0:
 		rule = st.guardRuleHint(reason)
 	}
 	if st.in.Method == http.MethodPost && strings.HasSuffix(st.in.Path, ".git/git-receive-pack") {
@@ -252,12 +290,7 @@ func (st *gatewayState) refuseGuard(rp *receivePackRequest, reasons []string, re
 		d.Sees = receivePackSees(rp, reasons, reason)
 		if rp != nil && len(reasons) == len(rp.Commands) {
 			d.Refs = st.describeRefs(e, rp.Commands, reasons)
-			for _, r := range d.Refs {
-				if r.Verdict == refVerdictRefused && r.Pattern != "" {
-					rule = r.Pattern + " (" + r.Role + ")"
-					break
-				}
-			}
+			rule = firstRefusedRule(d.Refs)
 		}
 	} else {
 		d.status, d.jsonMsg = http.StatusForbidden, "duckway: "+reason
@@ -265,6 +298,16 @@ func (st *gatewayState) refuseGuard(rp *receivePackRequest, reasons []string, re
 	}
 	d.Rule = rule
 	return d
+}
+
+// firstRefusedRule is the rule text of the first refused ref that has one.
+func firstRefusedRule(refs []DecisionRef) string {
+	for _, r := range refs {
+		if r.Verdict == refVerdictRefused && r.Pattern != "" {
+			return ruleText(r.Pattern, r.Role)
+		}
+	}
+	return ""
 }
 
 // guardRuleHint names the branch rule behind a REST refusal when the message
@@ -289,10 +332,10 @@ func (st *gatewayState) guardRuleHint(reason string) string {
 	}
 	rule, matched := st.guard.policy.BranchPolicy.SelectRule(branch, "")
 	if matched && rule.Branches != services.GitHubDefaultBranchToken {
-		return rule.Branches + " (" + rule.Role + ")"
+		return ruleText(rule.Branches, rule.Role)
 	}
 	if role != "" {
-		return "branch rules (" + role + ")"
+		return ruleText("(no rule)", role)
 	}
 	return ""
 }
@@ -326,7 +369,7 @@ func (st *gatewayState) describeRefs(e *guardEval, cmds []receivePackCommand, re
 		if i < len(reasons) && reasons[i] != "" {
 			r.Verdict, r.Reason = refVerdictRefused, reasons[i]
 		}
-		r.Pattern, r.Role = st.describeRule(e, c.Ref)
+		r.Pattern, r.Role = st.describeRule(e, c.Ref, r.Verdict == refVerdictRefused)
 		out = append(out, r)
 	}
 	return out
@@ -334,7 +377,7 @@ func (st *gatewayState) describeRefs(e *guardEval, cmds []receivePackCommand, re
 
 // describeRule names the branch rule (pattern, role) governing a ref, or the
 // matching tag pattern. It is empty when that depends on an unknown default.
-func (st *gatewayState) describeRule(e *guardEval, ref string) (pattern, role string) {
+func (st *gatewayState) describeRule(e *guardEval, ref string, refused bool) (pattern, role string) {
 	if st.guard == nil {
 		return "", ""
 	}
@@ -350,11 +393,14 @@ func (st *gatewayState) describeRule(e *guardEval, ref string) (pattern, role st
 				// the same either way.
 				ro, okO := pol.SelectRule(b, "")
 				rd, okD := pol.SelectRule(b, b)
-				if okO != okD || ro.Branches != rd.Branches || ro.Role != rd.Role {
+				if (okO != okD || ro.Branches != rd.Branches || ro.Role != rd.Role) && !refused {
 					return "", ""
 				}
+				// A refused ref is refused whether or not it is the default
+				// branch, so the most specific non-@default rule is the one
+				// that decided it.
 				if !okO {
-					return "", services.GitHubRoleRead
+					return "(no rule)", services.GitHubRoleRead
 				}
 				return ro.Branches, ro.Role
 			}
@@ -362,17 +408,17 @@ func (st *gatewayState) describeRule(e *guardEval, ref string) (pattern, role st
 		}
 		rule, matched := pol.SelectRule(b, def)
 		if !matched {
-			return "", services.GitHubRoleRead
+			return "(no rule)", services.GitHubRoleRead
 		}
 		return rule.Branches, rule.Role
 	case strings.HasPrefix(ref, "refs/tags/") && len(ref) > len("refs/tags/") && len(ref) <= maxGitHubRefNameBytes:
 		tag := strings.TrimPrefix(ref, "refs/tags/")
 		for _, pat := range pol.Tags.Create {
 			if services.GitHubGlobMatch(strings.TrimPrefix(pat, "refs/tags/"), tag) {
-				return pat, "tag"
+				return "tag create patterns: " + pat, "tag"
 			}
 		}
-		return "", "tag"
+		return st.tagRuleText(), "tag"
 	}
 	return "", ""
 }
@@ -567,22 +613,17 @@ func (st *gatewayState) enrich(d *GatewayDecision, def defaultBranchFn) {
 	}
 	e := &guardEval{policy: g.policy, def: wrapped}
 	for i := range d.Refs {
-		if d.Refs[i].Pattern != "" || d.Refs[i].Role != "" {
-			continue
-		}
-		d.Refs[i].Pattern, d.Refs[i].Role = st.describeRule(e, d.Refs[i].Ref)
+		d.Refs[i].Pattern, d.Refs[i].Role = st.describeRule(e, d.Refs[i].Ref, d.Refs[i].Verdict == refVerdictRefused)
 	}
-	for _, r := range d.Refs {
-		if r.Verdict == refVerdictRefused && r.Pattern != "" {
-			d.Rule = r.Pattern + " (" + r.Role + ")"
-			return
-		}
+	if rt := firstRefusedRule(d.Refs); rt != "" {
+		d.Rule = rt
+		return
 	}
 	if d.Kind == "branch_rules" && len(d.Refs) == 0 {
 		if branch := quotedBranch(d.Reason); branch != "" {
 			if dflt, err := e.defaultBranch(); err == nil {
 				if rule, ok := g.policy.BranchPolicy.SelectRule(branch, dflt); ok {
-					d.Rule = rule.Branches + " (" + rule.Role + ")"
+					d.Rule = ruleText(rule.Branches, rule.Role)
 				}
 			}
 		}

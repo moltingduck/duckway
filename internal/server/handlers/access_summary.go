@@ -1,11 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/hackerduck/duckway/internal/models"
 	"github.com/hackerduck/duckway/internal/server/services"
 )
 
@@ -34,6 +37,10 @@ type summaryRepo struct {
 	PRWrite      bool          `json:"pull_requests_write"`
 	Dispatch     bool          `json:"workflow_dispatch"`
 	RefAllowlist []string      `json:"ref_allowlist"` // legacy grants only
+	// DefaultBranch is the repository's default branch when the rules mention
+	// @default and it could be resolved (read-only, cached 5 minutes, bounded);
+	// null when unknown or not needed.
+	DefaultBranch *string `json:"default_branch"`
 }
 
 type accessSummaryResponse struct {
@@ -172,5 +179,47 @@ func (a *AccessSimulator) AccessSummary(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, "the token's permission config is invalid: "+err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	a.fillDefaultBranches(r.Context(), ph, svc, cfg, repos)
 	jsonResponse(w, accessSummaryResponse{Service: svc.Name, Repos: repos})
+}
+
+const summaryDefaultTimeout = 4 * time.Second
+
+// fillDefaultBranches sets default_branch for repositories whose rules mention
+// @default, using the same read-only, cached lookup the simulator makes with
+// the token's first usable credential. Failures leave it null.
+func (a *AccessSimulator) fillDefaultBranches(ctx context.Context, ph *models.PlaceholderKey, svc *models.Service, cfg string, repos []summaryRepo) {
+	policies, err := services.ParseGitHubBranchPolicies(cfg)
+	if err != nil {
+		return
+	}
+	var cand *simCandidate
+	for i := range repos {
+		pol, ok := policies[repos[i].Repo]
+		if !ok || !pol.BranchPolicy.HasDefaultRule() {
+			continue
+		}
+		if cand == nil {
+			cands, _, cerr := a.candidateKeys(ph)
+			if cerr != nil {
+				return
+			}
+			for j := range cands {
+				if cands[j].Active {
+					cand = &cands[j]
+					break
+				}
+			}
+			if cand == nil {
+				return
+			}
+		}
+		lctx, cancel := context.WithTimeout(ctx, summaryDefaultTimeout)
+		sr := &simReq{Method: "GET", Path: "/repos/" + repos[i].Repo}
+		b, derr := a.defaultBranchFor(lctx, svc, *cand, ph, cfg, sr, repos[i].Repo)()
+		cancel()
+		if derr == nil && b != "" {
+			repos[i].DefaultBranch = &b
+		}
+	}
 }

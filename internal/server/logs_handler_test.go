@@ -419,7 +419,7 @@ func TestLogsDenyKindFilterAndDetailFields(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ins("/k/branch", `{"kind":"branch_rules","layer":"placeholder","rule":"** (read)","reason":"r","refs":[],"sees":"s"}`, 3)
+	ins("/k/branch", `{"kind":"branch_rules","layer":"placeholder","rule":"** \u2192 read","reason":"r","refs":[],"sees":"s"}`, 3)
 	ins("/k/token", `{"kind":"token_acl","layer":"placeholder","rule":"","reason":"r","refs":[],"sees":"s"}`, 1)
 	ins("/k/legacy", ``, 1)
 
@@ -453,7 +453,7 @@ func TestLogsDenyKindFilterAndDetailFields(t *testing.T) {
 	for _, it := range body.Items {
 		switch it.Path {
 		case "/k/branch":
-			if it.RepeatCount != 3 || it.DenyDetail == nil || it.DenyDetail.Kind != "branch_rules" || it.DenyDetail.Rule != "** (read)" {
+			if it.RepeatCount != 3 || it.DenyDetail == nil || it.DenyDetail.Kind != "branch_rules" || it.DenyDetail.Rule != "** \u2192 read" {
 				t.Errorf("branch row: %+v", it)
 			}
 		case "/k/legacy":

@@ -164,15 +164,16 @@ func TestDecideReceivePackStreamsRemainder(t *testing.T) {
 func TestEnrichNamesRuleFromDefault(t *testing.T) {
 	sr, _ := buildActionRequest(simulateRequest{Repo: "o/r", Action: "push", Ref: "main"})
 	st, d := decideWith(t, internalPolicyConfig, "POST", "/o/r.git/git-receive-pack", gatewayBody{InHand: true, Bytes: sr.Body})
-	if d == nil || d.Refs[0].Pattern != "" {
-		t.Fatalf("without the default the rule is unknown: %+v", d)
+	// Refused whether or not main is the default: the non-@default rule decided it.
+	if d == nil || d.Refs[0].Pattern != "**" || d.Refs[0].Role != "read" || d.Rule != "** \u2192 read" {
+		t.Fatalf("without the default the deciding rule is the non-@default match: %+v", d)
 	}
 	st.enrich(d, func() (string, error) { return "", errors.New("down") })
-	if d.Refs[0].Pattern != "" || d.Rule != "" {
-		t.Fatalf("a failed lookup must leave it unnamed: %+v", d)
+	if d.Refs[0].Pattern != "**" || d.Rule != "** \u2192 read" {
+		t.Fatalf("a failed lookup must keep the fallback: %+v", d)
 	}
 	st.enrich(d, func() (string, error) { return "main", nil })
-	if d.Refs[0].Pattern != "@default" || d.Refs[0].Role != "protected" || d.Rule != "@default (protected)" {
+	if d.Refs[0].Pattern != "@default" || d.Refs[0].Role != "protected" || d.Rule != "@default \u2192 protected" {
 		t.Fatalf("enriched: %+v", d)
 	}
 	if !st.DependsOnDefault() {

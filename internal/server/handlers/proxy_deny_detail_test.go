@@ -171,7 +171,7 @@ func TestProxyDenyDetailNamesRulesFromCachedDefault(t *testing.T) {
 			t.Errorf("ref %d: %v want %v", i, r, w)
 		}
 	}
-	if d["rule"] != "@default (protected)" {
+	if d["rule"] != "@default \u2192 protected" {
 		t.Errorf("rule: %v", d["rule"])
 	}
 	if e.lookups != warmed {
