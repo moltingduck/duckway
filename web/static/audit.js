@@ -17,7 +17,7 @@
   var TYPE_LABEL = {
     service: 'Service', api_key: 'Credential', placeholder: 'Phantom token', group: 'Group', client: 'Client',
     notification: 'Notification channel', setting: 'Settings', approval: 'Approval', signin: 'Sign-in',
-    key_group: 'Key pool', key_suite: 'Key bundle', plugin: 'Plugin', cc: 'Control channel', canary: 'Canary'
+    key_group: 'Key pool', key_suite: 'Key bundle', plugin: 'Plugin', cc: 'Control channel', canary: 'Canary', approver_token: 'Approver token'
   };
 
   function str(v) { return typeof v === 'string' ? v : (v === null || v === undefined ? '' : String(v)); }

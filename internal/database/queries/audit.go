@@ -43,7 +43,7 @@ var AuditKinds = map[string][]string{
 	"credentials": {"api_key"},
 	"clients":     {"client"},
 	"signins":     {"signin"},
-	"settings":    {"setting", "notification", "canary", "supply_chain", "cc", "plugin"},
+	"settings":    {"setting", "notification", "canary", "supply_chain", "cc", "plugin", "approver_token"},
 }
 
 type AuditQueries struct{ db *sql.DB }

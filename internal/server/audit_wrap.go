@@ -25,6 +25,7 @@ type auditRoute struct {
 const (
 	svcT, keyT, phT, grpT, cliT = "service", "api_key", "placeholder", "group", "client"
 	ntfT, setT, apvT            = "notification", "setting", "approval"
+	aptT                        = "approver_token"
 )
 
 var auditRoutes = map[string]auditRoute{
@@ -50,11 +51,17 @@ var auditRoutes = map[string]auditRoute{
 	"POST /api/oauth/validate":               {Skip: true},
 	"POST /api/oauth/{id}/validate":          {Skip: true},
 
-	"POST /api/placeholders":                 {Type: phT, Verb: "create", Snap: phT},
-	"PUT /api/placeholders/{id}":             {Type: phT, Verb: "update", IDParam: "id", Snap: phT},
-	"DELETE /api/placeholders/{id}":          {Type: phT, Verb: "delete", IDParam: "id", Snap: phT},
-	"POST /api/placeholders/{id}/acl/test":   {Skip: true},
-	"POST /api/phantom-tokens/{id}/simulate": {Skip: true},
+	"POST /api/placeholders":                     {Type: phT, Verb: "create", Snap: phT},
+	"PUT /api/placeholders/{id}":                 {Type: phT, Verb: "update", IDParam: "id", Snap: phT},
+	"DELETE /api/placeholders/{id}":              {Type: phT, Verb: "delete", IDParam: "id", Snap: phT},
+	"POST /api/placeholders/{id}/acl/test":       {Skip: true},
+	"POST /api/phantom-tokens/{id}/simulate":     {Skip: true},
+	"POST /api/placeholders/{id}/preview-impact": {Skip: true},
+	"POST /api/keys/{id}/preview-impact":         {Skip: true},
+	"POST /api/services/{id}/preview-impact":     {Skip: true},
+
+	"POST /api/approvers":        {Type: aptT, Verb: "create", Snap: aptT},
+	"DELETE /api/approvers/{id}": {Type: aptT, Verb: "revoke", IDParam: "id", Snap: aptT},
 
 	"POST /api/clients":                   {Type: cliT, Verb: "create", Snap: cliT},
 	"PUT /api/clients/{id}":               {Type: cliT, Verb: "update", IDParam: "id", Snap: cliT},
@@ -286,7 +293,7 @@ func auditMux(mux *http.ServeMux, rec *audit.Recorder, snaps *handlers.AuditSnap
 			Before: before, After: after, Summary: auditSummary(route, name, id, before, after, status),
 		}
 		if approvalID != "" {
-			entry.Summary = fmt.Sprintf("%s request %s for %s", map[string]string{"approve": "approved", "reject": "rejected"}[route.Verb], approvalID, name)
+			entry.Summary = approvalSummary(route.Verb, approvalID, name)
 			if !ok {
 				entry.Summary += fmt.Sprintf(" (failed, HTTP %d)", status)
 			}

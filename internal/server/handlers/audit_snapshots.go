@@ -24,6 +24,7 @@ type AuditSnapshots struct {
 	Clients       *queries.ClientQueries
 	Notifications *queries.NotificationQueries
 	Approvals     *queries.ApprovalQueries
+	Approvers     *queries.ApproverTokenQueries
 	Settings      *queries.SettingsQueries
 }
 
@@ -172,6 +173,18 @@ func (s *AuditSnapshots) Get(resourceType, id string) (name string, v any, ok bo
 		return name, map[string]any{
 			"id": a.ID, "placeholder_id": a.PlaceholderID, "status": a.Status,
 			"approved_at": a.ApprovedAt, "expires_at": a.ExpiresAt,
+		}, true
+	case "approver_token":
+		if s.Approvers == nil {
+			return
+		}
+		t, err := s.Approvers.GetByID(id)
+		if err != nil || t == nil {
+			return
+		}
+		// Never the token or its hash: only identity and lifecycle.
+		return t.Name, map[string]any{
+			"id": t.ID, "name": t.Name, "created_at": t.CreatedAt, "revoked_at": t.RevokedAt,
 		}, true
 	case "setting":
 		if s.Settings == nil {

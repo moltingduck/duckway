@@ -131,7 +131,10 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	audit.SetDefault(auditRec)
 	auditSnaps := &handlers.AuditSnapshots{
 		Services: ss.ServiceQ, APIKeys: ss.APIKeyQ, Placeholders: ss.PlaceholderQ, Groups: ss.GroupQ,
-		Clients: ss.ClientQ, Notifications: ss.NotifQ, Approvals: ss.ApprovalQ, Settings: ss.SettingsQ,
+		Clients: ss.ClientQ, Notifications: ss.NotifQ, Approvals: ss.ApprovalQ, Approvers: queries.NewApproverTokenQueries(s.db), Settings: ss.SettingsQ,
+	}
+	if s.OnDecision == nil {
+		s.OnDecision = auditDecisionHook(auditRec, auditSnaps)
 	}
 	auditH := handlers.NewAuditHandler(auditRec.Queries())
 	authH := handlers.NewAuthHandler(ss.UserQ, ss.AdminAuth).WithAudit(auditRec)
