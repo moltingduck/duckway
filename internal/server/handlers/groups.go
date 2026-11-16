@@ -31,9 +31,8 @@ func (h *GroupHandler) List(w http.ResponseWriter, r *http.Request) {
 	for i := range list {
 		members, _ := h.groups.GetMembers(list[i].ID)
 		list[i].Members = members
-		// Redact encrypted keys
 		for j := range list[i].Members {
-			list[i].Members[j].KeyEncrypted = ""
+			sanitizeGroupMember(&list[i].Members[j])
 		}
 	}
 	jsonResponse(w, list)
@@ -84,7 +83,7 @@ func (h *GroupHandler) Get(w http.ResponseWriter, r *http.Request) {
 	members, _ := h.groups.GetMembers(id)
 	group.Members = members
 	for i := range group.Members {
-		group.Members[i].KeyEncrypted = ""
+		sanitizeGroupMember(&group.Members[i])
 	}
 	jsonResponse(w, group)
 }
@@ -174,4 +173,12 @@ func (h *GroupHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]string{"status": "removed"})
+}
+
+// sanitizeGroupMember redacts secrets from a group member key. GetMembers loads
+// the full key row (the proxy needs acl and upstream_proxy_url), so the admin
+// view drops the encrypted secrets, including the encrypted upstream proxy URL.
+func sanitizeGroupMember(k *models.APIKey) {
+	sanitizeAPIKeyForAdmin(k)
+	k.UpstreamProxyURL = ""
 }

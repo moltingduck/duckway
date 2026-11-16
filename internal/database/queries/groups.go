@@ -67,8 +67,11 @@ func (q *GroupQueries) Delete(id string) error {
 }
 
 func (q *GroupQueries) GetMembers(groupID string) ([]models.APIKey, error) {
+	// Uses the shared apiKeyCols/scanAPIKey so every field the proxy relies on
+	// (acl, upstream_proxy_url, ...) is loaded; a narrower list silently dropped
+	// the member key's own ACL layer.
 	rows, err := q.db.Query(
-		`SELECT k.id, k.service_id, k.name, k.key_encrypted, k.refresh_token, k.expires_at, k.usage_snapshot, k.is_active, k.usage_count, k.last_used_at, k.created_at, s.name
+		`SELECT `+apiKeyCols+`
 		 FROM api_keys k
 		 JOIN api_key_group_members m ON k.id = m.api_key_id
 		 JOIN services s ON k.service_id = s.id
@@ -83,10 +86,9 @@ func (q *GroupQueries) GetMembers(groupID string) ([]models.APIKey, error) {
 	var result []models.APIKey
 	for rows.Next() {
 		var k models.APIKey
-		if err := rows.Scan(&k.ID, &k.ServiceID, &k.Name, &k.KeyEncrypted, &k.RefreshToken, &k.ExpiresAt, &k.UsageSnapshot, &k.IsActive, &k.UsageCount, &k.LastUsedAt, &k.CreatedAt, &k.ServiceName); err != nil {
+		if err := scanAPIKey(rows, &k); err != nil {
 			return nil, err
 		}
-		k.IsRefreshable = k.RefreshToken != ""
 		result = append(result, k)
 	}
 	return result, rows.Err()

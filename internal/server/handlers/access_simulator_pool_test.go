@@ -45,7 +45,7 @@ func TestSimulatorKeyPoolAndResolutionFailures(t *testing.T) {
 	// (The schema forbids a token with neither key nor group, so that
 	// resolver error cannot occur.)
 
-	// A pool with one member: Credential rules says the member's rules are not evaluated.
+	// A pool with one member (no ACL of its own): allowed, and its Credential rules step is evaluated, not skipped.
 	e.exec(t, `INSERT INTO api_key_group_members (group_id, api_key_id, priority) VALUES ('grp-e', ?, 1)`, f.apiKeyID)
 	_, s = simCall(t, sim, f.placeholderID, clone)
 	if s.Verdict != "allowed" {
@@ -55,7 +55,7 @@ func TestSimulatorKeyPoolAndResolutionFailures(t *testing.T) {
 	for _, st := range s.Steps {
 		if st.Label == "Credential rules" {
 			found = true
-			if st.Status != "skip" || !strings.Contains(st.Detail, "pool key's own rules are not evaluated") {
+			if strings.Contains(st.Detail, "not evaluated") {
 				t.Errorf("credential step: %+v", st)
 			}
 		}

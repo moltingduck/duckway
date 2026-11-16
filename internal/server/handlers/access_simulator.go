@@ -569,8 +569,8 @@ type simOutcome struct {
 }
 
 // evalKey runs the gateway decision for one candidate key. A pool member's
-// own rules are not evaluated, as in the proxy (see candidateKeys).
-func (a *AccessSimulator) evalKey(ctx context.Context, svc *models.Service, tokenConfig string, cand simCandidate, pool bool, sr *simReq, pre []DecisionStep) simOutcome {
+// own rules apply exactly like an assigned key's, as in the proxy.
+func (a *AccessSimulator) evalKey(ctx context.Context, svc *models.Service, tokenConfig string, cand simCandidate, sr *simReq, pre []DecisionStep) simOutcome {
 	out := simOutcome{cand: cand}
 	if !cand.Active {
 		out.steps = append(append([]DecisionStep{}, pre...),
@@ -607,14 +607,6 @@ func (a *AccessSimulator) evalKey(ctx context.Context, svc *models.Service, toke
 	}
 	out.d, out.depends = d, st.DependsOnDefault()
 	out.steps = append(append([]DecisionStep{}, pre...), st.Steps()...)
-	if pool {
-		for i := range out.steps {
-			if out.steps[i].Label == stepCredential {
-				out.steps[i] = DecisionStep{Status: queries.StepSkip, Label: stepCredential,
-					Detail: "The pool key's own rules are not evaluated: the proxy does not apply them to key pool members"}
-			}
-		}
-	}
 	return out
 }
 
@@ -776,7 +768,7 @@ func (a *AccessSimulator) evaluate(ctx context.Context, ph *models.PlaceholderKe
 		return finish(d, append(pre, skipAll(allStages...)...)), nil
 	}
 	for _, c := range cands {
-		outs = append(outs, a.evalKey(ctx, svc, tokenConfig, c, ph.GroupID != nil, sr, pre))
+		outs = append(outs, a.evalKey(ctx, svc, tokenConfig, c, sr, pre))
 	}
 	same := true
 	for _, o := range outs[1:] {

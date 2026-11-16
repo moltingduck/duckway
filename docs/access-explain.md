@@ -43,7 +43,7 @@ The proxy never looks the default branch up just to log a refusal: it reads the 
 
 The simulator evaluates every key the token can resolve to, read-only: the assigned key, or the active members of its key group (`GroupQueries.GetMembers`, at most 20). It never calls the key resolver, so no round-robin index moves and no usage counter changes. If the outcomes differ between keys the response has `per_key`, and the top-level fields describe the most restrictive outcome (refused over held over allowed).
 
-The proxy ignores the key-level ACL and upstream proxy URL of key pool members (`GetMembers` does not select them; a known defect that is not changed here). The simulator mirrors that: for a pool, the "Credential rules" step says the pool key's own rules are not evaluated.
+Key pool members are evaluated like an assigned key: the chosen key's own ACL and upstream proxy URL apply (`GetMembers` selects them, fixing an earlier defect that ignored both). The simulator evaluates each member's ACL in its "Credential rules" step.
 When key resolution fails the simulator reports what the proxy does: an empty or unreadable key group, or a missing key, is a 500 `key resolution failed`; both are kind `credential`, with `sees` equal to the proxy's body.
 
 ## 2. Request log reason
