@@ -1018,7 +1018,7 @@ func (s *tuiState) centralModalOpen() bool {
 }
 
 func (s *tuiState) blockingModalOpen() bool {
-	return s.projectFiles.open || s.commandPaletteMode || s.workspacePaneMode || s.shortcutMode || s.notificationConfigMode || s.hostMenuMode || s.searchMode || s.terminalSearchMode || s.terminalBookmarkMode || s.terminalBookmarkListMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.sessionRenameMode || s.lifecycleConfirm != ""
+	return s.projectFiles.open || s.approvals.open || s.commandPaletteMode || s.workspacePaneMode || s.shortcutMode || s.notificationConfigMode || s.hostMenuMode || s.searchMode || s.terminalSearchMode || s.terminalBookmarkMode || s.terminalBookmarkListMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.sessionRenameMode || s.lifecycleConfirm != ""
 }
 
 // workspaceControlMayAccept gates asynchronous PTY ownership. Workspace

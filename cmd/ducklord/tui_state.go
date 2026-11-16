@@ -198,6 +198,8 @@ type tuiState struct {
 	sessionRenameErr                   string
 	lifecycleConfirm                   protocol.SessionLifecycleOperation
 	projectFiles                       projectFilesState
+	approvals                          approvalsState
+	approvalNotifyPending              bool
 	projectFilesHistory                map[string][]projectFilesBatch
 	lifecycleReturnToAction            bool
 	lifecycleTarget                    ducklord.RemoteSession

@@ -39,6 +39,7 @@ var inputStages = []func(*tuiLoop, *inputFrame) inputFlow{
 	(*tuiLoop).inputCommandPalette,
 	(*tuiLoop).inputWorkspacePaneModal,
 	(*tuiLoop).inputHelpMode,
+	(*tuiLoop).inputApprovals,
 	(*tuiLoop).inputPendingFocus,
 	(*tuiLoop).inputPendingPTY,
 	(*tuiLoop).inputDirectNotes,

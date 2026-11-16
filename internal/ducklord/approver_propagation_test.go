@@ -23,9 +23,6 @@ func TestApproverTokenIsNeverPropagated(t *testing.T) {
 		"cmd/ducklord/approver_cli.go":              true,
 		"cmd/ducklord/tui_approvals.go":             true,
 		"cmd/ducklord/tui_loop_approvals.go":        true,
-		"cmd/ducklord/tui_loop_keys_approvals.go":   true,
-		"cmd/ducklord/tui_state.go":                 true,
-		"cmd/ducklord/tui_run.go":                   true,
 		"internal/ducklion/manager.go":              true, // scrubSessionEnv drops the token from session environments
 	}
 	needles := []string{"ApproverCredentials", "approver.json", "DUCKLORD_APPROVER", "ApproverClient", "LoadApproverCredentials"}

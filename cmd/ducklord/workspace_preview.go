@@ -515,7 +515,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 		s.renderProjectFilesModal(out, width, height)
 	}()
 	fmt.Fprint(out, "\033[?25l\033[H\033[2J")
-	fmt.Fprintln(out, truncate("ducklord workspace  owner:"+displayField(s.ownerName)+s.hostSyncLabel(), width))
+	fmt.Fprintln(out, truncate("ducklord workspace  owner:"+displayField(s.ownerName)+s.hostSyncLabel()+s.approvalsHeaderLabel(), width))
 	direction := "newest"
 	if s.cfg != nil && s.cfg.QuickOldestFirst {
 		direction = "oldest"
@@ -695,6 +695,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	s.renderLifecycleModal(out, width, height)
 	s.renderTerminalTool(out, width, height)
 	s.renderCommandPalette(out, width, height)
+	s.renderApprovalsModal(out, width, height)
 	if pane, err := s.workspacePaneRectAt(width, height); err == nil && s.focused && s.terminal != nil && pane.Height > 1 && pane.Width > 0 &&
 		!s.outputStale && s.ptyScrollOffset == 0 {
 		if row, col, visible := s.terminal.PaneCursorPosition(pane.Height-1, pane.Width); visible {

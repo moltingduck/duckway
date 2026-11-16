@@ -24,6 +24,8 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "notification-settings"
 	case s.shortcut("host_actions", text):
 		return "host-actions"
+	case s.shortcut("approvals", text) && !s.hostScoped:
+		return "approvals"
 	case s.selectedGroupID != "" && (s.sessionShortcut(text) || s.shortcut("list_reorder_up", text) || s.shortcut("list_reorder_down", text)):
 		s.outputErr = "select a session row for this action"
 		return "group-select"

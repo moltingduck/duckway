@@ -88,6 +88,7 @@ func (l *tuiLoop) onTick() {
 // select, and queues local replays that must precede newer keyboard bytes.
 func (l *tuiLoop) queueDeferredReplays() {
 	state := l.state
+	l.maybeOpenApprovalsFromNotification()
 	// An earlier local replay can occupy the single replay slot when a
 	// writer/output completion accepts focus. Retry after that replay is
 	// consumed, before selecting any newer keyboard bytes.

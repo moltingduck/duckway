@@ -38,6 +38,8 @@ func (l *tuiLoop) inputDispatchAction(f *inputFrame) inputFlow {
 		state.beginNotificationConfig("global", "")
 	case "host-actions":
 		state.beginHostMenu()
+	case "approvals":
+		l.openApprovals()
 	case "refresh":
 		state.refreshSessions(ctx)
 		if state.activeAttachKey == "" {
