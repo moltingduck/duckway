@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"errors"
+	"github.com/hackerduck/duckway/internal/audit"
 	"html/template"
 	"io/fs"
 	"log"
@@ -38,6 +39,7 @@ type AdminHandler struct {
 	crypto        *svc.Crypto
 	auth          *middleware.AdminAuth
 	db            *sql.DB
+	audit         *audit.Recorder
 }
 
 func NewAdminHandler(
@@ -89,7 +91,7 @@ func NewAdminHandler(
 	// Parse each page template paired with the layout
 	pageNames := []string{
 		"dashboard", "services", "credentials", "usage", "phantom_tokens", "phantom_token_detail",
-		"clients", "client_detail", "client_updates", "plugins", "key_pools", "key_bundles", "approvals", "logs", "notifications", "canary", "supplychain", "settings", "docs", "cc", "onboarding", "moved",
+		"clients", "client_detail", "client_updates", "plugins", "key_pools", "key_bundles", "approvals", "logs", "audit", "notifications", "canary", "supplychain", "settings", "docs", "cc", "onboarding", "moved",
 	}
 
 	pages := make(map[string]*template.Template)
@@ -145,6 +147,18 @@ func NewAdminHandler(
 func (h *AdminHandler) WithKeySuites(ks *queries.KeySuiteQueries) *AdminHandler {
 	h.keySuites = ks
 	return h
+}
+
+// WithAudit records sign-ins from the login form.
+func (h *AdminHandler) WithAudit(r *audit.Recorder) *AdminHandler {
+	h.audit = r
+	return h
+}
+
+func (h *AdminHandler) recordSignIn(r *http.Request, username string, ok bool) {
+	if h.audit != nil {
+		h.audit.RecordSignIn(r.Context(), username, ok, audit.RemoteHost(r), "web")
+	}
 }
 
 func (h *AdminHandler) WithDB(db *sql.DB) *AdminHandler {
@@ -226,11 +240,13 @@ func (h *AdminHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.users.GetByUsername(username)
 	if err != nil {
+		h.recordSignIn(r, username, false)
 		h.loginTmpl.ExecuteTemplate(w, "login.html", pageData{Error: "Invalid credentials", CSPNonce: middleware.CSPNonce(r.Context())})
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+		h.recordSignIn(r, username, false)
 		h.loginTmpl.ExecuteTemplate(w, "login.html", pageData{Error: "Invalid credentials", CSPNonce: middleware.CSPNonce(r.Context())})
 		return
 	}
@@ -242,6 +258,7 @@ func (h *AdminHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 		h.loginTmpl.ExecuteTemplate(w, "login.html", pageData{Error: "Login is temporarily unavailable. Try again.", CSPNonce: middleware.CSPNonce(r.Context())})
 		return
 	}
+	h.recordSignIn(r, user.Username, true)
 	http.SetCookie(w, cookie)
 	clearWhatsNewCookie(w) // a fresh login shows the dialog again unless dismissed for good
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
@@ -342,6 +359,10 @@ func (h *AdminHandler) LogsPage(w http.ResponseWriter, r *http.Request) {
 		Active: "logs",
 		Logs:   logs,
 	})
+}
+
+func (h *AdminHandler) AuditPage(w http.ResponseWriter, r *http.Request) {
+	h.render(w, r, "audit", pageData{Title: "Audit log", Active: "audit"})
 }
 
 func (h *AdminHandler) UsagePage(w http.ResponseWriter, r *http.Request) {

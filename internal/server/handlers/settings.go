@@ -89,6 +89,14 @@ func ValidateSetting(key, value string) string {
 		if err != nil || n < 7 || n > 3650 {
 			return "Request log retention must be a whole number of days from 7 to 3650, or empty to keep everything"
 		}
+	case queries.SettingAuditRetentionDays:
+		if strings.TrimSpace(value) == "" {
+			return "" // unset: the 365-day default
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 30 || n > 3650 {
+			return "Audit log retention must be a whole number of days from 30 to 3650, or empty for the default (365)"
+		}
 	case queries.SettingApprovalRequestTTL:
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || n < 1 || n > 10080 {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/hackerduck/duckway/internal/audit"
 	"log"
 	"net/http"
 	"reflect"
@@ -18,6 +19,19 @@ import (
 type AuthHandler struct {
 	users *queries.AdminUserQueries
 	auth  *middleware.AdminAuth
+	audit *audit.Recorder
+}
+
+// WithAudit records sign-ins from the JSON login endpoint.
+func (h *AuthHandler) WithAudit(r *audit.Recorder) *AuthHandler {
+	h.audit = r
+	return h
+}
+
+func (h *AuthHandler) recordSignIn(r *http.Request, username string, ok bool) {
+	if h.audit != nil {
+		h.audit.RecordSignIn(r.Context(), username, ok, audit.RemoteHost(r), "api")
+	}
 }
 
 func NewAuthHandler(users *queries.AdminUserQueries, auth *middleware.AdminAuth) *AuthHandler {
@@ -36,11 +50,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.users.GetByUsername(req.Username)
 	if err != nil {
+		h.recordSignIn(r, req.Username, false)
 		jsonError(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		h.recordSignIn(r, req.Username, false)
 		jsonError(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
@@ -51,6 +67,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "login unavailable: session store could not be read", http.StatusInternalServerError)
 		return
 	}
+	h.recordSignIn(r, user.Username, true)
 	http.SetCookie(w, cookie)
 	clearWhatsNewCookie(w)
 	jsonResponse(w, map[string]string{"status": "ok", "username": user.Username})
