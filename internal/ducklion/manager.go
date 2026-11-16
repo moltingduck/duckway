@@ -400,7 +400,9 @@ func ValidateAgentType(agentType string) (string, error) {
 func scrubSessionEnv(env []string) []string {
 	out := make([]string, 0, len(env))
 	for _, item := range env {
-		if strings.HasPrefix(item, "SSH_AUTH_SOCK=") {
+		// The approver token authorizes approving held requests; it must never
+		// reach an agent session even if an operator exported it by mistake.
+		if strings.HasPrefix(item, "SSH_AUTH_SOCK=") || strings.HasPrefix(item, "DUCKLORD_APPROVER") || strings.HasPrefix(item, "DUCKWAY_APPROVER") {
 			continue
 		}
 		out = append(out, item)
