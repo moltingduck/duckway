@@ -265,5 +265,5 @@ client grants"), because the proxy never enforces policies from those layers.
   seconds, so the client sees the rejection instead of a connection reset.
 - Approval-held requests whose decision needs `@default` are held before the
   guard can refuse them.
-- The request log records only that a request was refused, not the ref or the
-  reason.
+- The request log records why a request was refused (`deny_detail`, with the
+  per-ref verdicts of a push), but never a request body.

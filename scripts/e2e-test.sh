@@ -663,6 +663,86 @@ curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY1_ID/acl" \
   -H "Content-Type: application/json" -d '{"acl":""}' > /dev/null
 
 
+# === Test 11f: Refusal reasons + access simulator ===
+echo ""
+echo -e "${YELLOW}[11f] Refusal Reasons + Access Simulator${NC}"
+
+# GitHub token with branch rules; a refusal of feature/x does not depend on the
+# default branch, so no upstream lookup is needed and the push never leaves.
+GH_POL='{"version":"2","provider":"github","repositories":{"e2e/repo":{"capabilities":{"clone":true,"push":true,"pull_requests_read":true,"pull_requests_write":true},"branch_policy":{"rules":[{"branches":"@default","role":"protected"},{"branches":"agent/**","role":"agent"},{"branches":"**","role":"read"}]}}}}'
+CLIENT_SIM=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" \
+  -H "Content-Type: application/json" -d '{"name":"sim-test"}')
+CLIENT_SIM_ID=$(echo "$CLIENT_SIM" | jq -r '.id')
+CLIENT_SIM_TOKEN=$(echo "$CLIENT_SIM" | jq -r '.token')
+PH_SIM=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders" \
+  -H "Content-Type: application/json" \
+  -d "{\"service_id\":\"$GITHUB_ID\",\"api_key_id\":\"$KEY3_ID\",\"client_id\":\"$CLIENT_SIM_ID\",\"requires_approval\":false,\"permission_config\":$(echo "$GH_POL" | jq -Rs .)}")
+PH_SIM_ID=$(echo "$PH_SIM" | jq -r '.id')
+assert_not_empty "Simulator: github token with branch rules created" "$PH_SIM_ID"
+
+SIM_URL="$BASE/api/phantom-tokens/$PH_SIM_ID/simulate"
+sim() { curl -s -b /tmp/dw-e2e-cookies -X POST "$SIM_URL" -H "Content-Type: application/json" -d "$1"; }
+
+SIM_NO=$(sim '{"mode":"action","repo":"e2e/repo","action":"push","ref":"feature/x"}')
+assert_eq "Simulator: push to a read branch is refused" "refused" "$(echo "$SIM_NO" | jq -r .verdict)"
+assert_eq "Simulator: refused by branch rules" "branch_rules" "$(echo "$SIM_NO" | jq -r .kind)"
+assert_contains "Simulator: shows the ng line the agent sees" "ng refs/heads/feature/x duckway: " "$(echo "$SIM_NO" | jq -r .sees)"
+SIM_CLONE=$(sim '{"mode":"action","repo":"e2e/repo","action":"clone"}')
+assert_eq "Simulator: clone is allowed" "allowed" "$(echo "$SIM_CLONE" | jq -r .verdict)"
+SIM_MERGE=$(sim '{"mode":"action","repo":"e2e/repo","action":"merge_pr"}')
+assert_eq "Simulator: merge is refused (token ACL does not open it)" "refused" "$(echo "$SIM_MERGE" | jq -r .verdict)"
+SIM_HEX=$(sim '{"mode":"raw","method":"POST","path":"/repos/e2e/repo/pulls","body_hex":"7b22"}')
+SIM_HEXBAD=$(sim '{"mode":"raw","method":"POST","path":"/repos/e2e/repo/pulls","body_hex":"7b2"}')
+assert_contains "Simulator: odd hex reports the offset" "offset 2" "$(echo "$SIM_HEXBAD" | jq -r .error)"
+
+# A simulation writes nothing: no refusal row exists yet for this client.
+SIM_ROWS=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/logs?client=$CLIENT_SIM_ID&decision=acl_denied")
+assert_eq "Simulator: nothing was logged" "0" "$(echo "$SIM_ROWS" | jq '.items | length')"
+
+# Replay the simulated push through the real proxy: refused, with the same text.
+SIM_BODY_FILE=$(mktemp "$DATA_DIR.simbody.XXXXXX")
+echo "$SIM_NO" | jq -r .request.body_hex | xxd -r -p > "$SIM_BODY_FILE"
+PUSH_OUT=$(curl -s -X POST "$BASE/proxy/github/e2e/repo.git/git-receive-pack" \
+  -H "X-Duckway-Token: $CLIENT_SIM_TOKEN" -H "Content-Type: application/x-git-receive-pack-request" \
+  --data-binary @"$SIM_BODY_FILE" | tr -c '[:print:]\n' ' ')
+rm -f "$SIM_BODY_FILE"
+assert_contains "Proxy refuses the same push" "ng refs/heads/feature/x duckway: " "$PUSH_OUT"
+
+SIM_LOG=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/logs?client=$CLIENT_SIM_ID&decision=acl_denied&deny_kind=branch_rules")
+assert_eq "Logs API: refused push filtered by deny_kind" "1" "$(echo "$SIM_LOG" | jq '.items | length')"
+assert_eq "Logs API: deny_detail kind" "branch_rules" "$(echo "$SIM_LOG" | jq -r '.items[0].deny_detail.kind')"
+assert_eq "Logs API: deny_detail names the ref" "refs/heads/feature/x" "$(echo "$SIM_LOG" | jq -r '.items[0].deny_detail.refs[0].ref')"
+assert_eq "Logs API: refused ref verdict" "refused" "$(echo "$SIM_LOG" | jq -r '.items[0].deny_detail.refs[0].verdict')"
+assert_eq "Logs API: repeat_count starts at 1" "1" "$(echo "$SIM_LOG" | jq -r '.items[0].repeat_count')"
+SIM_OTHER=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/logs?client=$CLIENT_SIM_ID&deny_kind=token_acl")
+assert_eq "Logs API: other kinds do not match" "0" "$(echo "$SIM_OTHER" | jq '.items | length')"
+
+# Repeating the identical push in the same minute counts on the same row.
+curl -s -o /dev/null -X POST "$BASE/proxy/github/e2e/repo.git/git-receive-pack" \
+  -H "X-Duckway-Token: $CLIENT_SIM_TOKEN" -H "Content-Type: application/x-git-receive-pack-request" \
+  --data-binary @<(echo "$SIM_NO" | jq -r .request.body_hex | xxd -r -p)
+SIM_LOG2=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/logs?client=$CLIENT_SIM_ID&decision=acl_denied")
+assert_eq "Logs API: identical refusals coalesce into one row" "1" "$(echo "$SIM_LOG2" | jq '.items | length')"
+assert_eq "Logs API: repeat_count counts the repeat" "2" "$(echo "$SIM_LOG2" | jq -r '.items[0].repeat_count')"
+
+# Non-GitHub token: raw mode only; the token ACL decides and its reason is logged.
+SIM_OAI=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/phantom-tokens/$PH1_ID/simulate" -H "Content-Type: application/json" \
+  -d '{"mode":"raw","method":"POST","path":"/v1/chat/completions","body_text":"{}"}')
+assert_eq "Simulator: raw mode works for non-GitHub tokens" "allowed" "$(echo "$SIM_OAI" | jq -r .verdict)"
+SIM_OAI_ACT=$(curl -s -o /dev/null -w "%{http_code}" -b /tmp/dw-e2e-cookies -X POST "$BASE/api/phantom-tokens/$PH1_ID/simulate" -H "Content-Type: application/json" \
+  -d '{"mode":"action","repo":"o/r","action":"clone"}')
+assert_eq "Simulator: action mode is GitHub only" "400" "$SIM_OAI_ACT"
+SIM_SUM=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/phantom-tokens/$PH_SIM_ID/access-summary")
+assert_eq "Access summary lists the repo" "e2e/repo" "$(echo "$SIM_SUM" | jq -r '.repos[0].repo')"
+assert_eq "Access summary: agent rule may push" "true" "$(echo "$SIM_SUM" | jq -r '.repos[0].rules[] | select(.pattern=="agent/**") | .push')"
+assert_eq "Access summary: merge toggle off" "false" "$(echo "$SIM_SUM" | jq -r '.repos[0].merge')"
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/phantom-tokens/$PH_SIM_ID/simulate" -H "Content-Type: application/json" -d '{"mode":"x"}' -o /dev/null
+SIM_NOCSRF=$(command curl -s -o /dev/null -w "%{http_code}" -b /tmp/dw-e2e-cookies -X POST "$SIM_URL" -H "Content-Type: application/json" -H "Origin: http://evil.example" -d '{"mode":"raw","method":"GET","path":"/x"}')
+assert_eq "Simulator: cross-origin POST is rejected" "403" "$SIM_NOCSRF"
+SIM_NOAUTH=$(command curl -s -o /dev/null -w "%{http_code}" -X POST "$SIM_URL" -H "Content-Type: application/json" -H "Origin: $BASE" -d '{"mode":"raw","method":"GET","path":"/x"}')
+assert_eq "Simulator: anonymous POST is rejected" "401" "$SIM_NOAUTH"
+
+
 # === Test 12: Permission System ===
 echo ""
 echo -e "${YELLOW}[12] Permission System${NC}"

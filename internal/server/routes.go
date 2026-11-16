@@ -226,6 +226,11 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/placeholders", placeholderH.Create)
 	adminAPIMux.HandleFunc("PUT /api/placeholders/{id}", placeholderH.Update)
 	adminAPIMux.HandleFunc("POST /api/placeholders/{id}/acl/test", placeholderH.TestACL)
+	// Access simulator: what the gateway would decide for a request, without
+	// sending it or recording anything.
+	simH := handlers.NewAccessSimulator(ss.PlaceholderQ, ss.ServiceQ, ss.APIKeyQ, ss.GroupQ, ss.ApprovalQ, ss.Crypto)
+	adminAPIMux.HandleFunc("POST /api/phantom-tokens/{id}/simulate", simH.Simulate)
+	adminAPIMux.HandleFunc("GET /api/phantom-tokens/{id}/access-summary", simH.AccessSummary)
 	adminAPIMux.HandleFunc("DELETE /api/placeholders/{id}", placeholderH.Delete)
 
 	adminAPIMux.HandleFunc("GET /api/clients", clientH.List)
