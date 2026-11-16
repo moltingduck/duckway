@@ -2,6 +2,7 @@ package queries
 
 import (
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"sync"
 	"time"
@@ -74,14 +75,18 @@ func (q *RequestLogQueries) Log(clientID, placeholderID, serviceName, method, pa
 // LogDecision inserts a row with an explicit gateway decision. approvalID is
 // only meaningful for held rows ("" otherwise).
 func (q *RequestLogQueries) LogDecision(clientID, placeholderID, serviceName, method, path string, statusCode int, decision, approvalID string) error {
+	return q.logDecisionDetail(clientID, placeholderID, serviceName, method, path, statusCode, decision, approvalID, "")
+}
+
+func (q *RequestLogQueries) logDecisionDetail(clientID, placeholderID, serviceName, method, path string, statusCode int, decision, approvalID, denyDetail string) error {
 	path = TruncateLogPath(path)
 	var phID interface{}
 	if placeholderID != "" {
 		phID = placeholderID
 	}
 	_, err := q.db.Exec(
-		"INSERT INTO request_log (client_id, placeholder_id, service_name, method, path, status_code, decision, approval_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		clientID, phID, serviceName, method, path, statusCode, decision, approvalID,
+		"INSERT INTO request_log (client_id, placeholder_id, service_name, method, path, status_code, decision, approval_id, deny_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		clientID, phID, serviceName, method, path, statusCode, decision, approvalID, denyDetail,
 	)
 	return err
 }
@@ -116,25 +121,31 @@ func TruncateLogPath(p string) string {
 func utcFormat(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05") }
 
 // LogACLDenied records an ACL denial, coalescing repeats: the first denial for
-// the same client, phantom token, method and path within a UTC minute is
-// stored, later identical denials in that minute are dropped (a retry loop
-// would otherwise write one row per attempt). Portable plain SQL: one lookup
-// bounded by the minute start, then an insert; a rare race may store two rows.
-func (q *RequestLogQueries) LogACLDenied(clientID, placeholderID, serviceName, method, path string) error {
+// the same client, phantom token, method, path and refusal detail (see
+// DenyDetail; "" when unknown) within a UTC minute is stored; later identical
+// denials in that minute only increment that row's repeat_count with one
+// UPDATE (a retry loop would otherwise write one row per attempt). The detail
+// is part of the identity so a different reason for the same path (another
+// push to the same repository, say) is never folded into a row that explains
+// something else; the per-client cap below still bounds the row count. Portable plain SQL: one lookup bounded by the
+// minute start, then an insert or update; a rare race may store two rows.
+func (q *RequestLogQueries) LogACLDenied(clientID, placeholderID, serviceName, method, path, denyDetail string) error {
 	path = TruncateLogPath(path)
 	now := q.clock()
 	minuteStart := utcFormat(now.Truncate(time.Minute))
 	var existing int64
 	var err error
 	if placeholderID == "" {
-		err = q.db.QueryRow(`SELECT id FROM request_log WHERE decision = ? AND client_id = ? AND placeholder_id IS NULL AND method = ? AND path = ? AND created_at >= ? LIMIT 1`,
-			DecisionACLDenied, clientID, method, path, minuteStart).Scan(&existing)
+		err = q.db.QueryRow(`SELECT id FROM request_log WHERE decision = ? AND client_id = ? AND placeholder_id IS NULL AND method = ? AND path = ? AND deny_detail = ? AND created_at >= ? LIMIT 1`,
+			DecisionACLDenied, clientID, method, path, denyDetail, minuteStart).Scan(&existing)
 	} else {
-		err = q.db.QueryRow(`SELECT id FROM request_log WHERE decision = ? AND client_id = ? AND placeholder_id = ? AND method = ? AND path = ? AND created_at >= ? LIMIT 1`,
-			DecisionACLDenied, clientID, placeholderID, method, path, minuteStart).Scan(&existing)
+		err = q.db.QueryRow(`SELECT id FROM request_log WHERE decision = ? AND client_id = ? AND placeholder_id = ? AND method = ? AND path = ? AND deny_detail = ? AND created_at >= ? LIMIT 1`,
+			DecisionACLDenied, clientID, placeholderID, method, path, denyDetail, minuteStart).Scan(&existing)
 	}
 	if err == nil {
-		return nil // already recorded this minute
+		// Already recorded this minute: count the repeat on that row.
+		_, uerr := q.db.Exec(`UPDATE request_log SET repeat_count = repeat_count + 1 WHERE id = ?`, existing)
+		return uerr
 	}
 	if err != sql.ErrNoRows {
 		return err
@@ -149,7 +160,7 @@ func (q *RequestLogQueries) LogACLDenied(clientID, placeholderID, serviceName, m
 	if !admit {
 		return nil
 	}
-	return q.LogDecision(clientID, placeholderID, serviceName, method, path, 403, DecisionACLDenied, "")
+	return q.logDecisionDetail(clientID, placeholderID, serviceName, method, path, 403, DecisionACLDenied, "", denyDetail)
 }
 
 // LogHeldOnce records an approval hold. A newly created approval always gets
@@ -369,6 +380,11 @@ type RequestLogEntry struct {
 	// acl_denied or held. ApprovalID links held rows to their approval.
 	Decision   string `json:"decision"`
 	ApprovalID string `json:"approval_id"`
+	// DenyDetail is the stored refusal reason (a DenyDetail JSON object) of an
+	// acl_denied row, null when none was recorded (older rows, other decisions).
+	DenyDetail json.RawMessage `json:"deny_detail"`
+	// RepeatCount is how many identical denials the row stands for (>= 1).
+	RepeatCount int `json:"repeat_count"`
 }
 
 const requestLogSelect = `SELECT r.id, r.service_name, r.method, r.path, r.status_code,
@@ -378,7 +394,7 @@ const requestLogSelect = `SELECT r.id, r.service_name, r.method, r.path, r.statu
 		 EXISTS(SELECT 1 FROM request_log_detail d WHERE d.log_id = r.id),
 		 COALESCE(k.name, ''), COALESCE(p.requires_approval, 0),
 		 (SELECT d2.duration_ms FROM request_log_detail d2 WHERE d2.log_id = r.id),
-		 r.decision, r.approval_id
+		 r.decision, r.approval_id, r.deny_detail, r.repeat_count
 		 FROM request_log r
 		 LEFT JOIN clients c ON r.client_id = c.id
 		 LEFT JOIN placeholder_keys p ON r.placeholder_id = p.id
@@ -390,12 +406,19 @@ func scanRequestLogEntries(rows *sql.Rows) ([]RequestLogEntry, error) {
 		var l RequestLogEntry
 		var req int
 		var dur sql.NullInt64
+		var detail string
 		if err := rows.Scan(&l.ID, &l.ServiceName, &l.Method, &l.Path, &l.StatusCode,
 			&l.ClientID, &l.ClientName, &l.PlaceholderID, &l.EnvName, &l.Placeholder,
-			&l.CreatedAt, &l.HasDetail, &l.Credential, &req, &dur, &l.Decision, &l.ApprovalID); err != nil {
+			&l.CreatedAt, &l.HasDetail, &l.Credential, &req, &dur, &l.Decision, &l.ApprovalID, &detail, &l.RepeatCount); err != nil {
 			return nil, err
 		}
 		l.RequiresApproval = req != 0
+		if detail != "" && json.Valid([]byte(detail)) {
+			l.DenyDetail = json.RawMessage(detail)
+		}
+		if l.RepeatCount < 1 {
+			l.RepeatCount = 1
+		}
 		if dur.Valid {
 			v := dur.Int64
 			l.DurationMs = &v
@@ -429,6 +452,7 @@ type RequestLogFilter struct {
 	Held          bool     // phantom token requires approval
 	ACLDenied     bool     // status 403 (includes upstream 403 and gateway denials)
 	Decision      string   // exact request_log.decision match (allowed, approved_forward, acl_denied, held)
+	DenyKind      string   // refused-by kind stored in deny_detail (service_acl, branch_rules, ...)
 	BeforeID      int64
 	AfterID       int64
 	Limit         int
@@ -501,6 +525,11 @@ func (f RequestLogFilter) where(cursor bool) (string, []interface{}) {
 	if f.Decision != "" {
 		conds = append(conds, "r.decision = ?")
 		args = append(args, f.Decision)
+	}
+	if f.DenyKind != "" {
+		// deny_detail is written by this package with "kind" as its first key.
+		conds = append(conds, `r.decision = ? AND r.deny_detail LIKE ? ESCAPE '\'`)
+		args = append(args, DecisionACLDenied, `{"kind":"`+escapeLike(f.DenyKind)+`"%`)
 	}
 	if cursor {
 		if f.BeforeID > 0 {

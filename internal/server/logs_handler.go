@@ -28,7 +28,7 @@ var logsRanges = map[string]time.Duration{
 var logsAllowedParams = map[string]bool{
 	"range": true, "since": true, "until": true, "q": true, "client": true,
 	"service": true, "credential": true, "status": true, "held": true,
-	"acl_denied": true, "decision": true, "before_id": true, "after_id": true, "limit": true,
+	"acl_denied": true, "decision": true, "deny_kind": true, "before_id": true, "after_id": true, "limit": true,
 }
 
 type logsListResponse struct {
@@ -55,7 +55,7 @@ func parseLogsFilterWindow(r *http.Request, now time.Time) (queries.RequestLogFi
 	// Any filter scans joined rows; without a lower time bound limit it to 7
 	// days (before `until` when only that is given) so it cannot walk the table.
 	filtered := f.Q != "" || f.Held || f.Credential != "" || f.ACLDenied ||
-		f.Decision != "" || f.ClientID != "" || f.Service != "" || len(f.StatusClasses) > 0
+		f.Decision != "" || f.DenyKind != "" || f.ClientID != "" || f.Service != "" || len(f.StatusClasses) > 0
 	if f.Since == "" && (filtered || f.Until != "") {
 		end := now
 		if f.Until != "" {
@@ -175,6 +175,12 @@ func parseLogsFilterRaw(r *http.Request, now time.Time) (queries.RequestLogFilte
 		default:
 			return f, window, "invalid decision (use allowed, approved_forward, acl_denied or held)"
 		}
+	}
+	if v := vals.Get("deny_kind"); v != "" {
+		if !queries.ValidDenyKind(v) {
+			return f, window, "invalid deny_kind (use " + strings.Join(queries.DenyKinds, ", ") + ")"
+		}
+		f.DenyKind = v
 	}
 	id := func(name string) (int64, string) {
 		v := vals.Get(name)

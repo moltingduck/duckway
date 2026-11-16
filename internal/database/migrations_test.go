@@ -320,3 +320,29 @@ func TestMigrationAddsRequestLogDecisionIdempotently(t *testing.T) {
 		t.Fatalf("legacy row must default to empty decision: %q %q %v", decision, approval, err)
 	}
 }
+
+func TestMigrationAddsRequestLogDenyDetailAndRepeatCount(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`INSERT INTO request_log (service_name, method, path, status_code) VALUES ('s', 'GET', '/legacy', 403)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"deny_detail", "repeat_count"} {
+		if _, err := db.Exec(`ALTER TABLE request_log DROP COLUMN ` + col); err != nil {
+			t.Fatalf("simulate an older schema: %v", err)
+		}
+	}
+	for i := 0; i < 3; i++ { // idempotent
+		if err := runMigrations(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var detail string
+	var repeat int
+	if err := db.QueryRow(`SELECT deny_detail, repeat_count FROM request_log WHERE path = '/legacy'`).Scan(&detail, &repeat); err != nil || detail != "" || repeat != 1 {
+		t.Fatalf("legacy row must default to empty detail and repeat 1: %q %d %v", detail, repeat, err)
+	}
+}

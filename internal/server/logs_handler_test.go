@@ -408,3 +408,58 @@ func TestLogsDecisionFilterAndFacets(t *testing.T) {
 		t.Fatalf("facet decisions: %v %v", err, f.Decisions)
 	}
 }
+
+func TestLogsDenyKindFilterAndDetailFields(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	seedLogs(t, s)
+	ins := func(path, detail string, repeat int) {
+		t.Helper()
+		if _, err := s.db.Exec(`INSERT INTO request_log (client_id, service_name, method, path, status_code, decision, deny_detail, repeat_count) VALUES ('c1', 'github', 'POST', ?, 403, 'acl_denied', ?, ?)`,
+			path, detail, repeat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ins("/k/branch", `{"kind":"branch_rules","layer":"placeholder","rule":"** (read)","reason":"r","refs":[],"sees":"s"}`, 3)
+	ins("/k/token", `{"kind":"token_acl","layer":"placeholder","rule":"","reason":"r","refs":[],"sees":"s"}`, 1)
+	ins("/k/legacy", ``, 1)
+
+	for q, want := range map[string]int{
+		"?deny_kind=branch_rules&limit=200": 1,
+		"?deny_kind=token_acl&limit=200":    1,
+		"?deny_kind=capability&limit=200":   0,
+	} {
+		rec, p := getLogs(t, s, shared, q, false)
+		if rec.Code != 200 || p.Total != want {
+			t.Errorf("%s: code %d total %d want %d", q, rec.Code, p.Total, want)
+		}
+	}
+	if rec, _ := getLogs(t, s, shared, "?deny_kind=bogus", false); rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid deny_kind: %d", rec.Code)
+	}
+	var body struct {
+		Items []struct {
+			Path        string `json:"path"`
+			RepeatCount int    `json:"repeat_count"`
+			DenyDetail  *struct {
+				Kind string `json:"kind"`
+				Rule string `json:"rule"`
+			} `json:"deny_detail"`
+		} `json:"items"`
+	}
+	rec, _ := getLogs(t, s, shared, "?decision=acl_denied&limit=200", false)
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Items) != 3 {
+		t.Fatalf("payload: %v %s", err, rec.Body.String())
+	}
+	for _, it := range body.Items {
+		switch it.Path {
+		case "/k/branch":
+			if it.RepeatCount != 3 || it.DenyDetail == nil || it.DenyDetail.Kind != "branch_rules" || it.DenyDetail.Rule != "** (read)" {
+				t.Errorf("branch row: %+v", it)
+			}
+		case "/k/legacy":
+			if it.DenyDetail != nil || it.RepeatCount != 1 {
+				t.Errorf("legacy row: %+v", it)
+			}
+		}
+	}
+}
