@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,7 +24,7 @@ import (
 )
 
 func TestDiscordOwnershipRejectionVerticalE2E(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	ducklion, err := duckliondaemon.Open(context.Background(), duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion"), RuntimeLauncher: func(specPath string) error {
@@ -55,7 +56,7 @@ func TestDiscordOwnershipRejectionVerticalE2E(t *testing.T) {
 	}
 	_ = management.Close()
 
-	db, err := database.Open(t.TempDir())
+	db, err := database.Open(testutil.ShortDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}

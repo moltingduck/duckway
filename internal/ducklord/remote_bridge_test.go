@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"io"
 	"os"
 	"path/filepath"
@@ -87,7 +88,7 @@ func TestRunnerProjectBrowserRejectsUnsafeInputBeforeSSH(t *testing.T) {
 }
 
 func TestRunnerSelectedMutationsRejectChangedDucklionInstance(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	server, err := daemon.Open(context.Background(), daemon.Options{Root: root})
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +127,7 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	os.Exit(testutil.RunWithShortTempRoot(m))
 }
 
 // dropCommittedCreateResponse is a subprocess-only bridge fault injector. It
@@ -204,7 +205,7 @@ func TestRunnerOutputSubscriptionLimitIsProcessWide(t *testing.T) {
 }
 
 func TestRunnerStartReplaysCommittedMutationAfterBridgeDisconnect(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	var launches atomic.Int32
@@ -220,7 +221,7 @@ func TestRunnerStartReplaysCommittedMutationAfterBridgeDisconnect(t *testing.T) 
 	go func() { serveDone <- server.Serve() }()
 	defer func() { _ = server.Close(); <-serveDone }()
 
-	marker := filepath.Join(t.TempDir(), "drop-once")
+	marker := filepath.Join(testutil.ShortDir(t), "drop-once")
 	t.Setenv("DUCKLORD_TEST_BRIDGE_HELPER", "1")
 	t.Setenv("DUCKLORD_TEST_SOCKET", server.SocketPath())
 	t.Setenv("DUCKLORD_TEST_DROP_CREATE_RESPONSE", marker)
@@ -247,7 +248,7 @@ func TestRunnerStartReplaysCommittedMutationAfterBridgeDisconnect(t *testing.T) 
 }
 
 func TestRunnerYieldTransfersCCSessionAndWaitsThroughBridge(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	server, err := daemon.Open(context.Background(), daemon.Options{Root: root, RuntimeLauncher: func(specPath string) error {
@@ -362,7 +363,7 @@ func TestTerminalSubmitLineUsesPTYEnter(t *testing.T) {
 }
 
 func TestRunnerSplitOutputAndControlUseMultiplexedBridge(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	database, err := store.Open(context.Background(), filepath.Join(root, "ducklion.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -474,7 +475,7 @@ func TestRunnerSplitOutputAndControlUseMultiplexedBridge(t *testing.T) {
 	defer pool.Close()
 	outputKey := OutputKey{ClientKey: "local", InstanceID: string(server.InstanceID()), SessionID: "ABC123"}
 	outputRevision := OutputRevision{RuntimeGeneration: 1}
-	snapshotStore := SnapshotStore{Root: filepath.Join(t.TempDir(), "snapshots")}
+	snapshotStore := SnapshotStore{Root: filepath.Join(testutil.ShortDir(t), "snapshots")}
 	var pooled *PooledTerminal
 	if _, err := pool.Activate(ctx, outputKey, outputRevision, func(openCtx context.Context, key OutputKey, revision OutputRevision, _ uint64) (OutputResource, error) {
 		outputOnly, openErr := runner.OpenOutputStreamFrom(openCtx, clientConfig, "ABC123", AttachResume{RuntimeGeneration: 1, OutputOffset: 0})
@@ -587,7 +588,7 @@ func TestRunnerSplitOutputAndControlUseMultiplexedBridge(t *testing.T) {
 }
 
 func TestRunnerListsSessionsThroughStdioBridge(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	database, err := store.Open(context.Background(), filepath.Join(root, "ducklion.db"))
 	if err != nil {
 		t.Fatal(err)

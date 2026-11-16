@@ -1,6 +1,7 @@
 package ducklion
 
 import (
+	"github.com/hackerduck/duckway/internal/testutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,7 +21,7 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	os.Exit(testutil.RunWithShortTempRoot(m))
 }
 
 func TestValidateNameRejectsUnsafeNames(t *testing.T) {
@@ -56,7 +57,7 @@ func TestScrubSessionEnvDropsSSHAuthSock(t *testing.T) {
 }
 
 func TestDuckwayAgentProxyEnvReadsClientConfig(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.ShortDir(t)
 	t.Setenv("DUCKWAY_CONFIG_DIR", dir)
 	t.Setenv("NO_PROXY", "example.internal")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("proxy_port: 19090\n"), 0600); err != nil {
@@ -105,8 +106,8 @@ func TestMergeEnvLetsExplicitEnvOverrideProxyDefaults(t *testing.T) {
 }
 
 func TestManagerStartInjectsDuckwayProxyEnvForAgent(t *testing.T) {
-	root := t.TempDir()
-	configDir := t.TempDir()
+	root := testutil.ShortDir(t)
+	configDir := testutil.ShortDir(t)
 	t.Setenv("DUCKWAY_CONFIG_DIR", configDir)
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("proxy_port: 19191\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -129,7 +130,7 @@ func TestManagerStartInjectsDuckwayProxyEnvForAgent(t *testing.T) {
 }
 
 func TestManagerStartReadSendStopWithPTY(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	m := NewManager(root, "")
 	rec, err := m.Start(StartOptions{
 		Name:      "alpha",
@@ -161,7 +162,7 @@ func TestManagerStartReadSendStopWithPTY(t *testing.T) {
 }
 
 func TestManagerRejectsDuplicateLiveSession(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	m := NewManager(root, "")
 	_, err := m.Start(StartOptions{Name: "alpha", Cwd: root, Command: []string{"sh", "-lc", "sleep 30"}})
 	if err != nil {
@@ -174,7 +175,7 @@ func TestManagerRejectsDuplicateLiveSession(t *testing.T) {
 }
 
 func TestListMarksExitedSupervisorStale(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	m := NewManager(root, "")
 	if _, err := m.Start(StartOptions{Name: "alpha", Cwd: root, Command: []string{"sh", "-lc", "sleep 0.2; printf done"}}); err != nil {
 		t.Fatal(err)
@@ -229,7 +230,7 @@ func TestRespondToTerminalQueries(t *testing.T) {
 }
 
 func TestReadMissingLogReturnsEmpty(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	m := NewManager(root, "")
 	state := &State{Version: stateVersion, Sessions: []Record{{
 		Name: "alpha", Status: StatusRunning, PID: os.Getpid(), Log: filepath.Join(root, "missing.log"), Socket: filepath.Join(root, "missing.sock"),

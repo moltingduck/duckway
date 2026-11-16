@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,7 +15,7 @@ import (
 )
 
 func TestHostRetentionUpdateIsAuthorizedHotAndPersistent(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	server, err := Open(context.Background(), Options{Root: root})
 	if err != nil {
 		t.Fatal(err)
@@ -71,8 +72,8 @@ func TestHostRetentionUpdateIsAuthorizedHotAndPersistent(t *testing.T) {
 }
 
 func TestHostRetentionSettingsRejectSymlink(t *testing.T) {
-	root := t.TempDir()
-	outside := filepath.Join(t.TempDir(), "outside.json")
+	root := testutil.ShortDir(t)
+	outside := filepath.Join(testutil.ShortDir(t), "outside.json")
 	if err := os.WriteFile(outside, []byte(`{"pty_log_retention_days":7}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -88,13 +89,13 @@ func TestHostRetentionSettingsRejectSymlink(t *testing.T) {
 }
 
 func TestHostRetentionUpdateFailureKeepsActiveTTL(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	server, err := Open(context.Background(), Options{Root: root})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	outside := filepath.Join(t.TempDir(), "outside.json")
+	outside := filepath.Join(testutil.ShortDir(t), "outside.json")
 	if err := os.WriteFile(outside, []byte(`{"pty_log_retention_days":7}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,7 @@ func TestHostRetentionUpdateFailureKeepsActiveTTL(t *testing.T) {
 func TestHostRetentionSettingsRejectPermissiveAndLinkedFiles(t *testing.T) {
 	for _, mode := range []os.FileMode{0644, 0600} {
 		t.Run(mode.String(), func(t *testing.T) {
-			root := t.TempDir()
+			root := testutil.ShortDir(t)
 			path := filepath.Join(root, hostConfigFilename)
 			if err := os.WriteFile(path, []byte(`{"pty_log_retention_days":7}`), mode); err != nil {
 				t.Fatal(err)
@@ -136,7 +137,7 @@ func TestHostRetentionSettingsRejectPermissiveAndLinkedFiles(t *testing.T) {
 }
 
 func TestHostAgentHookConfigRejectsUnauthorizedAndMalformedRequests(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +177,7 @@ func TestHostAgentHookConfigRejectsUnauthorizedAndMalformedRequests(t *testing.T
 }
 
 func TestHostAgentHookStatusRejectsUnauthorizedAndMalformedRequests(t *testing.T) {
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,9 +207,9 @@ func TestHostAgentHookStatusRejectsUnauthorizedAndMalformedRequests(t *testing.T
 }
 
 func TestHostAgentHookConfigControlRoundTrip(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.ShortDir(t)
 	t.Setenv("HOME", home)
-	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	server, err := Open(context.Background(), Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"io"
 	"os"
 	"os/exec"
@@ -55,7 +56,7 @@ func TestDucklionAttachUsesManager(t *testing.T) {
 }
 
 func TestDucklionProjectsReadsDuckwayProjectStore(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.ShortDir(t)
 	t.Setenv("HOME", home)
 	project := filepath.Join(home, "work", "duckway")
 	if err := os.MkdirAll(project, 0700); err != nil {
@@ -125,7 +126,7 @@ func TestDucklionDaemonProcessLifecycleE2E(t *testing.T) {
 		ducklioncli.Main([]string{"daemon"}, io.Discard)
 		os.Exit(0)
 	}
-	configDir := t.TempDir()
+	configDir := testutil.ShortDir(t)
 	socketPath := filepath.Join(configDir, "ducklion", "ducklion.sock")
 	start := func() *exec.Cmd {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestDucklionDaemonProcessLifecycleE2E$")

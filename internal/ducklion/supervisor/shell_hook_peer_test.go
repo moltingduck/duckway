@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"encoding/json"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"io"
 	"net"
 	"os"
@@ -77,7 +78,7 @@ func TestShellFirstHookIsAdvisoryAndRejectsForeignProcess(t *testing.T) {
 
 func testShellFirstHookIsAdvisoryAndRejectsForeignProcess(t *testing.T, kind string, expected model.NotificationCategory) {
 	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 1, OwnershipEpoch: 1, ShellFirstHooks: true,
-		CWD: t.TempDir(), Command: []string{"sh", "-c", `DUCKLION_TEST_SHELL_HOOK_KIND="$2" DUCKLION_TEST_SHELL_HOOK_EMITTER=1 "$1" -test.run=^TestShellFirstHookEmitter$; sleep 5`, "sh", os.Args[0], kind}})
+		CWD: testutil.ShortDir(t), Command: []string{"sh", "-c", `DUCKLION_TEST_SHELL_HOOK_KIND="$2" DUCKLION_TEST_SHELL_HOOK_EMITTER=1 "$1" -test.run=^TestShellFirstHookEmitter$; sleep 5`, "sh", os.Args[0], kind}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func testShellFirstHookIsAdvisoryAndRejectsForeignProcess(t *testing.T, kind str
 }
 
 func TestShellHookPeerMustBelongToRootProcessTree(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "hook.sock")
+	path := filepath.Join(testutil.ShortDir(t), "hook.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +167,7 @@ func TestShellHookPeerMustBelongToRootProcessTree(t *testing.T) {
 }
 
 func TestShellHookPeerRejectsClosedUnixSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "closed.sock")
+	path := filepath.Join(testutil.ShortDir(t), "closed.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)

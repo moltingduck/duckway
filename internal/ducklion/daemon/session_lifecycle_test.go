@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"io"
 	"net"
 	"os"
@@ -25,7 +26,7 @@ import (
 )
 
 func TestCreateSessionStartsManagedPTYAndAcceptsInput(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	runtimeErrors := make(chan error, 1)
@@ -182,7 +183,7 @@ func TestCreateSessionStartsManagedPTYAndAcceptsInput(t *testing.T) {
 }
 
 func TestDuckwayCCCreatesAgentWithCCInitialOwner(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	cleanerCalls := 0
@@ -281,7 +282,7 @@ func TestDuckwayCCCreatesAgentWithCCInitialOwner(t *testing.T) {
 }
 
 func TestCanonicalLifecycleWaitDrainsBeforeEnd(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
@@ -372,7 +373,7 @@ func TestCanonicalLifecycleWaitDrainsBeforeEnd(t *testing.T) {
 }
 
 func TestCanonicalLifecycleDestroyReplaysAfterSessionDeletion(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
@@ -424,7 +425,7 @@ func TestCanonicalLifecycleDestroyReplaysAfterSessionDeletion(t *testing.T) {
 }
 
 func TestCanonicalLifecycleForceRestartCancelsAndFencesOldRuntimeEvent(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
@@ -524,7 +525,7 @@ func TestCanonicalLifecycleForceRestartCancelsAndFencesOldRuntimeEvent(t *testin
 }
 
 func TestCanonicalLifecycleWaitResumesAfterDucklionRestart(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	launcher := func(specPath string) error {
@@ -605,7 +606,7 @@ func TestCanonicalLifecycleWaitResumesAfterDucklionRestart(t *testing.T) {
 }
 
 func TestCanonicalLifecycleRestartPreservesBindingAndAdvancesGeneration(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
@@ -702,7 +703,7 @@ func TestUnsupportedDaemonCapabilityDoesNotAcknowledgeAgentActivity(t *testing.T
 	for _, supportsAttention := range []bool{false, true} {
 		t.Run(fmt.Sprintf("attention=%v", supportsAttention), func(t *testing.T) {
 			ptySession, err := supervisor.Start(supervisor.Options{SessionID: "ABC123", RuntimeGeneration: 1, OwnershipEpoch: 1,
-				AgentType: "fixture", CWD: t.TempDir(), OutputCapacity: 1024,
+				AgentType: "fixture", CWD: testutil.ShortDir(t), OutputCapacity: 1024,
 				Command: []string{"sh", "-c", `printf '%s\n' '{"kind":"completed","response":"done"}' >&3; sleep 30`}})
 			if err != nil {
 				t.Fatal(err)
@@ -740,7 +741,7 @@ func TestUnsupportedDaemonCapabilityDoesNotAcknowledgeAgentActivity(t *testing.T
 }
 
 func TestShellLifecycleRestartEndAndDestroy(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
@@ -806,7 +807,7 @@ func TestShellLifecycleRestartEndAndDestroy(t *testing.T) {
 }
 
 func TestShellConcurrentDucklordAttachmentsAreWritable(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
@@ -897,7 +898,7 @@ func TestShellConcurrentDucklordAttachmentsAreWritable(t *testing.T) {
 }
 
 func TestShellLifecycleRestartLaunchFailureRetiresAndReleasesBarrier(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	var launches atomic.Int32
@@ -952,7 +953,7 @@ func TestShellLifecycleRestartLaunchFailureRetiresAndReleasesBarrier(t *testing.
 }
 
 func TestRealSupervisorReportsMissingShellOnRestart(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	shellPath := filepath.Join(root, "test-shell")
 	if err := os.WriteFile(shellPath, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -1038,7 +1039,7 @@ func assertFailedShellRestartRetained(t *testing.T, server *Server, created prot
 func TestShellLifecycleRestartInvalidPreparationRetires(t *testing.T) {
 	for _, invalid := range []string{"missing-spec", "corrupt-spec"} {
 		t.Run(invalid, func(t *testing.T) {
-			root := t.TempDir()
+			root := testutil.ShortDir(t)
 			runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 			defer stopRuntime()
 			var launches atomic.Int32
@@ -1100,7 +1101,7 @@ func TestShellLifecycleRestartInvalidPreparationRetires(t *testing.T) {
 }
 
 func TestPrepareLifecycleRestartRejectsCorruptStoppedRecoveryKey(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	dir := filepath.Join(root, "sessions", "ABC123")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -1141,7 +1142,7 @@ func awaitLifecycleTestResult(t *testing.T, client *Client, requestID string, se
 }
 
 func TestManagedPTYDrainsFinalAttentionBeforeExit(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
@@ -1187,7 +1188,7 @@ func TestManagedPTYDrainsFinalAttentionBeforeExit(t *testing.T) {
 }
 
 func TestInteractiveAgentHookProjectsTaskCompletion(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	exitPath := filepath.Join(root, "exit-agent")
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
@@ -1234,7 +1235,7 @@ func TestInteractiveAgentHookProjectsTaskCompletion(t *testing.T) {
 }
 
 func TestRetainedOutputPeriodicCleanupRemovesCrashOrphanWithoutBlockingDaemon(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	server, err := Open(context.Background(), Options{Root: root, RetainedOutputTTL: time.Second, RuntimeLauncher: func(specPath string) error {
@@ -1256,8 +1257,15 @@ func TestRetainedOutputPeriodicCleanupRemovesCrashOrphanWithoutBlockingDaemon(t 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The shell exits as soon as it reads this input, so the supervisor can tear
+	// down the runtime control connection before the input acknowledgement is
+	// delivered. That is reported as a retryable adapter_unhealthy error and is
+	// the only error tolerated here; retirement is asserted below either way.
 	if err := client.SendInput(created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, []byte("printf retained-crash-orphan; exit\n")); err != nil {
-		t.Fatal(err)
+		var remote *RemoteError
+		if !errors.As(err, &remote) || remote.Detail.Code != protocol.ErrAdapterUnhealthy || !remote.Detail.Retryable {
+			t.Fatal(err)
+		}
 	}
 	path := filepath.Join(root, "sessions", created.SessionID, "output.1.log")
 	metaPath := path + ".json"
@@ -1296,6 +1304,7 @@ func TestRetainedOutputPeriodicCleanupRemovesCrashOrphanWithoutBlockingDaemon(t 
 		}
 	}
 	server.requestRetainedOutputSweep()
+	deadline = time.Now().Add(5 * time.Second) // independent of time spent waiting for retirement
 	for {
 		_, logErr := os.Stat(path)
 		_, metaErr := os.Stat(metaPath)
@@ -1315,7 +1324,7 @@ func TestRetainedOutputPeriodicCleanupRemovesCrashOrphanWithoutBlockingDaemon(t 
 }
 
 func TestManagedPTYPersistsAcrossDaemonRestart(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	launcher := func(specPath string) error {
@@ -1388,7 +1397,7 @@ func TestManagedPTYPersistsAcrossDaemonRestart(t *testing.T) {
 }
 
 func TestInteractiveAgentActivitySurvivesDaemonRestart(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	trigger := filepath.Join(root, "emit-completion")
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
@@ -1446,7 +1455,7 @@ func TestInteractiveAgentActivitySurvivesDaemonRestart(t *testing.T) {
 }
 
 func TestManagedPTYReportsExitAfterDaemonReturns(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	launcher := func(specPath string) error {

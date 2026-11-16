@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 
 func TestShellRootExitRetiresSelectableSessionAndKeepsDiagnosticIndex(t *testing.T) {
 	ctx := context.Background()
-	server, err := Open(ctx, Options{Root: t.TempDir()})
+	server, err := Open(ctx, Options{Root: testutil.ShortDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +25,7 @@ func TestShellRootExitRetiresSelectableSessionAndKeepsDiagnosticIndex(t *testing
 		t.Fatal(err)
 	}
 	now := time.Now().UnixMilli()
-	session := model.Session{ID: "ABC123", Handle: "shell", Kind: model.KindShell, CWD: t.TempDir(), Status: model.StatusRecovering,
+	session := model.Session{ID: "ABC123", Handle: "shell", Kind: model.KindShell, CWD: testutil.ShortDir(t), Status: model.StatusRecovering,
 		RuntimeGeneration: 1, TaskState: model.TaskIdle, AdapterState: model.AdapterUnavailable, RecoveryPublicKey: publicKey,
 		CreatedAtMS: now, UpdatedAtMS: now}
 	if _, _, err := server.service.CreateSession(ctx, "terminal:desk", "create-shell-exit", session); err != nil {

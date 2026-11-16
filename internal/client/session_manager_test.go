@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,7 +29,7 @@ func TestMain(m *testing.M) {
 		}
 		return
 	}
-	os.Exit(m.Run())
+	os.Exit(testutil.RunWithShortTempRoot(m))
 }
 
 func TestSessionManagerMissingStateLoadsEmptyVersionOne(t *testing.T) {

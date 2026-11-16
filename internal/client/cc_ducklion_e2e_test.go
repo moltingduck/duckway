@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,8 +27,8 @@ func TestDiscordBindExistingDucklionSessionE2E(t *testing.T) {
 	}
 	_, source, _, _ := runtime.Caller(0)
 	repo := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-	configDir := t.TempDir()
-	binary := filepath.Join(t.TempDir(), "ducklion")
+	configDir := testutil.ShortDir(t)
+	binary := filepath.Join(testutil.ShortDir(t), "ducklion")
 	build := exec.Command("go", "build", "-o", binary, "./cmd/ducklion")
 	build.Dir = repo
 	if output, err := build.CombinedOutput(); err != nil {
@@ -171,8 +172,8 @@ func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 	}
 	_, source, _, _ := runtime.Caller(0)
 	repo := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-	configDir := t.TempDir()
-	binary := filepath.Join(t.TempDir(), "ducklion")
+	configDir := testutil.ShortDir(t)
+	binary := filepath.Join(testutil.ShortDir(t), "ducklion")
 	build := exec.Command("go", "build", "-o", binary, "./cmd/ducklion")
 	build.Dir = repo
 	if output, err := build.CombinedOutput(); err != nil {

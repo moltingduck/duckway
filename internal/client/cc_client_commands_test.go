@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/hackerduck/duckway/internal/testutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -276,7 +277,7 @@ func (f *fakeServer) markerClearCount() int {
 // claude-projects tree. Used to drive handleClientCommand end-to-end.
 func stubWatch(t *testing.T, projectsRoot string, fake *fakeServer) *CCWatch {
 	t.Helper()
-	configDir := t.TempDir()
+	configDir := testutil.ShortDir(t)
 	w := &CCWatch{
 		cfg:         &Config{ServerURL: fake.srv.URL, Token: "tok"},
 		configDir:   configDir,
@@ -313,7 +314,7 @@ func firstAttachmentPathFromPrompt(prompt string) string {
 }
 
 func TestCmdSessions_PostsListingOfUnbound(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.ShortDir(t)
 	t.Setenv("HOME", home)
 	projects := home + "/.claude/projects"
 	writeFakeSession(t, projects, "-home-me-app", "11111111-1111-1111-1111-111111111111", []string{
@@ -349,7 +350,7 @@ func TestCmdSessions_PostsListingOfUnbound(t *testing.T) {
 }
 
 func TestRecoverPendingTurnsStillRunningMarksMessageProcessed(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.ShortDir(t)
 	t.Setenv("HOME", home)
 	handle := "dwch_still_running"
 	chDir, err := tmuxChannelDir(handle)
@@ -386,7 +387,7 @@ func TestRecoverPendingTurnsStillRunningMarksMessageProcessed(t *testing.T) {
 }
 
 func TestRecoverPendingTurnsDiscardsInactiveChannel(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.ShortDir(t)
 	t.Setenv("HOME", home)
 	handle := "dwch_inactive"
 	chDir, err := tmuxChannelDir(handle)
@@ -414,7 +415,7 @@ func TestRecoverPendingTurnsDiscardsInactiveChannel(t *testing.T) {
 }
 
 func TestAcquireCCWatchLockRejectsSecondInstance(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.ShortDir(t)
 	first, err := acquireCCWatchLock(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -457,7 +458,7 @@ func TestIsDiscordSnowflake(t *testing.T) {
 
 func TestRecoverBindCleanupRetriesMarkerAndArchiveBeforeTerminalFailure(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	if _, err := w.provisions.Reserve(ccProvisionRecord{RequestID: "request-1", Kind: "bind_manifest", ManagementHandle: "dwch_mgmt", BindItems: []ccBindManifestItem{{SessionID: "ABC123"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +511,7 @@ func bindPhase(records []ccProvisionRecord) ccProvisionPhase {
 
 func TestRecoverMultiBindPostsOneCompleteReplyBeforeTerminalizing(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	if _, err := w.provisions.Reserve(ccProvisionRecord{RequestID: "request-many", Kind: "bind_manifest", ManagementHandle: "dwch_mgmt",
 		BindItems: []ccBindManifestItem{{SessionID: "AAA111"}, {SessionID: "BBB222"}}}); err != nil {
 		t.Fatal(err)
@@ -555,7 +556,7 @@ func TestRecoverMultiBindPostsOneCompleteReplyBeforeTerminalizing(t *testing.T) 
 
 func TestSaveBindManifestResultReportsCheckpointFailure(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	manifest, err := w.reserveBindManifest("request-checkpoint", "dwch_mgmt", []string{"BAD111", "OK222"})
 	if err != nil {
 		t.Fatal(err)
@@ -583,7 +584,7 @@ func TestSaveBindManifestResultReportsCheckpointFailure(t *testing.T) {
 }
 
 func TestCmdBind_CreatesChannelAndWritesBinding(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.ShortDir(t)
 	t.Setenv("HOME", home)
 	projects := home + "/.claude/projects"
 	writeFakeSession(t, projects, "-home-me-thing", "33333333-3333-3333-3333-333333333333", []string{
@@ -617,7 +618,7 @@ func TestCmdBind_CreatesChannelAndWritesBinding(t *testing.T) {
 }
 
 func TestCmdBind_AlreadyBoundSkipsCreate(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.ShortDir(t)
 	t.Setenv("HOME", home)
 	projects := home + "/.claude/projects"
 	writeFakeSession(t, projects, "-home-me-dup", "44444444-4444-4444-4444-444444444444", []string{
@@ -642,7 +643,7 @@ func TestCmdBind_AlreadyBoundSkipsCreate(t *testing.T) {
 }
 
 func TestCmdBind_UnknownSessionReportsError(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.ShortDir(t)
 	t.Setenv("HOME", home)
 	// no sessions on disk
 	fake := newFakeServer(t)
@@ -660,7 +661,7 @@ func TestCmdBind_UnknownSessionReportsError(t *testing.T) {
 }
 
 func TestCmdNewWithExistingCwdCreatesChannel(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	cwd := filepath.Join(root, "app")
 	if err := os.MkdirAll(cwd, 0700); err != nil {
 		t.Fatal(err)
@@ -684,7 +685,7 @@ func TestCmdNewWithExistingCwdCreatesChannel(t *testing.T) {
 }
 
 func TestCmdNewConfiguredProjectCarriesDisplayName(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	cwd := filepath.Join(root, "directory-basename")
 	if err := os.MkdirAll(cwd, 0700); err != nil {
 		t.Fatal(err)
@@ -707,7 +708,7 @@ func TestCmdNewConfiguredProjectCarriesDisplayName(t *testing.T) {
 
 func TestCmdNewBareSlugCreatesStableDefaultWorkspace(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	var gotCWD string
 	w.provisionProjectSession = func(_ context.Context, _, _, _, _, _, _ string, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
 		gotCWD = cwd
@@ -727,7 +728,7 @@ func TestCmdNewBareSlugCreatesStableDefaultWorkspace(t *testing.T) {
 
 func TestDurableClientCommandCompletesAfterHandlerReturns(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	w.handleInboxEvent(CCInboxEvent{ID: 42, CCID: "cc1", ChannelHandle: ptrString("dwch_mgmt"), EventType: "CLIENT_COMMAND",
 		Payload: `{"command":"!new","args":[],"request_id":"discord-42"}`, ClaimToken: "claim-42"})
 	deadline := time.Now().Add(2 * time.Second)
@@ -747,7 +748,7 @@ func TestDurableClientCommandCompletesAfterHandlerReturns(t *testing.T) {
 
 func TestLegacyDurableClientCommandDoesNotReplayForever(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	handle := "dwch_mgmt"
 	w.handleInboxEvent(CCInboxEvent{ID: 44, CCID: "cc1", ChannelHandle: &handle, EventType: "CLIENT_COMMAND",
 		Payload: `{"command":"!projects","args":[],"request_id":"legacy-44"}`, ClaimToken: "claim-44"})
@@ -769,7 +770,7 @@ func TestLegacyDurableClientCommandDoesNotReplayForever(t *testing.T) {
 func TestProvisionSuccessReplyResponseLossDoesNotDuplicate(t *testing.T) {
 	fake := newFakeServer(t)
 	fake.dropNextDeliveredResponse()
-	configDir := t.TempDir()
+	configDir := testutil.ShortDir(t)
 	w := &CCWatch{configDir: configDir, provisions: newCCProvisionStore(configDir), sessions: NewCCSessionStore(configDir), api: NewAPIClient(fake.srv.URL, "tok")}
 	session := protocol.SessionSummary{SessionID: "ABC123", AgentType: "fixture", CWD: "/work"}
 	channel := &CreateCCChannelResult{Handle: "dwch_task", Name: "review", Cwd: "/work", Kind: "task"}
@@ -797,7 +798,7 @@ func TestProvisionSuccessReplyResponseLossDoesNotDuplicate(t *testing.T) {
 func TestDurableNewErrorReplyLossReadmitsThenCompletesOnce(t *testing.T) {
 	fake := newFakeServer(t)
 	fake.dropNextDeliveredResponse()
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	handle := "dwch_mgmt"
 	event := CCInboxEvent{ID: 43, CCID: "cc1", ChannelHandle: &handle, EventType: "CLIENT_COMMAND", ClaimToken: "claim-a",
 		Payload: `{"command":"!new","args":[],"request_id":"discord-error"}`}
@@ -920,7 +921,7 @@ func TestCCCommandRunnerStopEscalatesRetiringHandler(t *testing.T) {
 }
 
 func TestCmdNewWithMissingCwdRequiresConfirmationThenAddsProject(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortDir(t)
 	cwd := filepath.Join(root, "new-app")
 	fake := newFakeServer(t)
 	w := stubWatch(t, filepath.Join(root, ".claude", "projects"), fake)
@@ -960,8 +961,8 @@ func TestCmdNewWithMissingCwdRequiresConfirmationThenAddsProject(t *testing.T) {
 
 func TestNewConfirmationIsNotConsumedBeforeProvisioningIsActive(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
-	cwd := filepath.Join(t.TempDir(), "confirmed")
+	w := stubWatch(t, testutil.ShortDir(t), fake)
+	cwd := filepath.Join(testutil.ShortDir(t), "confirmed")
 	token := "confirm-safe"
 	w.pendingNew[token] = pendingNewProject{Slug: "review", Cwd: cwd, CreatedAt: time.Now()}
 	w.mu.Lock()
@@ -981,8 +982,8 @@ func TestNewConfirmationIsNotConsumedBeforeProvisioningIsActive(t *testing.T) {
 
 func TestNewConfirmationRetriesSuccessReplyBeforeConsumingToken(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
-	cwd := filepath.Join(t.TempDir(), "confirmed")
+	w := stubWatch(t, testutil.ShortDir(t), fake)
+	cwd := filepath.Join(testutil.ShortDir(t), "confirmed")
 	token := "confirm-retry"
 	w.pendingNew[token] = pendingNewProject{Slug: "review", Cwd: cwd, CreatedAt: time.Now()}
 	w.mu.Lock()
@@ -1022,8 +1023,8 @@ func TestNewConfirmationRetriesSuccessReplyBeforeConsumingToken(t *testing.T) {
 }
 
 func TestNewProvisionWorkflowReplaysOneChannelAndOneCCOwnedSession(t *testing.T) {
-	configDir := t.TempDir()
-	binDir := t.TempDir()
+	configDir := testutil.ShortDir(t)
+	binDir := testutil.ShortDir(t)
 	codexPath := filepath.Join(binDir, "codex")
 	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' '{\"kind\":\"completed\",\"response\":\"done\"}' >&3; done\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -1153,7 +1154,7 @@ func TestNewProvisionWorkflowReplaysOneChannelAndOneCCOwnedSession(t *testing.T)
 }
 
 func TestDiscordRestartCommandPreservesChannelAndBindingE2E(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	daemon, err := duckliondaemon.Open(context.Background(), duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion"), RuntimeLauncher: func(specPath string) error {
@@ -1202,7 +1203,7 @@ func TestDiscordRestartCommandPreservesChannelAndBindingE2E(t *testing.T) {
 }
 
 func TestDiscordRestartWaitsForFinalEventDeliveryE2E(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := testutil.ShortDir(t)
 	barrier := filepath.Join(configDir, "release-completion")
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
@@ -1316,7 +1317,7 @@ func TestDiscordRestartWaitsForFinalEventDeliveryE2E(t *testing.T) {
 }
 
 func TestDiscordForceRestartDeliversCancellationBeforeReplacementE2E(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	daemon, err := duckliondaemon.Open(context.Background(), duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion"), RuntimeLauncher: func(specPath string) error {
@@ -1410,7 +1411,7 @@ func TestDiscordForceRestartDeliversCancellationBeforeReplacementE2E(t *testing.
 }
 
 func TestDiscordRestartRejectsDifferentChannelOwnerE2E(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := testutil.ShortDir(t)
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
 	daemon, err := duckliondaemon.Open(context.Background(), duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion"), RuntimeLauncher: func(specPath string) error {
@@ -1522,7 +1523,7 @@ func assertRuntimeGeneration(t *testing.T, client *duckliondaemon.Client, sessio
 }
 
 func TestDurableBareNewCommandProvisionsReadyDucklionSessionE2E(t *testing.T) {
-	configDir, binDir := t.TempDir(), t.TempDir()
+	configDir, binDir := testutil.ShortDir(t), testutil.ShortDir(t)
 	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' '{\"kind\":\"completed\",\"response\":\"done\"}' >&3; done\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -1596,7 +1597,7 @@ func TestDiscordChannelNameFromCwd(t *testing.T) {
 }
 
 func TestHandleClientCommand_DispatchesByName(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.ShortDir(t)
 	t.Setenv("HOME", home)
 	fake := newFakeServer(t)
 	w := stubWatch(t, home+"/.claude/projects", fake)
@@ -1620,7 +1621,7 @@ func TestHandleClientCommand_DispatchesByName(t *testing.T) {
 
 func TestHandleClientCommand_DuckwayVersion(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 
 	sendClientCommand(t, w, "dwch_mgmt", "!duckway-version", nil)
 
@@ -1634,12 +1635,12 @@ func TestHandleClientCommand_DuckwayVersion(t *testing.T) {
 }
 
 func TestHandleClientCommand_DuckwayDoctor(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.ShortDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", home)
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 
 	sendClientCommand(t, w, "dwch_mgmt", "!duckway-doctor", nil)
 
@@ -1678,7 +1679,7 @@ func TestHandleClientCommand_DuckwayDoctor(t *testing.T) {
 
 func TestHandleClientCommand_DuckwayRestartStartsDetachedHelper(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	calls := captureDetachedDuckwayCommands(t)
 
 	sendClientCommand(t, w, "dwch_mgmt", "!duckway-restart", nil)
@@ -1700,7 +1701,7 @@ func TestHandleClientCommand_DuckwayRestartStartsDetachedHelper(t *testing.T) {
 
 func TestHandleClientCommand_DuckwayUpdateStartsDetachedHelper(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	calls := captureDetachedDuckwayCommands(t)
 
 	sendClientCommand(t, w, "dwch_mgmt", "!duckway-update", []string{"--restart"})
@@ -1720,7 +1721,7 @@ func TestHandleClientCommand_DuckwayUpdateStartsDetachedHelper(t *testing.T) {
 
 func TestHandleClientCommand_DuckwayOpsRejectBadArgs(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	calls := captureDetachedDuckwayCommands(t)
 
 	sendClientCommand(t, w, "dwch_mgmt", "!duckway-version", []string{"extra"})
@@ -1745,7 +1746,7 @@ func TestHandleClientCommand_DuckwayOpsRejectBadArgs(t *testing.T) {
 
 func TestHandleClientCommand_RejectsInvalidArgumentsBeforeDispatch(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	calls := captureDetachedDuckwayCommands(t)
 
 	tests := []struct {
@@ -1784,13 +1785,13 @@ func TestHandleClientCommand_RejectsInvalidArgumentsBeforeDispatch(t *testing.T)
 
 func TestHandleClientCommand_LogReturnsRunnerHistory(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
-	store := NewCCSessionStore(t.TempDir())
+	w := stubWatch(t, testutil.ShortDir(t), fake)
+	store := NewCCSessionStore(testutil.ShortDir(t))
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", RunFn: func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
 		return "sid", "ok", false, nil
 	}, UseTmux: false}
-	r, err := newCCRunner("dwch_task", w.configDir, t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
+	r, err := newCCRunner("dwch_task", w.configDir, testutil.ShortDir(t), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1885,13 +1886,13 @@ func TestParseLogCount(t *testing.T) {
 
 func TestHandleClientCommand_LogAcceptsCount(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
-	store := NewCCSessionStore(t.TempDir())
+	w := stubWatch(t, testutil.ShortDir(t), fake)
+	store := NewCCSessionStore(testutil.ShortDir(t))
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", RunFn: func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
 		return "sid", "ok", false, nil
 	}, UseTmux: false}
-	r, err := newCCRunner("dwch_task", w.configDir, t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
+	r, err := newCCRunner("dwch_task", w.configDir, testutil.ShortDir(t), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1924,7 +1925,7 @@ func TestHandleClientCommand_LogAcceptsCount(t *testing.T) {
 
 func TestHandleMessageCreateReactsDuckAfterEnqueue(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	started := make(chan struct{})
 	done := make(chan struct{})
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", RunFn: func(ctx context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
@@ -1932,7 +1933,7 @@ func TestHandleMessageCreateReactsDuckAfterEnqueue(t *testing.T) {
 		<-done
 		return "sid", "ok", false, nil
 	}, UseTmux: false}
-	r, err := newCCRunner("dwch_task", w.configDir, t.TempDir(), spec, w.sessions, fakePostNoop, fakePostReplyNoop, fakeReactNoop, nil, true, false)
+	r, err := newCCRunner("dwch_task", w.configDir, testutil.ShortDir(t), spec, w.sessions, fakePostNoop, fakePostReplyNoop, fakeReactNoop, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1971,7 +1972,7 @@ func TestHandleMessageCreateDownloadsAttachmentOnlyMessage(t *testing.T) {
 	defer cdn.Close()
 
 	fake := newFakeServer(t)
-	watch := stubWatch(t, t.TempDir(), fake)
+	watch := stubWatch(t, testutil.ShortDir(t), fake)
 	promptCh := make(chan string, 1)
 	spec := ccAgentSpec{
 		Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: false,
@@ -1980,7 +1981,7 @@ func TestHandleMessageCreateDownloadsAttachmentOnlyMessage(t *testing.T) {
 			return "sid", "ok", false, nil
 		},
 	}
-	r, err := newCCRunner("dwch_task", watch.configDir, t.TempDir(), spec, watch.sessions, fakePostNoop, fakePostReplyNoop, fakeReactNoop, nil, true, false)
+	r, err := newCCRunner("dwch_task", watch.configDir, testutil.ShortDir(t), spec, watch.sessions, fakePostNoop, fakePostReplyNoop, fakeReactNoop, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2051,7 +2052,7 @@ func TestHandleMessageCreateWaitsForDuckBeforeStartingRunner(t *testing.T) {
 	t.Cleanup(releaseReaction)
 	fake.reactionEntered = reactionEntered
 	fake.reactionRelease = reactionRelease
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	started := make(chan struct{})
 	done := make(chan struct{})
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", RunFn: func(ctx context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
@@ -2059,7 +2060,7 @@ func TestHandleMessageCreateWaitsForDuckBeforeStartingRunner(t *testing.T) {
 		<-done
 		return "sid", "ok", false, nil
 	}, UseTmux: false}
-	r, err := newCCRunner("dwch_task", w.configDir, t.TempDir(), spec, w.sessions, fakePostNoop, fakePostReplyNoop, w.api.ReactCC, nil, true, false)
+	r, err := newCCRunner("dwch_task", w.configDir, testutil.ShortDir(t), spec, w.sessions, fakePostNoop, fakePostReplyNoop, w.api.ReactCC, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2115,7 +2116,7 @@ func TestHandleMessageCreateWaitsForDuckBeforeStartingRunner(t *testing.T) {
 
 func TestHandleMessageCreateDoubleBangDoesNotRequireAgentBinary(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	w.agentTypes["cc1"] = "definitely_missing_agent"
 
 	payload := json.RawMessage(`{"id":"1783330000000001235","content":"!! printf direct-shell","author":{"id":"U1","bot":false}}`)
@@ -2145,7 +2146,7 @@ func TestHandleMessageCreateDoubleBangDoesNotRequireAgentBinary(t *testing.T) {
 
 func TestHandleMessageCreateDoubleBangDoesNotWaitForAgentPrompt(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	agentStarted := make(chan struct{})
 	releaseAgent := make(chan struct{})
 	spec := ccAgentSpec{
@@ -2156,7 +2157,7 @@ func TestHandleMessageCreateDoubleBangDoesNotWaitForAgentPrompt(t *testing.T) {
 			return "sid", "agent done", false, nil
 		},
 	}
-	agentRunner, err := newCCRunner("dwch_task", w.configDir, t.TempDir(), spec, w.sessions, fakePostNoop, fakePostReplyNoop, fakeReactNoop, nil, true, false)
+	agentRunner, err := newCCRunner("dwch_task", w.configDir, testutil.ShortDir(t), spec, w.sessions, fakePostNoop, fakePostReplyNoop, fakeReactNoop, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2194,7 +2195,7 @@ func TestHandleMessageCreateDoubleBangDoesNotWaitForAgentPrompt(t *testing.T) {
 
 func TestClientCommandQueueDoesNotDelayAgentPrompt(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	commandStarted := make(chan struct{})
 	releaseCommand := make(chan struct{})
 	w.clientCommandHandler = func(context.Context, []byte) {
@@ -2212,7 +2213,7 @@ func TestClientCommandQueueDoesNotDelayAgentPrompt(t *testing.T) {
 			return "sid", "agent done", false, nil
 		},
 	}
-	agentRunner, err := newCCRunner("dwch_task", w.configDir, t.TempDir(), spec, w.sessions, fakePostNoop, fakePostReplyNoop, fakeReactNoop, nil, true, false)
+	agentRunner, err := newCCRunner("dwch_task", w.configDir, testutil.ShortDir(t), spec, w.sessions, fakePostNoop, fakePostReplyNoop, fakeReactNoop, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2244,7 +2245,7 @@ func TestClientCommandQueueDoesNotDelayAgentPrompt(t *testing.T) {
 
 func TestBlockedClientCommandDoesNotDelayDirectShell(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	commandStarted := make(chan struct{})
 	releaseCommand := make(chan struct{})
 	w.clientCommandHandler = func(context.Context, []byte) {
@@ -2324,7 +2325,7 @@ func TestCCCommandRunnerStopCancelsActiveAndDropsQueued(t *testing.T) {
 
 func TestDeletedChannelCannotRecreateShellOrCommandRunner(t *testing.T) {
 	fake := newFakeServer(t)
-	w := stubWatch(t, t.TempDir(), fake)
+	w := stubWatch(t, testutil.ShortDir(t), fake)
 	w.deleted["dwch_deleted"] = struct{}{}
 	called := make(chan struct{}, 1)
 	w.clientCommandHandler = func(context.Context, []byte) { called <- struct{}{} }
@@ -2356,14 +2357,14 @@ func fakeReactNoop(context.Context, string, string, string) error { return nil }
 
 func TestBindLocalSessions_FullCLIEntry(t *testing.T) {
 	// Same as cmdBind but exercises the standalone func the CLI uses.
-	home := t.TempDir()
+	home := testutil.ShortDir(t)
 	t.Setenv("HOME", home)
 	projects := home + "/.claude/projects"
 	writeFakeSession(t, projects, "-tmp-x", "66666666-6666-6666-6666-666666666666", []string{
 		`{"type":"user","cwd":"/tmp/x","message":{"role":"user","content":"cli"}}`,
 	})
 	fake := newFakeServer(t)
-	configDir := t.TempDir()
+	configDir := testutil.ShortDir(t)
 	store := NewCCSessionStore(configDir)
 	api := NewAPIClient(fake.srv.URL, "tok")
 
