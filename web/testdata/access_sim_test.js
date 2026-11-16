@@ -55,6 +55,11 @@ check('dump rows', () => {
   assert.strictEqual(rows[1].hex.trim(), '51 52 53 54');
   assert.strictEqual(H.dumpRows(u8(0, 10, 0x7f, 0x80))[0].ascii, '....');
   assert.strictEqual(H.dumpRows(b, 1).length, 1);
+  const r8 = H.dumpRows(b, 0, 8);
+  assert.strictEqual(r8.length, 3);
+  assert.strictEqual(r8[2].ascii, 'QRST');
+  assert.strictEqual(r8[1].offset, '00000008');
+  assert.strictEqual(r8[0].hex.length, r8[2].hex.length);
 });
 
 // ---- UTF-8 detection ----

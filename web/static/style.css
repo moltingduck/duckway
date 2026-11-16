@@ -2527,6 +2527,8 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
 .as-step-body { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; overflow-wrap: anywhere; font-size: 0.875rem; }
 .as-perkey { margin: 0 0 0.5rem; padding-left: 1.1rem; font-size: 0.8125rem; }
 .as-table th, .as-table td { padding: 0.4rem 0.6rem; text-align: left; white-space: nowrap; }
+.as-table th[scope="row"], .as-table td { text-transform: none; letter-spacing: 0; }
+.as-table th[scope="row"] { font-family: var(--mono); font-size: 0.8125rem; font-weight: 500; color: var(--ink); }
 .as-yes { color: var(--ok-text); font-weight: 600; }
 .as-no { color: var(--danger-text); font-weight: 600; }
 .as-flags { margin: 0.6rem 0 0; padding-left: 1.1rem; font-size: 0.8125rem; color: var(--muted); }
@@ -2534,5 +2536,7 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
   #pt-root .as-chips .lg-chip, #pt-root .as-modes .lg-chip, #pt-root .as-seg .lg-chip { min-height: 44px; }
   #pt-root .as-presets .btn, #pt-root .as-submit .btn { min-height: 44px; }
   .pt-ptab { min-height: 44px; }
+  .as-dump { padding: 0.5rem 0.4rem; letter-spacing: -0.02em; }
+  #pt-root textarea.as-body { min-height: 6.5rem; }
   .as-seg { margin-left: 0; }
 }

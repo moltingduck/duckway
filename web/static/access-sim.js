@@ -65,7 +65,7 @@
         <div id="as-text-panel"><label class="pt-fld"><span class="sr-only">Body as text</span><textarea id="as-text" class="mono as-body" spellcheck="false" autocomplete="off" data-on-input="asTextInput" aria-describedby="as-text-note"></textarea></label>
           <p class="pt-hint" id="as-text-note" hidden>This body has bytes that are not plain text, so Text is read-only. Switch to Hex to edit it.</p></div>
         <div id="as-hex-panel" hidden><pre class="as-dump mono" id="as-dump" tabindex="0" aria-label="Hex dump: offset, hex bytes, ASCII"></pre>
-          <label class="pt-fld"><span class="pt-fld-k">Edit as hex (digits and spaces)</span><textarea id="as-hex" class="mono as-body" spellcheck="false" autocomplete="off" autocapitalize="off" data-on-input="asHexInput" aria-describedby="as-hex-err"></textarea></label>
+          <label class="pt-fld"><span class="pt-fld-k">Edit as hex (digits and spaces)</span><textarea id="as-hex" class="mono as-body" rows="4" spellcheck="false" autocomplete="off" autocapitalize="off" data-on-input="asHexInput" aria-describedby="as-hex-err"></textarea></label>
           <p class="pt-bad pt-hint" id="as-hex-err" role="alert" hidden></p></div>
         <div class="as-submit"><button type="submit" class="btn btn-primary" id="as-raw-go">Check request</button></div>
       </form>
@@ -176,18 +176,21 @@
   DW.actions.asWfInput = function (el) { S.workflow = el.value.trim(); runActionLater(); };
 
   /* ---------- raw mode ---------- */
+  // 8 bytes per dump row when the tab is narrower than ~600px, else 16.
+  function narrow() { return host.clientWidth > 0 && host.clientWidth < 600; }
   function binary() { return H.needsHex(S.bytes); }
   function syncBody(from) {
     var bin = binary();
     $('as-size').textContent = '· ' + S.bytes.length + (S.bytes.length === 1 ? ' byte' : ' bytes') + (S.bytes.length ? (bin ? ' · binary' : ' · UTF-8 text') : '');
     var t = $('as-text');
-    if (from !== 'text') t.value = bin ? H.textView(S.bytes) : H.decodeUTF8(S.bytes);
+    if (from !== 'text' && from !== 'dump') t.value = bin ? H.textView(S.bytes) : H.decodeUTF8(S.bytes);
     t.readOnly = bin;
     $('as-text-note').hidden = !bin;
-    if (from !== 'hex') $('as-hex').value = H.formatHex(S.bytes);
-    var rows = H.dumpRows(S.bytes, DUMP_ROWS);
-    var more = S.bytes.length > DUMP_ROWS * 16 ? '\n… ' + (S.bytes.length - DUMP_ROWS * 16) + ' more bytes not shown' : '';
-    $('as-dump').textContent = rows.length ? rows.map(function (r) { return r.offset + '  ' + r.hex + '  |' + r.ascii + '|'; }).join('\n') + more : '(empty body)';
+    if (from !== 'hex' && from !== 'dump') $('as-hex').value = H.formatHex(S.bytes);
+    var per = narrow() ? 8 : 16;
+    var rows = H.dumpRows(S.bytes, DUMP_ROWS, per);
+    var more = S.bytes.length > DUMP_ROWS * per ? '\n\u2026 ' + (S.bytes.length - DUMP_ROWS * per) + ' more bytes not shown' : '';
+    $('as-dump').textContent = rows.length ? rows.map(function (r) { return r.offset + ' ' + r.hex + ' ' + r.ascii; }).join('\n') + more : '(empty body)';
   }
   function setView(v) {
     S.view = v;
@@ -300,6 +303,8 @@
 
   /* ---------- init ---------- */
   buildShell();
+  var lastNarrow = narrow();
+  window.addEventListener('resize', function () { if (narrow() !== lastNarrow) { lastNarrow = narrow(); syncBody('dump'); } });
   setView('text');
   syncBody('');
   if (D.is_github) { $('as-ref').value = S.ref; paintRepos(); paintChips(); paintCan(); }

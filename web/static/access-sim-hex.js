@@ -49,12 +49,13 @@
     return lines.join('\n');
   }
 
-  // dumpRows: offset / hex / ASCII rows of 16 bytes (hex padded so columns align).
-  function dumpRows(bytes, maxRows) {
+  // dumpRows: offset / hex / ASCII rows of perRow bytes (default 16) (hex padded so columns align).
+  function dumpRows(bytes, maxRows, perRow) {
+    perRow = perRow > 0 ? perRow : 16;
     var rows = [], limit = maxRows > 0 ? maxRows : Infinity;
-    for (var o = 0; o < bytes.length && rows.length < limit; o += 16) {
+    for (var o = 0; o < bytes.length && rows.length < limit; o += perRow) {
       var hx = [], asc = '';
-      for (var i = o; i < o + 16; i++) {
+      for (var i = o; i < o + perRow; i++) {
         if (i < bytes.length) {
           var b = bytes[i];
           hx.push(hex2(b));
