@@ -16,6 +16,7 @@
         if (!r.ok) {
           var err = new Error((data && data.error) || ('Request failed (' + r.status + ')'));
           err.status = r.status;
+          err.data = data;
           throw err;
         }
         return data;

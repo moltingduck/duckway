@@ -154,23 +154,30 @@ check('raw request picks text or hex', () => {
   const b = A.rawRequest({ method: 'POST', path: '/x', headers: { A: 'b' }, bytes: u8(0, 1, 255) });
   assert.deepStrictEqual(b, { mode: 'raw', method: 'POST', path: '/x', headers: { A: 'b' }, body_hex: '00 01 ff' });
   assert.strictEqual(A.rawRequest({ method: 'GET', path: '/', bytes: u8() }).body_text, undefined);
+  assert.strictEqual(A.rawRequest({ method: 'POST', path: '/', bytes: u8(0), hexText: '00 ' }).body_hex, '00 ');
 });
 check('adaptResult', () => {
-  const r = A.adaptResult({ verdict: 'refused', title: 'T', steps: [{ status: 'stop', label: 'L', detail: 'D' }, { status: '?', label: 'x' }], refs: [{ ref: 'r', verdict: 'ok' }, { ref: 's', verdict: 'refused' }], sees: 'S', depends_on_default_branch: true, per_key: [{ name: 'k1', verdict: 'allowed' }] });
+  const r = A.adaptResult({ verdict: 'refused', title: 'T', steps: [{ status: 'stop', label: 'L', detail: 'D' }, { status: '?', label: 'x' }], refs: [{ ref: 'r', verdict: 'ok' }, { ref: 's', verdict: 'refused' }], sees: 'S', depends_on_default_branch: true, per_key: [{ key_id: 'id1', key_name: 'k1', verdict: 'allowed', kind: '', title: 'ok', sees: 'x' }], layer: 'placeholder', rule: 'r', reason: 'why' });
   assert.strictEqual(r.verdictLabel, 'Refused');
   assert.strictEqual(r.steps[1].status, 'skip');
   assert.strictEqual(r.refs[0].ok, true);
   assert.strictEqual(r.refs[1].ok, false);
   assert.strictEqual(r.dependsOnDefault, true);
   assert.strictEqual(r.perKey[0].key, 'k1');
+  assert.strictEqual(r.perKey[0].verdictLabel, 'Allowed');
+  assert.strictEqual(r.reason, 'why');
+  assert.strictEqual(r.layer, 'placeholder');
   assert.strictEqual(A.adaptResult({ verdict: 'held' }).verdictLabel, 'Held for approval');
   assert.strictEqual(A.adaptResult(null).verdict, 'refused');
 });
 check('adaptSummary and ref examples', () => {
-  const s = A.adaptSummary({ repos: [{ repo: 'a/b', rules: [{ pattern: 'agent/**', role: 'agent', push: true, create_force_delete: true, pr_into: true, run_workflows: false }, { pattern: '@default', role: 'protected' }, { pattern: '**', role: 'read' }], tags: ['agent-*'], merge: false, approve: false, clone: true }] });
+  const s = A.adaptSummary({ repos: [{ repo: 'a/b', rules: [{ pattern: 'agent/**', role: 'agent', push: true, create_force_delete: true, pr_into: true, run_workflows: false }, { pattern: '@default', role: 'protected' }, { pattern: '**', role: 'read' }], tag_patterns: ['agent-*'], tags: true, merge: false, approve: false, clone: true }, { repo: 'c/d', legacy: true, rules: [], ref_allowlist: ['main'] }] });
   assert.strictEqual(s[0].rules[0].role, 'Agent-owned');
   assert.strictEqual(s[0].rules[0].createForceDelete, true);
-  assert.strictEqual(s[0].tags, 'agent-*');
+  assert.deepStrictEqual(s[0].tagPatterns, ['agent-*']);
+  assert.strictEqual(s[0].clone, true);
+  assert.strictEqual(s[1].legacy, true);
+  assert.deepStrictEqual(s[1].refAllowlist, ['main']);
   assert.strictEqual(s[0].merge, false);
   const ex = A.refExamples(s[0]);
   assert.strictEqual(ex[0], 'agent/sim');
@@ -199,6 +206,9 @@ check('refusal adapter tolerates old rows and string detail', () => {
   assert.strictEqual(R.repeatsOf({}), 1);
   assert.strictEqual(R.repeatsOf({ repeat_count: 7 }), 7);
   assert.strictEqual(R.simulatorHref({ method: 'GET', path: '/' }), '');
+  assert.strictEqual(R.kindLabel('credential'), 'Credential unavailable');
+  assert.strictEqual(R.kindLabel('approval'), 'Approval');
+  assert(!R.KINDS.some((k) => k[0] === 'credential' || k[0] === 'approval'));
   assert(R.validKind('token_acl') && !R.validKind('bogus'));
   assert.strictEqual(R.kindLabel('weird_kind'), 'weird kind');
 });

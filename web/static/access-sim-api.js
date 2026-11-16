@@ -4,14 +4,15 @@
  * Exposed as window.ASAPI (and module.exports under node tests).
  *
  * Every backend field name the tab depends on is read or written here only.
- *   POST   /admin/api/phantom-tokens/{id}/simulate
+ *   POST   /api/phantom-tokens/{id}/simulate
  *     request  (action): mode, repo, action, ref, workflow
  *     request  (raw):    mode, method, path, headers{name:value}, body_text | body_hex
- *     response: verdict, kind, title, steps[].{status,label,detail}, refs[].{ref,verdict,pattern,role,reason},
- *               sees, depends_on_default_branch, per_key[].{key|name|label, verdict, title}
- *   GET    /admin/api/phantom-tokens/{id}/access-summary
- *     repos[].{repo, rules[].{pattern, role, push, create_force_delete, pr_into, run_workflows},
- *              tags, merge, approve, clone}
+ *     response: verdict, kind, title, layer, rule, reason, steps[].{status,label,detail},
+ *               refs[].{ref,verdict,pattern,role,reason}, sees, depends_on_default_branch,
+ *               per_key[].{key_id,key_name,verdict,kind,title,reason,sees}; errors {error, offset?}
+ *   GET    /api/phantom-tokens/{id}/access-summary
+ *     repos[].{repo, legacy, ref_allowlist[], rules[].{pattern, role, push, create_force_delete, pr_into, run_workflows},
+ *              tag_patterns[], tags, merge, approve, clone}
  */
 (function (root) {
   'use strict';
@@ -52,7 +53,8 @@
     var r = { mode: 'raw', method: st.method, path: st.path };
     if (st.headers && Object.keys(st.headers).length) r.headers = st.headers;
     if (st.bytes && st.bytes.length) {
-      if (H.needsHex(st.bytes)) r.body_hex = H.formatHex(st.bytes).replace(/\n/g, ' ');
+      // body_hex errors carry an offset into the text sent, so send the textarea's own text when given.
+      if (H.needsHex(st.bytes)) r.body_hex = st.hexText !== undefined && st.hexText !== '' ? st.hexText : H.formatHex(st.bytes).replace(/\n/g, ' ');
       else r.body_text = H.decodeUTF8(st.bytes);
     }
     return r;
@@ -73,6 +75,9 @@
       verdictLabel: VERDICT[v],
       kind: str(r.kind),
       title: str(r.title),
+      layer: str(r.layer),
+      rule: str(r.rule),
+      reason: str(r.reason),
       steps: (Array.isArray(r.steps) ? r.steps : []).map(function (s) {
         s = s || {};
         return { status: stepStatus(s.status), label: str(s.label), detail: str(s.detail) };
@@ -86,42 +91,38 @@
       perKey: (Array.isArray(r.per_key) ? r.per_key : []).map(function (k) {
         k = k || {};
         var kv = String(k.verdict || '').toLowerCase();
-        return { key: str(pick(k, ['key', 'name', 'label'])), verdictLabel: VERDICT[kv] || str(k.verdict), title: str(k.title) };
+        return { key: str(pick(k, ['key_name', 'key_id', 'key', 'name'])), verdictLabel: VERDICT[kv] || str(k.verdict), kind: str(k.kind), title: str(k.title), reason: str(k.reason), sees: str(k.sees) };
       })
     };
   }
 
   /* ---- access summary ---- */
   function yesNo(v) { return v === true || /^(yes|on|true|allowed)$/i.test(str(v)); }
-  function listText(v) {
-    if (Array.isArray(v)) return v.join(', ');
-    if (v && typeof v === 'object' && Array.isArray(v.create)) return v.create.join(', ');
-    return str(v);
-  }
+  function strList(v) { return Array.isArray(v) ? v.map(str).filter(Boolean) : []; }
   function adaptSummary(r) {
     var repos = Array.isArray(r) ? r : (r && Array.isArray(r.repos) ? r.repos : []);
     return repos.map(function (p) {
       p = p || {};
-      var flags = p.flags && typeof p.flags === 'object' ? p.flags : p;
-      var tags = listText(pick(flags, ['tags', 'tag_create']));
-      var clone = pick(flags, ['clone']);
       return {
-        repo: str(pick(p, ['repo', 'name'])),
+        repo: str(p.repo),
+        legacy: !!p.legacy,
+        refAllowlist: strList(p.ref_allowlist),
         rules: (Array.isArray(p.rules) ? p.rules : []).map(function (x) {
           x = x || {};
           return {
-            pattern: str(pick(x, ['pattern', 'branches'])),
+            pattern: str(x.pattern),
             role: roleLabel(x.role),
             push: yesNo(x.push),
-            createForceDelete: yesNo(pick(x, ['create_force_delete', 'manage'])),
-            prInto: yesNo(pick(x, ['pr_into', 'open_pr'])),
+            createForceDelete: yesNo(x.create_force_delete),
+            prInto: yesNo(x.pr_into),
             runWorkflows: yesNo(x.run_workflows)
           };
         }),
-        tags: tags,
-        merge: yesNo(flags.merge),
-        approve: yesNo(flags.approve),
-        clone: typeof clone === 'string' && !/^(yes|no|on|off|true|false)$/i.test(clone) ? clone : (clone === undefined ? '' : (yesNo(clone) ? 'allowed' : 'off'))
+        tagPatterns: strList(p.tag_patterns),
+        tags: yesNo(p.tags),
+        merge: yesNo(p.merge),
+        approve: yesNo(p.approve),
+        clone: yesNo(p.clone)
       };
     });
   }

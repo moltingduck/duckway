@@ -2540,3 +2540,4 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
   #pt-root textarea.as-body { min-height: 6.5rem; }
   .as-seg { margin-left: 0; }
 }
+.as-reason { margin: 0 0 0.6rem; font-size: 0.875rem; overflow-wrap: anywhere; }

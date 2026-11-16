@@ -13,8 +13,8 @@
   var D = JSON.parse(dataEl.textContent);
   var ID = encodeURIComponent(D.id);
   var H = window.ASHEX, A = window.ASAPI;
-  var SIM_URL = '/admin/api/phantom-tokens/' + ID + '/simulate';
-  var SUMMARY_URL = '/admin/api/phantom-tokens/' + ID + '/access-summary';
+  var SIM_URL = '/api/phantom-tokens/' + ID + '/simulate';
+  var SUMMARY_URL = '/api/phantom-tokens/' + ID + '/access-summary';
   var METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
   var DUMP_ROWS = 2048; // 32 KiB shown; the whole body is still sent
 
@@ -102,8 +102,8 @@
     var yn = function (v) { return v ? DW.raw('<span class="as-yes">Yes</span>') : DW.raw('<span class="as-no">No</span>'); };
     var rows = r.rules.map(function (x) { return DW.html`<tr><th scope="row" class="mono">${x.pattern}</th><td>${x.role}</td><td>${yn(x.push)}</td><td>${yn(x.createForceDelete)}</td><td>${yn(x.prInto)}</td><td>${yn(x.runWorkflows)}</td></tr>`; });
     DW.setHTML(box, DW.html`<h2 id="as-can-h">${'What this token can do on ' + r.repo}</h2><p class="pt-hint">One row per branch rule, most specific first. Capabilities turned off for the repository apply to every row.</p>
-      ${r.rules.length ? DW.html`<div class="table-wrap"><table class="as-table"><thead><tr><th scope="col">Branches</th><th scope="col">Role</th><th scope="col">Push</th><th scope="col">Create &middot; force &middot; delete</th><th scope="col">Open PR into</th><th scope="col">Run workflows</th></tr></thead><tbody>${rows}</tbody></table></div>` : DW.html`<p class="text-muted text-sm">This repository has no branch rules, so legacy access rules apply.</p>`}
-      <ul class="as-flags"><li>${'Tags: ' + (r.tags ? 'may create ' + r.tags + ' only; existing tags never move.' : 'none can be created.')}</li><li>${'Merge pull requests: ' + (r.merge ? 'on' : 'off')}</li><li>${'Approve pull requests: ' + (r.approve ? 'on' : 'off')}</li>${r.clone ? DW.html`<li>${'Clone: ' + r.clone}</li>` : ''}</ul>`);
+      ${r.legacy ? DW.html`<p class="pt-notice">${'This repository uses an older grant without branch rules.' + (r.refAllowlist.length ? ' Only these refs are allowed: ' + r.refAllowlist.join(', ') + '.' : ' It has no ref limit.')}</p>` : (r.rules.length ? DW.html`<div class="table-wrap"><table class="as-table"><thead><tr><th scope="col">Branches</th><th scope="col">Role</th><th scope="col">Push</th><th scope="col">Create &middot; force &middot; delete</th><th scope="col">Open PR into</th><th scope="col">Run workflows</th></tr></thead><tbody>${rows}</tbody></table></div>` : DW.html`<p class="text-muted text-sm">This repository has no branch rules.</p>`)}
+      <ul class="as-flags"><li>${'Tags: ' + (r.tagPatterns.length ? 'may create ' + r.tagPatterns.join(', ') + ' only; existing tags never move.' : (r.tags ? 'may be created.' : 'none can be created.'))}</li><li>${'Merge pull requests: ' + (r.merge ? 'on' : 'off')}</li><li>${'Approve pull requests: ' + (r.approve ? 'on' : 'off')}</li><li>${'Clone: ' + (r.clone ? 'on' : 'off')}</li></ul>`);
   }
 
   function resultCard(r, subject) {
@@ -114,11 +114,11 @@
       return DW.html`<li class="as-step as-step-${s.status}"><span class="cl-pill cl-pill-${c}">${lab}</span><div class="as-step-body"><strong>${s.label}</strong>${s.detail ? DW.html`<span class="text-sm text-muted">${s.detail}</span>` : ''}</div></li>`;
     });
     var refs = r.refs.length ? DW.html`<h3 class="as-sub">Refs in this push</h3><p class="pt-hint">Git pushes are all-or-nothing, so one refused ref rejects the whole push.</p><ul class="lg-refs">${r.refs.map(function (x) {
-      return DW.html`<li class="lg-ref"><span class="mono lg-ref-n">${x.ref}</span><span class="lg-pill ${x.ok ? 'lg-pill-ok' : 'lg-pill-bad'}">${x.ok ? 'OK' : 'Refused'}</span><span class="text-sm text-muted lg-ref-why">${[x.pattern, x.role, x.reason].filter(Boolean).join(' · ')}</span></li>`;
+      return DW.html`<li class="lg-ref"><span class="mono lg-ref-n">${x.ref}</span><span class="lg-pill ${x.ok ? 'lg-pill-ok' : 'lg-pill-bad'}">${x.ok ? 'OK' : 'Refused'}</span>${[x.pattern, x.role, x.reason].filter(Boolean).length ? DW.html`<span class="text-sm text-muted lg-ref-why">${[x.pattern, x.role, x.reason].filter(Boolean).join(' · ')}</span>` : ''}</li>`;
     })}</ul>` : '';
-    var perKey = r.perKey.length ? DW.html`<h3 class="as-sub">The result differs by key</h3><ul class="as-perkey">${r.perKey.map(function (k) { return DW.html`<li><span class="mono">${k.key}</span> &mdash; <strong>${k.verdictLabel}</strong>${k.title ? ' ' + k.title : ''}</li>`; })}</ul>` : '';
+    var perKey = r.perKey.length ? DW.html`<h3 class="as-sub">The result differs by key</h3><ul class="as-perkey">${r.perKey.map(function (k) { return DW.html`<li><span class="mono">${k.key}</span> &mdash; <strong>${k.verdictLabel}</strong>${k.title ? ' ' + k.title : ''}${k.sees ? DW.html`<pre class="lg-sees mono">${k.sees}</pre>` : ''}</li>`; })}</ul>` : '';
     return DW.html`<section class="card pt-card as-verdict as-v-${r.verdict}" aria-labelledby="as-verdict-h"><div class="as-vhead"><span class="cl-pill cl-pill-${cls} as-vpill">${r.verdictLabel}</span><h2 id="as-verdict-h">${r.title || subject}</h2></div>
-      ${steps.length ? DW.html`<ol class="as-steps">${steps}</ol>` : ''}${refs}${perKey}
+      ${r.reason && r.reason !== r.title ? DW.html`<p class="as-reason">${r.reason}</p>` : ''}${steps.length ? DW.html`<ol class="as-steps">${steps}</ol>` : ''}${refs}${perKey}
       ${r.dependsOnDefault ? DW.html`<p class="pt-hint">This result depends on the repository’s current default branch, read from GitHub and cached for up to 5 minutes.</p>` : ''}
       ${r.sees ? DW.html`<h3 class="as-sub">What the agent would see</h3><pre class="lg-sees mono">${r.sees}</pre>` : ''}</section>`;
   }
@@ -143,8 +143,20 @@
       if (seq !== S.seq) return;
       DW.setHTML($('as-out'), DW.raw(''));
       showError(e.message);
+      var off = e.data && typeof e.data.offset === 'number' ? e.data.offset : -1;
+      if (off >= 0 && body.body_hex !== undefined) markHex(off);
       say('The check failed. ' + e.message);
     });
+  }
+  // The server's offset is a character offset into the body_hex text it received,
+  // which is the hex textarea's own text.
+  function markHex(off) {
+    setView('hex');
+    var t = $('as-hex');
+    t.focus();
+    try { t.setSelectionRange(off, Math.min(off + 1, t.value.length)); } catch (e) { /* ignore */ }
+    var he = $('as-hex-err');
+    he.textContent = 'The server rejected the hex at character ' + (off + 1) + '.'; he.hidden = false;
   }
   function runAction() {
     if (!S.repo) { showError('This token has no repository to test.'); return; }
@@ -245,7 +257,7 @@
     if (hd.error) { showError(hd.error); $('as-headers').focus(); return; }
     if (S.bytes.length > H.MAX_BODY) { showError('The body is larger than 16 MiB.'); return; }
     var method = $('as-method').value;
-    return run(A.rawRequest({ method: method, path: path, headers: hd.headers, bytes: S.bytes }), method + ' ' + path);
+    return run(A.rawRequest({ method: method, path: path, headers: hd.headers, bytes: S.bytes, hexText: $('as-hex').value }), method + ' ' + path);
   };
 
   /* ---------- summary ---------- */

@@ -411,7 +411,7 @@ function refusalBlock(l) {
   var refs = '';
   if (r.refs.length || r.more) {
     refs = DW.html`<h4 class="lg-sub">Refs in this push</h4><p class="text-muted text-sm">Git pushes are all-or-nothing, so one refused ref rejects the whole push.</p><ul class="lg-refs">${r.refs.map(function(x) {
-      return DW.html`<li class="lg-ref"><span class="mono lg-ref-n">${x.ref}</span><span class="lg-pill ${x.ok ? 'lg-pill-ok' : 'lg-pill-bad'}">${x.ok ? 'OK' : 'Refused'}</span><span class="text-sm text-muted lg-ref-why">${[x.pattern, x.role, x.reason].filter(Boolean).join(' \u00b7 ')}</span></li>`;
+      return DW.html`<li class="lg-ref"><span class="mono lg-ref-n">${x.ref}</span><span class="lg-pill ${x.ok ? 'lg-pill-ok' : 'lg-pill-bad'}">${x.ok ? 'OK' : 'Refused'}</span>${[x.pattern, x.role, x.reason].filter(Boolean).length ? DW.html`<span class="text-sm text-muted lg-ref-why">${[x.pattern, x.role, x.reason].filter(Boolean).join(' \u00b7 ')}</span>` : ''}</li>`;
     })}</ul>${r.more ? DW.html`<p class="text-muted text-sm">${'+ ' + r.more + ' more refs not shown'}</p>` : ''}`;
   }
   var href = RLOG.simulatorHref(l);

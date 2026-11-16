@@ -21,6 +21,9 @@
   ];
   var LABEL = {};
   KINDS.forEach(function (k) { LABEL[k[0]] = k[1]; });
+  // Labels only (not filter chips): simulator-only and held kinds.
+  LABEL.credential = 'Credential unavailable';
+  LABEL.approval = 'Approval'; 
 
   function kindLabel(kind) { return LABEL[kind] || (kind ? String(kind).replace(/_/g, ' ') : 'Refused'); }
   function validKind(kind) { return Object.prototype.hasOwnProperty.call(LABEL, kind); }
