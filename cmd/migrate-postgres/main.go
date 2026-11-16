@@ -27,7 +27,7 @@ var tableOrder = []string{
 	"client_runtime_status", "client_update_rollouts", "client_update_jobs", "client_drafts",
 	"oauth_credentials", "settings", "control_channels", "cc_channels",
 	"discord_inbox", "cc_message_deliveries", "cc_agent_tests", "schema_version", "conversation_usage",
-	"model_pricing", "key_suite_assignments", "key_suite_entries",
+	"model_pricing", "key_suite_assignments", "key_suite_entries", "admin_audit_log",
 }
 
 func main() {
@@ -378,7 +378,7 @@ func migrate(ctx context.Context, source, target *sql.DB) error {
 		}
 		log.Printf("migrated %-28s %d rows", table, count)
 	}
-	for _, table := range []string{"request_log", "discord_inbox", "conversation_usage"} {
+	for _, table := range []string{"request_log", "discord_inbox", "conversation_usage", "admin_audit_log"} {
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
 			`SELECT setval(pg_get_serial_sequence('%s','id'), COALESCE((SELECT MAX(id) FROM %s), 1), EXISTS(SELECT 1 FROM %s))`,
 			table, table, table)); err != nil {

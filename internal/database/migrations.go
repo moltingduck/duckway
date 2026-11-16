@@ -127,6 +127,26 @@ var migrations = []string{
 		created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
 
+	// Admin audit log (fx1116): who changed what. Append-only from the app;
+	// a sweeper deletes rows past audit_retention_days.
+	`CREATE TABLE IF NOT EXISTS admin_audit_log (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+		actor         TEXT NOT NULL DEFAULT '',
+		via           TEXT NOT NULL DEFAULT '',
+		remote_addr   TEXT NOT NULL DEFAULT '',
+		action        TEXT NOT NULL DEFAULT '',
+		resource_type TEXT NOT NULL DEFAULT '',
+		resource_id   TEXT NOT NULL DEFAULT '',
+		resource_name TEXT NOT NULL DEFAULT '',
+		summary       TEXT NOT NULL DEFAULT '',
+		before_json   TEXT NOT NULL DEFAULT '',
+		after_json    TEXT NOT NULL DEFAULT '',
+		status        TEXT NOT NULL DEFAULT 'ok'
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_admin_audit_time ON admin_audit_log(created_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_admin_audit_resource ON admin_audit_log(resource_type, resource_id, created_at)`,
+
 	`CREATE INDEX IF NOT EXISTS idx_approvals_lookup ON approvals(placeholder_id, status)`,
 	`CREATE INDEX IF NOT EXISTS idx_request_log_time ON request_log(created_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_placeholder_client ON placeholder_keys(client_id, service_id)`,

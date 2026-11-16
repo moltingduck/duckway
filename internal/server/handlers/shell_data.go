@@ -46,6 +46,7 @@ var navEntries = map[string]navEntry{
 	"placeholders":  {"Access", "Phantom tokens", "/admin/phantom-tokens"},
 	"logs":          {"Observe", "Request log", "/admin/logs"},
 	"usage":         {"Observe", "Usage", "/admin/usage"},
+	"audit":         {"Observe", "Audit log", "/admin/audit"},
 	"canary":        {"Security", "Canary tokens", "/admin/canary"},
 	"supplychain":   {"Security", "Supply chain", "/admin/supply-chain"},
 	"notifications": {"System", "Notifications", "/admin/notifications"},

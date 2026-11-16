@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/hackerduck/duckway/internal/audit"
 	"io"
 	"io/fs"
 	"log"
@@ -111,7 +112,14 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 		}
 		return out
 	})
-	authH := handlers.NewAuthHandler(ss.UserQ, ss.AdminAuth)
+	auditRec := audit.New(s.db)
+	audit.SetDefault(auditRec)
+	auditSnaps := &handlers.AuditSnapshots{
+		Services: ss.ServiceQ, APIKeys: ss.APIKeyQ, Placeholders: ss.PlaceholderQ, Groups: ss.GroupQ,
+		Clients: ss.ClientQ, Notifications: ss.NotifQ, Approvals: ss.ApprovalQ, Settings: ss.SettingsQ,
+	}
+	auditH := handlers.NewAuditHandler(auditRec.Queries())
+	authH := handlers.NewAuthHandler(ss.UserQ, ss.AdminAuth).WithAudit(auditRec)
 	serviceH := handlers.NewServiceHandler(ss.ServiceQ, queries.NewModelPricingQueries(s.db))
 	apiKeyH := handlers.NewAPIKeyHandler(ss.APIKeyQ, ss.ServiceQ, ss.Crypto)
 	placeholderH := handlers.NewPlaceholderHandler(ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ).
@@ -127,7 +135,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	ccH := handlers.NewControlChannelHandler(ccQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ, ss.SettingsQ, ss.Crypto, services.NewDiscordBot())
 	ccH.SetHub(ss.CCHub)
 	ccH.SetApprovals(ss.CCApprovals)
-	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth).WithDB(s.db).WithKeySuites(ss.KeySuiteQ).WithCrypto(ss.Crypto)
+	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth).WithDB(s.db).WithKeySuites(ss.KeySuiteQ).WithCrypto(ss.Crypto).WithAudit(auditRec)
 
 	// Static files
 	staticFS, err := fs.Sub(contentFS, "static")
@@ -157,6 +165,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/key-bundles", adminPageH.KeyBundlesPage)
 	adminPageMux.HandleFunc("GET /admin/approvals", adminPageH.ApprovalsPage)
 	adminPageMux.HandleFunc("GET /admin/logs", adminPageH.LogsPage)
+	adminPageMux.HandleFunc("GET /admin/audit", adminPageH.AuditPage)
 	adminPageMux.HandleFunc("GET /admin/notifications", adminPageH.NotificationsPage)
 	adminPageMux.HandleFunc("GET /admin/canary", adminPageH.CanaryPage)
 	adminPageMux.HandleFunc("GET /admin/cc", adminPageH.CCPage)
@@ -165,7 +174,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/docs", adminPageH.DocsPage)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/approve", adminPageH.ApproveAction)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/reject", adminPageH.RejectAction)
-	s.mux.Handle("/admin/", middleware.CSP(middleware.SameOrigin(ss.AdminAuth.Middleware(adminPageMux))))
+	s.mux.Handle("/admin/", middleware.CSP(middleware.SameOrigin(ss.AdminAuth.Middleware(auditMux(adminPageMux, auditRec, auditSnaps)))))
 
 	// Public API routes
 	s.mux.Handle("POST /api/auth/login", middleware.SameOrigin(http.HandlerFunc(authH.Login)))
@@ -182,6 +191,8 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/plugins/{name}/disable", pluginH.Disable)
 	adminAPIMux.HandleFunc("POST /api/plugins/{name}/enable", pluginH.Enable)
 	adminAPIMux.HandleFunc("POST /api/auth/change-password", authH.ChangePassword)
+	adminAPIMux.HandleFunc("GET /api/audit", auditH.List)
+	adminAPIMux.HandleFunc("GET /api/audit/{id}", auditH.Get)
 	adminAPIMux.HandleFunc("GET /api/services", serviceH.List)
 	adminAPIMux.HandleFunc("POST /api/services", serviceH.Create)
 	adminAPIMux.HandleFunc("GET /api/services/{id}", serviceH.Get)
@@ -428,7 +439,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	s.events = eventsSvc
 	adminAPIMux.Handle("GET /api/events", eventsSvc.Handler(events.HandlerConfig{ValidateSession: ss.AdminAuth.SessionUser}))
 
-	s.mux.Handle("/api/", middleware.SameOrigin(ss.AdminAuth.Middleware(adminAPIMux)))
+	s.mux.Handle("/api/", middleware.SameOrigin(ss.AdminAuth.Middleware(auditMux(adminAPIMux, auditRec, auditSnaps))))
 
 	// Root redirect
 	s.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {

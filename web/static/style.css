@@ -2567,3 +2567,25 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
   #as-can .table-wrap { display: none; }
   .as-rcards { display: flex; }
 }
+
+/* Audit log (fx1116) */
+.au-summary { font-weight: 600; margin: 0 0 0.5rem; overflow-wrap: anywhere; }
+.au-meta { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: 0.375rem 0.75rem; font-size: 0.8125rem; margin: 0 0 0.75rem; }
+.au-meta dt { color: var(--muted); }
+.au-meta dd { overflow-wrap: anywhere; margin: 0; }
+.au-h { margin: 0.75rem 0 0.375rem; font-size: 0.8125rem; font-weight: 600; }
+.au-diff { margin: 0; padding: 0.5rem; background: var(--track); border-radius: 4px; max-height: 24rem; overflow: auto; font-family: var(--mono); font-size: 0.75rem; line-height: 1.5; white-space: pre; }
+.au-l { display: block; }
+.au-sym { user-select: none; color: var(--muted); }
+.au-add { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok-text); }
+.au-del { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger-text); }
+.au-hist { list-style: none; margin: 0 0 0.5rem; padding: 0; }
+.au-hist-item { border-bottom: 1px solid var(--line); }
+.au-hist-item:last-child { border-bottom: 0; }
+.au-hist-btn { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; width: 100%; padding: 0.5rem 0.25rem; border: 0; background: none; color: var(--ink); font: inherit; font-size: 0.8125rem; text-align: left; cursor: pointer; min-height: 2.25rem; }
+.au-hist-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.au-hist-when { color: var(--muted); white-space: nowrap; }
+.au-hist-what { flex: 1 1 14rem; overflow-wrap: anywhere; }
+.au-hist-detail { padding: 0.25rem 0.25rem 0.75rem; }
+.au-hist-detail[hidden] { display: none; }
+@media (max-width: 900px) { .au-hist-btn { min-height: 44px; } }

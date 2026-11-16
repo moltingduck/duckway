@@ -357,9 +357,18 @@ func (s *Server) startUsageRetentionSweeper() {
 			log.Printf("request log retention: pruned %d rows older than %dd", n, days)
 		}
 	}
+	auditQ := queries.NewAuditQueries(s.db)
+	pruneAudit := func() {
+		if n, days, err := pruneAuditLog(settingsQ, auditQ); err != nil {
+			log.Printf("audit log retention sweeper: %v", err)
+		} else if n > 0 {
+			log.Printf("audit log retention: pruned %d rows older than %dd", n, days)
+		}
+	}
 	go func() {
 		prune() // once at startup
 		pruneRequestLog()
+		pruneAudit()
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
 		for {
@@ -369,6 +378,7 @@ func (s *Server) startUsageRetentionSweeper() {
 			case <-t.C:
 				prune()
 				pruneRequestLog()
+				pruneAudit()
 			}
 		}
 	}()
@@ -384,6 +394,20 @@ func pruneRequestLogIfConfigured(settingsQ *queries.SettingsQueries, reqLogQ *qu
 		return 0, 0, nil
 	}
 	removed, err = reqLogQ.PruneOlderThan(days, 1000, 100)
+	return removed, days, err
+}
+
+// DefaultAuditRetentionDays applies when audit_retention_days is unset or invalid.
+const DefaultAuditRetentionDays = 365
+
+// pruneAuditLog deletes admin_audit_log rows older than audit_retention_days
+// (30-3650, default 365).
+func pruneAuditLog(settingsQ *queries.SettingsQueries, auditQ *queries.AuditQueries) (removed int64, days int, err error) {
+	days, convErr := strconv.Atoi(strings.TrimSpace(settingsQ.Get(queries.SettingAuditRetentionDays)))
+	if convErr != nil || days < 30 || days > 3650 {
+		days = DefaultAuditRetentionDays
+	}
+	removed, err = auditQ.PruneOlderThan(days, 1000, 100)
 	return removed, days, err
 }
 

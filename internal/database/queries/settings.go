@@ -94,6 +94,7 @@ const (
 	SettingRequestLogCaptureClients = "request_log_capture_clients"  // JSON array of client IDs; empty = all
 	SettingApprovalRequestTTL       = "approval_request_ttl_minutes" // pending approvals auto-marked "ignored" after this; default 60
 	SettingRequestLogRetentionDays  = "request_log_retention_days"   // request_log rows older than this are pruned; default 90, 1-3650
+	SettingAuditRetentionDays       = "audit_retention_days"         // admin_audit_log rows older than this are pruned; default 365, 30-3650
 	SettingApprovalScopeKey         = "approval_scope_key"           // server-held HMAC key for approval scopes and body hashes; reserved
 	SettingSessionEpoch             = "session_epoch"                // admin session generation; bumped on password change to sign out other sessions
 	SettingAgentStatuslineScript    = "agent_statusline_script"      // shell script body served via GET /client/statusline; agents `duckway sync` writes it to ~/.duckway/statusline.sh

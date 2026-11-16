@@ -362,10 +362,10 @@
     return S.summaryP;
   }
   /* ---------- page tab ---------- */
-  var TABS = ['overview', 'test'];
+  var TABS = ['overview', 'test', 'history'];
   function setURL(tab) {
     var p = new URLSearchParams(window.location.search);
-    if (tab === 'test') p.set('tab', 'test'); else { p.delete('tab'); p.delete('method'); p.delete('path'); }
+    if (tab === 'test' || tab === 'history') p.set('tab', tab); else { p.delete('tab'); p.delete('method'); p.delete('path'); }
     var qs = p.toString();
     try { history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : '')); } catch (e) { /* ignore */ }
   }
@@ -377,8 +377,12 @@
       $('pt-panel-' + t).hidden = !on;
     });
     var bar = document.querySelector('.pt-bar');
-    if (bar) bar.hidden = tab === 'test';
+    if (bar) bar.hidden = tab !== 'overview';
     if (urlToo) setURL(tab);
+    if (tab === 'history' && window.AUDIT && !S.histShown) {
+      S.histShown = true;
+      AUDIT.mountHistory($('pt-history'), { resource_type: 'placeholder', resource_id: D.id });
+    }
     if (tab === 'test' && !S.shown) {
       S.shown = true;
       loadSummary().then(function () { if (S.mode === 'action') runAction(); });
@@ -413,5 +417,5 @@
     setMethod(q.get('method') || 'GET');
     $('as-path').value = q.get('path') || '/';
   }
-  if (q.get('tab') === 'test') setPageTab('test', false);
+  if (q.get('tab') === 'test' || q.get('tab') === 'history') setPageTab(q.get('tab'), false);
 })();

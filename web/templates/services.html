@@ -127,6 +127,12 @@
         </form>
       </section>
 
+      <section class="sv-section sv-block" aria-labelledby="sv-hist-h">
+        <h3 id="sv-hist-h">History</h3>
+        <p class="text-sm text-muted">Changes to this service, including its default rules. Read-only.</p>
+        <div id="sv-history" data-audit-history></div>
+      </section>
+
       <section class="sv-section sv-block sv-danger" aria-labelledby="sv-danger-h">
         <h3 id="sv-danger-h">Danger zone</h3>
         <p class="text-sm text-muted">Deleting a service also removes its credentials, phantom tokens and pricing. You will see exactly what is affected first.</p>
@@ -151,6 +157,7 @@
   </div>
 </div>
 
+<script nonce="{{$.CSPNonce}}" src="/static/audit.js"></script>
 <script nonce="{{$.CSPNonce}}">
 var SV = {list: [], stats: {}, cur: null, acl: null, aclPending: '', pricing: [], priceEdit: '', priceDel: '', dirty: false, impact: null, q: ''};
 
@@ -297,7 +304,7 @@ function openDrawer(s) {
   DW.setHTML(el('sv-sub'), s ? DW.html`<span class="mono">${s.name}</span> · ${s.is_active ? 'Active' : 'Inactive'}` : DW.raw('Create a service, then add pricing and ACL templates.'));
   el('sv-save').textContent = s ? 'Save changes' : 'Create service';
   el('sv-extras').hidden = !s;
-  if (s) { SV.aclPending = ''; SV.priceEdit = ''; SV.priceDel = ''; resetPriceForm(); loadAcl(); loadPricing(); }
+  if (s) { SV.aclPending = ''; SV.priceEdit = ''; SV.priceDel = ''; resetPriceForm(); loadAcl(); loadPricing(); if (window.AUDIT) AUDIT.mountHistory(el('sv-history'), {resource_type: 'service', resource_id: s.id}); }
   var dr = el('sv-drawer');
   if (dr.hidden || dr.style.display === 'none') DW.modal.open(dr);
 }
