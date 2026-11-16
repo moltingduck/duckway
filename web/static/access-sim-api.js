@@ -11,7 +11,7 @@
  *               refs[].{ref,verdict,pattern,role,reason}, sees, depends_on_default_branch,
  *               per_key[].{key_id,key_name,verdict,kind,title,reason,sees}; errors {error, offset?}
  *   GET    /api/phantom-tokens/{id}/access-summary
- *     repos[].{repo, legacy, ref_allowlist[], rules[].{pattern, role, push, create_force_delete, pr_into, run_workflows},
+ *     repos[].{repo, default_branch, legacy, ref_allowlist[], rules[].{pattern, role, push, create_force_delete, pr_into, run_workflows},
  *              tag_patterns[], tags, merge, approve, clone}
  */
 (function (root) {
@@ -32,7 +32,7 @@
   ];
   function actionDef(id) { for (var i = 0; i < ACTIONS.length; i++) if (ACTIONS[i].id === id) return ACTIONS[i]; return ACTIONS[1]; }
 
-  var ROLE = { read: 'Read only', protected: 'Protected', agent: 'Agent-owned' };
+  var ROLE = { read: 'Read only', protected: 'Protected', agent: 'Agent-owned', tag: 'Tag' };
   function roleLabel(r) { var k = String(r || '').toLowerCase(); return ROLE[k] || String(r || ''); }
 
   function pick(o, names) {
@@ -84,7 +84,7 @@
       }),
       refs: (Array.isArray(r.refs) ? r.refs : []).map(function (x) {
         x = x || {};
-        return { ref: str(x.ref), ok: /^(ok|allow|allowed|pass)/i.test(str(x.verdict)), pattern: str(x.pattern), role: str(x.role), reason: str(x.reason) };
+        return { ref: str(x.ref), ok: /^(ok|allow|allowed|pass)/i.test(str(x.verdict)), pattern: str(x.pattern), role: roleLabel(x.role), reason: str(x.reason) };
       }),
       sees: str(r.sees),
       dependsOnDefault: !!r.depends_on_default_branch,
@@ -105,6 +105,7 @@
       p = p || {};
       return {
         repo: str(p.repo),
+        defaultBranch: typeof p.default_branch === 'string' ? p.default_branch : '',
         legacy: !!p.legacy,
         refAllowlist: strList(p.ref_allowlist),
         rules: (Array.isArray(p.rules) ? p.rules : []).map(function (x) {
@@ -129,15 +130,16 @@
 
   // refExamples: ref chips built from the token's own patterns, then generic examples.
   function refExamples(repoSummary) {
+    var def = (repoSummary && repoSummary.defaultBranch) || 'main';
     var out = [];
     function add(x) { if (x && out.indexOf(x) < 0) out.push(x); }
     ((repoSummary && repoSummary.rules) || []).forEach(function (r) {
       var p = r.pattern.replace(/^refs\/heads\//, '');
-      if (p === '@default') { add('main'); return; }
+      if (p === '@default') { add(def); return; }
       if (p === '**' || p === '*') return;
       add(p.replace(/\/?\*\*?$/, function (m) { return m.charAt(0) === '/' ? '/sim' : ''; }).replace(/\*+/g, 'sim'));
     });
-    add('main'); add('feature/login'); add('v2.0.0');
+    add(def); add('feature/login'); add('v2.0.0');
     return out.slice(0, 8);
   }
 

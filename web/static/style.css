@@ -2541,3 +2541,13 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
   .as-seg { margin-left: 0; }
 }
 .as-reason { margin: 0 0 0.6rem; font-size: 0.875rem; overflow-wrap: anywhere; }
+/* rlog1116: with the detail panel open the table keeps only what the panel does not repeat;
+   anything still wider scrolls inside its card with edge shadows as the affordance. */
+.lg-list .table-wrap { background: linear-gradient(to right, var(--surface) 30%, transparent), linear-gradient(to left, var(--surface) 30%, transparent), linear-gradient(to right, color-mix(in srgb, var(--ink) 18%, transparent), transparent), linear-gradient(to left, color-mix(in srgb, var(--ink) 18%, transparent), transparent); background-position: left center, right center, left center, right center; background-repeat: no-repeat; background-size: 2.5rem 100%, 2.5rem 100%, 0.75rem 100%, 0.75rem 100%; background-attachment: local, local, scroll, scroll; }
+@media (min-width: 901px) {
+  .lg-has-detail .lg-table { min-width: 0; }
+  .lg-has-detail .lg-table th:nth-child(3), .lg-has-detail .lg-table td.lg-c-svc,
+  .lg-has-detail .lg-table th:nth-child(7), .lg-has-detail .lg-table td.lg-c-ms { display: none; }
+  .lg-has-detail .lg-req { min-width: 9rem; }
+  .lg-has-detail .lg-table th, .lg-has-detail .lg-table td { padding-inline: 0.5rem; }
+}

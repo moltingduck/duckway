@@ -212,4 +212,22 @@ check('refusal adapter tolerates old rows and string detail', () => {
   assert(R.validKind('token_acl') && !R.validKind('bogus'));
   assert.strictEqual(R.kindLabel('weird_kind'), 'weird kind');
 });
+check('friendly labels', () => {
+  assert.strictEqual(R.friendly('pull_requests_merge'), 'Merge pull requests');
+  assert.strictEqual(R.friendly('Capability pull_requests_approve is off'), 'Capability Approve pull requests is off');
+  assert.strictEqual(R.friendly('** \u2192 read'), '** \u2192 Read only');
+  assert.strictEqual(R.friendly('@default \u2192 protected'), '@default \u2192 Protected');
+  assert.strictEqual(R.friendly('tag create patterns: v*'), 'tag create patterns: v*');
+  const v = R.adapt({ deny_detail: { kind: 'branch_rules', rule: '(no rule)', refs: [{ ref: 'refs/tags/v1', verdict: 'refused', pattern: '(no rule)', role: 'tag' }] } });
+  assert.strictEqual(v.refs[0].role, 'Tag');
+  assert.strictEqual(v.refs[0].pattern, '(no rule)');
+});
+check('default branch in summary and chips', () => {
+  const s = A.adaptSummary({ repos: [{ repo: 'a/b', default_branch: 'trunk', rules: [{ pattern: '@default', role: 'protected' }] }, { repo: 'c/d', default_branch: null, rules: [] }] });
+  assert.strictEqual(s[0].defaultBranch, 'trunk');
+  assert.strictEqual(s[1].defaultBranch, '');
+  assert.strictEqual(A.refExamples(s[0])[0], 'trunk');
+  assert.strictEqual(A.refExamples(s[1])[0], 'main');
+  assert.strictEqual(A.adaptResult({ refs: [{ ref: 'r', role: 'tag' }] }).refs[0].role, 'Tag');
+});
 console.log('access-sim JS: ' + n + ' checks passed');

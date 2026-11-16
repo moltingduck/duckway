@@ -619,7 +619,7 @@ function renderDetail(l, d) {
     bodyBlock = DW.html`<h3>Request headers</h3>${fmtHeaders(d.request_headers)}<h3>Request body${trunc}</h3>${decodeNote(d.request_headers)}${fmtBody(d.request_body)}<h3>Response headers</h3>${fmtHeaders(d.response_headers)}<h3>Response body</h3>${decodeNote(d.response_headers)}${fmtBody(d.response_body)}`;
   }
   var sizes = d && d !== null ? DW.html`<dt>Sizes</dt><dd>req ${d.request_size} B · resp ${d.response_size} B</dd>` : '';
-  DW.setHTML($('det-body'), DW.html`<div class="lg-dline"><span class="lg-tag">${l.method || '?'}</span><span class="mono lg-path">${l.path || ''}</span></div><dl class="lg-dl"><dt>Client</dt><dd>${clientCell}</dd><dt>Service</dt><dd>${l.service_name || dash}</dd><dt>Credential</dt><dd>${l.credential || dash}</dd><dt>Phantom token</dt><dd>${ph || dash}</dd><dt>Decision</dt><dd>${decisionCell(l)}</dd><dt>Approval</dt><dd>${gate}</dd><dt>Time</dt><dd>${l.created_at} UTC</dd><dt>Latency</dt><dd>${latency}</dd>${sizes}</dl>${refusalBlock(l)}${bodyBlock}`);
+  DW.setHTML($('det-body'), DW.html`<div class="lg-dline"><span class="lg-tag">${l.method || '?'}</span><span class="mono lg-path">${l.path || ''}</span></div><dl class="lg-dl"><dt>Client</dt><dd>${clientCell}</dd><dt>Service</dt><dd>${l.service_name || dash}</dd><dt>Credential</dt><dd>${l.credential || dash}</dd><dt>Phantom token</dt><dd>${ph || dash}</dd><dt>Decision</dt><dd>${decisionCell(l)}</dd>${l.decision === 'acl_denied' ? '' : DW.html`<dt>Approval</dt><dd>${gate}</dd>`}<dt>Time</dt><dd>${l.created_at} UTC</dd><dt>Latency</dt><dd>${latency}</dd>${sizes}</dl>${refusalBlock(l)}${bodyBlock}`);
 }
 
 DW.actions.openPhantomDetail = function(el) { openPhantomDetail(el.dataset.phId); };

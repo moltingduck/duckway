@@ -25,6 +25,20 @@
   LABEL.credential = 'Credential unavailable';
   LABEL.approval = 'Approval'; 
 
+  var CAPS = {
+    pull_requests_merge: 'Merge pull requests', pull_requests_approve: 'Approve pull requests',
+    pull_requests_write: 'Open pull requests', pull_requests_read: 'Read pull requests',
+    workflow_dispatch: 'Run workflows', push: 'Push', clone: 'Clone'
+  };
+  var ROLES = { read: 'Read only', protected: 'Protected', agent: 'Agent-owned', tag: 'Tag' };
+  function roleLabel(r) { var k = String(r || '').toLowerCase(); return ROLES[k] || String(r || ''); }
+  // friendly: capability identifiers become labels; "pattern -> role" shows the role label.
+  function friendly(s) {
+    s = String(s || '');
+    s = s.replace(/\b(pull_requests_merge|pull_requests_approve|pull_requests_write|pull_requests_read|workflow_dispatch)\b/g, function (m) { return CAPS[m]; });
+    return s.replace(/(\u2192\s*)(read|protected|agent|tag)\b/g, function (m, a, b) { return a + ROLES[b]; });
+  }
+
   function kindLabel(kind) { return LABEL[kind] || (kind ? String(kind).replace(/_/g, ' ') : 'Refused'); }
   function validKind(kind) { return Object.prototype.hasOwnProperty.call(LABEL, kind); }
 
@@ -48,11 +62,11 @@
       kind: str(d.kind),
       kindLabel: kindLabel(d.kind),
       layer: str(d.layer),
-      rule: str(d.rule),
+      rule: friendly(str(d.rule)),
       summary: str(d.reason),
       refs: refs.map(function (r) {
         r = r || {};
-        return { ref: str(r.ref), ok: refOK(r.verdict), pattern: str(r.pattern), role: str(r.role), reason: str(r.reason) };
+        return { ref: str(r.ref), ok: refOK(r.verdict), pattern: friendly(str(r.pattern)), role: roleLabel(r.role), reason: str(r.reason) };
       }),
       more: more > 0 ? more : 0,
       sees: str(d.sees),
@@ -77,7 +91,7 @@
     return '/admin/phantom-tokens/' + encodeURIComponent(row.placeholder_id) + '?' + p.toString();
   }
 
-  var api = { KINDS: KINDS, kindLabel: kindLabel, validKind: validKind, adapt: adapt, repeatsOf: repeatsOf, simulatorHref: simulatorHref };
+  var api = { friendly: friendly, roleLabel: roleLabel, KINDS: KINDS, kindLabel: kindLabel, validKind: validKind, adapt: adapt, repeatsOf: repeatsOf, simulatorHref: simulatorHref };
   if (typeof module === 'object' && module && module.exports) module.exports = api;
   else root.RLOG = api;
 })(typeof window !== 'undefined' ? window : this);
