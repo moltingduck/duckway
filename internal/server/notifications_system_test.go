@@ -344,3 +344,59 @@ func TestNotificationNestedConfigRejectedAndMaskedWhenStored(t *testing.T) {
 		t.Fatalf("nested secret leaked: %s", body)
 	}
 }
+
+func TestNotificationApproverAllowlistValidationAndBanner(t *testing.T) {
+	e := newNtEnv(t)
+	post := func(typ string, cfg map[string]string) *httptest.ResponseRecorder {
+		cj, _ := json.Marshal(cfg)
+		return e.do("POST", "/api/notifications", map[string]string{"channel_type": typ, "name": "ch-" + typ, "config": string(cj)})
+	}
+	if rec := post("telegram", map[string]string{"bot_token": ntTgToken, "chat_id": "1", "approver_user_ids": "12, abc"}); rec.Code != 400 {
+		t.Fatalf("non-numeric id: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := post("telegram", map[string]string{"bot_token": ntTgToken, "chat_id": "1", "approver_role_ids": "5"}); rec.Code != 400 {
+		t.Fatalf("telegram has no roles: %d %s", rec.Code, rec.Body.String())
+	}
+	// No approvers: the view says the channel cannot decide.
+	id := e.create("discord_bot", "bot", map[string]string{"bot_token": "tok", "channel_id": "99"})
+	var v struct {
+		ChatDecides    bool   `json:"chat_decides"`
+		ApproverCount  int    `json:"approver_count"`
+		NeedsApprovers bool   `json:"needs_approvers"`
+		Config         string `json:"config"`
+	}
+	rec := e.do("GET", "/api/notifications/"+id, nil)
+	_ = json.Unmarshal(rec.Body.Bytes(), &v)
+	if !v.ChatDecides || v.ApproverCount != 0 || !v.NeedsApprovers {
+		t.Fatalf("empty list view: %s", rec.Body.String())
+	}
+	// Editing only the approver list needs no listener restart and clears the banner.
+	upd := func(cfg map[string]string) map[string]any {
+		cj, _ := json.Marshal(cfg)
+		rec := e.do("PUT", "/api/notifications/"+id, map[string]string{"name": "bot", "config": string(cj)})
+		if rec.Code != 200 {
+			t.Fatalf("update: %d %s", rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return out
+	}
+	if out := upd(map[string]string{"bot_token": "********", "channel_id": "99", "approver_user_ids": "111,222", "approver_role_ids": "900"}); out["restart_required"] != false {
+		t.Fatalf("approver-only edit: %v", out)
+	}
+	rec = e.do("GET", "/api/notifications/"+id, nil)
+	v.ApproverCount, v.NeedsApprovers = 0, true
+	_ = json.Unmarshal(rec.Body.Bytes(), &v)
+	if v.ApproverCount != 3 || v.NeedsApprovers || !strings.Contains(v.Config, `"approver_user_ids":"111,222"`) || strings.Contains(v.Config, `"tok"`) {
+		t.Fatalf("view after edit: %s", rec.Body.String())
+	}
+	if out := upd(map[string]string{"bot_token": "********", "channel_id": "100", "approver_user_ids": "111"}); out["restart_required"] != true {
+		t.Fatalf("target edit must still need a restart: %v", out)
+	}
+	// A webhook channel never decides, so it never shows the banner.
+	hid := e.create("webhook", "hook", map[string]string{"url": "https://example.com/h"})
+	rec = e.do("GET", "/api/notifications/"+hid, nil)
+	if strings.Contains(rec.Body.String(), `"needs_approvers":true`) || strings.Contains(rec.Body.String(), `"chat_decides":true`) {
+		t.Fatalf("webhook view: %s", rec.Body.String())
+	}
+}

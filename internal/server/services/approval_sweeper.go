@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"log"
 	"strconv"
 	"sync"
@@ -14,6 +15,7 @@ import (
 // from "rejected" (admin actively said no).
 type ApprovalSweeper struct {
 	approvals *queries.ApprovalQueries
+	decider   *ApprovalDecider // optional: reports each expiry to decision observers
 	settings  *queries.SettingsQueries
 	stopCh    chan struct{}
 	stopOnce  sync.Once
@@ -21,6 +23,13 @@ type ApprovalSweeper struct {
 
 func NewApprovalSweeper(a *queries.ApprovalQueries, s *queries.SettingsQueries) *ApprovalSweeper {
 	return &ApprovalSweeper{approvals: a, settings: s, stopCh: make(chan struct{})}
+}
+
+// WithDecider makes the sweeper report every expiry through the decider's
+// observers (decided_by is system:sweeper either way).
+func (s *ApprovalSweeper) WithDecider(d *ApprovalDecider) *ApprovalSweeper {
+	s.decider = d
+	return s
 }
 
 func (s *ApprovalSweeper) Start() {
@@ -58,7 +67,15 @@ func (s *ApprovalSweeper) ttl() int {
 }
 
 func (s *ApprovalSweeper) sweep() {
-	n, err := s.approvals.MarkExpiredAsIgnored(s.ttl())
+	var n int64
+	var err error
+	if s.decider != nil {
+		var c int
+		c, err = s.decider.Expire(context.Background(), s.ttl())
+		n = int64(c)
+	} else {
+		n, err = s.approvals.MarkExpiredAsIgnored(s.ttl())
+	}
 	if err != nil {
 		log.Printf("[approval-sweeper] error: %v", err)
 		return

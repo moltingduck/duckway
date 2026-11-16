@@ -7,20 +7,28 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
+	"github.com/hackerduck/duckway/internal/server/middleware"
 	svc "github.com/hackerduck/duckway/internal/server/services"
 )
 
 type ApprovalHandler struct {
 	approvals    *queries.ApprovalQueries
 	placeholders *queries.PlaceholderQueries
+	decider      *svc.ApprovalDecider
 }
 
 func NewApprovalHandler(approvals *queries.ApprovalQueries, placeholders *queries.PlaceholderQueries) *ApprovalHandler {
-	return &ApprovalHandler{approvals: approvals, placeholders: placeholders}
+	return &ApprovalHandler{approvals: approvals, placeholders: placeholders, decider: svc.NewApprovalDecider(approvals)}
+}
+
+// WithDecider shares the server's decider so decisions reach its observers
+// (chat message updates, audit).
+func (h *ApprovalHandler) WithDecider(d *svc.ApprovalDecider) *ApprovalHandler {
+	h.decider = d
+	return h
 }
 
 func (h *ApprovalHandler) ListPending(w http.ResponseWriter, r *http.Request) {
@@ -78,62 +86,53 @@ func (h *ApprovalHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-
-	existing, err := h.approvals.GetByID(id)
-	if err != nil {
-		jsonError(w, "approval not found", http.StatusNotFound)
-		return
-	}
-	if existing.Status != "pending" {
-		jsonError(w, "approval is already "+existing.Status, http.StatusConflict)
-		return
-	}
-
 	var req struct {
 		DurationMinutes int `json:"duration_minutes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		req.DurationMinutes = 0
+		req.DurationMinutes = 0 // no explicit duration: the token's approval time limit (24 hours by default)
 	}
-	if req.DurationMinutes <= 0 {
-		// No explicit duration: the token's approval time limit (24 hours by default).
-		req.DurationMinutes = h.approvals.PlaceholderApprovalMinutes(existing.PlaceholderID)
-	}
-
-	if err := h.approvals.Approve(id, queries.ApprovalExpiry(time.Duration(queries.ClampApprovalMinutes(req.DurationMinutes))*time.Minute)); err != nil {
-		if errors.Is(err, queries.ErrApprovalNotPending) {
-			jsonError(w, "approval already decided", http.StatusConflict) // decided concurrently
-			return
-		}
-		jsonError(w, "failed to approve", http.StatusInternalServerError)
-		return
-	}
-	jsonResponse(w, map[string]string{"status": "approved"})
+	id := r.PathValue("id")
+	err := h.decider.Approve(r.Context(), id, req.DurationMinutes, adminActor(r), svc.ViaWeb)
+	respondWebDecision(w, id, "approved", "failed to approve", err)
 }
 
 func (h *ApprovalHandler) Reject(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	err := h.decider.Reject(r.Context(), id, adminActor(r), svc.ViaWeb)
+	respondWebDecision(w, id, "rejected", "failed to reject", err)
+}
 
-	existing, err := h.approvals.GetByID(id)
-	if err != nil {
+// adminActor is the decided_by value for a console session: admin:<username>.
+func adminActor(r *http.Request) string {
+	u, _ := r.Context().Value(middleware.AdminUserKey).(string)
+	if u == "" {
+		u = "unknown"
+	}
+	return "admin:" + u
+}
+
+// respondWebDecision answers the console's decision calls. A lost race is a 409
+// whose body names the existing decider so the page can say "already approved by ...".
+func respondWebDecision(w http.ResponseWriter, id, status, failMsg string, err error) {
+	switch {
+	case err == nil:
+		jsonResponse(w, map[string]string{"status": status})
+	case errors.Is(err, svc.ErrApprovalNotFound):
 		jsonError(w, "approval not found", http.StatusNotFound)
-		return
-	}
-	if existing.Status != "pending" {
-		jsonError(w, "approval is already "+existing.Status, http.StatusConflict)
-		return
-	}
-
-	if err := h.approvals.Reject(id); err != nil {
-		if errors.Is(err, queries.ErrApprovalNotPending) {
-			jsonError(w, "approval already decided", http.StatusConflict)
-			return
+	case errors.Is(err, queries.ErrApprovalNotPending):
+		body := map[string]string{"error": "approval already decided"}
+		var ad *svc.AlreadyDecidedError
+		if errors.As(err, &ad) {
+			body["error"] = "approval is already " + ad.Decision.Status
+			body["status"], body["decided_by"], body["decided_via"] = ad.Decision.Status, ad.Decision.DecidedBy, ad.Decision.DecidedVia
 		}
-		jsonError(w, "failed to reject", http.StatusInternalServerError)
-		return
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(body)
+	default:
+		jsonError(w, failMsg, http.StatusInternalServerError)
 	}
-	jsonResponse(w, map[string]string{"status": "rejected"})
 }
 
 // CreatePendingApproval creates an approval request for a placeholder key.

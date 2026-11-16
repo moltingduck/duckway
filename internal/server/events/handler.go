@@ -25,6 +25,11 @@ type HandlerConfig struct {
 	// subscribing and on every heartbeat; an invalid session closes the
 	// stream.
 	ValidateSession func(r *http.Request) (user string, ok bool)
+	// SessionKey, if set, replaces the cookie-derived key that groups streams
+	// for the per-session limit (for example an approver token's ID).
+	SessionKey func(r *http.Request) string
+	// Topics, if non-empty, limits the stream to these topics.
+	Topics []string
 }
 
 // Handler serves GET /api/events. Mount it behind admin auth.
@@ -60,6 +65,9 @@ func (s *Service) Handler(cfg HandlerConfig) http.Handler {
 			user = u
 		}
 		key := sessionKey(r)
+		if cfg.SessionKey != nil {
+			key = cfg.SessionKey(r)
+		}
 		if key == "" {
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
@@ -98,6 +106,10 @@ func (s *Service) Handler(cfg HandlerConfig) http.Handler {
 		type batch struct {
 			evs []Event
 			ok  bool
+		}
+		allowed := map[string]bool{}
+		for _, t := range cfg.Topics {
+			allowed[t] = true
 		}
 		ctx := r.Context()
 		life := time.NewTimer(cfg.MaxLifetime)
@@ -140,6 +152,9 @@ func (s *Service) Handler(cfg HandlerConfig) http.Handler {
 				}
 			case b := <-ch:
 				for _, ev := range b.evs {
+					if len(allowed) > 0 && !allowed[ev.Topic] {
+						continue
+					}
 					if !write("event: %s\ndata: %s\n\n", ev.Topic, ev.Data) {
 						return
 					}

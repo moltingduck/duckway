@@ -33,6 +33,12 @@ type Server struct {
 	stopCh   chan struct{}   // closed to stop anonymous sweeper goroutines
 	stoppers []stopper       // services with their own Stop()
 	events   *events.Service // SSE hub; closed early so streams do not block http.Server.Shutdown
+
+	// OnDecision, if set before the server starts handling requests, is called
+	// once after every approval decision from every path (web, console forms,
+	// approver API, Discord, Telegram, sweeper). It is how an audit recorder
+	// observes decisions; it must be quick and must not panic.
+	OnDecision services.DecisionHook
 }
 
 // Shutdown stops all background goroutines and services. Call after
@@ -81,7 +87,7 @@ func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s.SetupAdminRoutes(contentFS, ss)
 	s.startPluginChecker()
 	s.SetupGatewayRoutes(ss)
-	s.startApprovalListeners()
+	s.startApprovalListeners(ss)
 	s.startApprovalSweeper(ss)
 	s.startCCBackground(ss)
 	s.startKeyGroupSweeper()
@@ -113,7 +119,7 @@ func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s.startOAuthRefresher(ss)
 	s.SetupAdminRoutes(contentFS, ss)
 	s.startPluginChecker()
-	s.startApprovalListeners()
+	s.startApprovalListeners(ss)
 	s.startApprovalSweeper(ss)
 
 	return s, nil
@@ -291,7 +297,7 @@ func (s *Server) startOAuthRefresher(ss *SharedServices) {
 }
 
 func (s *Server) startApprovalSweeper(ss *SharedServices) {
-	sweeper := services.NewApprovalSweeper(ss.ApprovalQ, ss.SettingsQ)
+	sweeper := services.NewApprovalSweeper(ss.ApprovalQ, ss.SettingsQ).WithDecider(ss.Decider)
 	sweeper.Start()
 	s.register(sweeper)
 }
@@ -387,10 +393,8 @@ func pruneRequestLogIfConfigured(settingsQ *queries.SettingsQueries, reqLogQ *qu
 	return removed, days, err
 }
 
-func (s *Server) startApprovalListeners() {
+func (s *Server) startApprovalListeners(ss *SharedServices) {
 	notifQ := queries.NewNotificationQueries(s.db)
-	approvalQ := queries.NewApprovalQueries(s.db)
-	placeholderQ := queries.NewPlaceholderQueries(s.db)
 	notifier := s.notifier
 
 	channels, err := notifQ.ListActive()
@@ -398,20 +402,7 @@ func (s *Server) startApprovalListeners() {
 		return
 	}
 
-	approveFunc := func(approvalID string) error {
-		approval, err := approvalQ.GetByID(approvalID)
-		ttl := 1440
-		if err == nil && approval != nil {
-			ph, phErr := placeholderQ.GetByID(approval.PlaceholderID)
-			if phErr == nil && ph.ApprovalTTLMinutes > 0 {
-				ttl = ph.ApprovalTTLMinutes
-			}
-		}
-		return approvalQ.Approve(approvalID, queries.ApprovalExpiry(time.Duration(queries.ClampApprovalMinutes(ttl))*time.Minute))
-	}
-	rejectFunc := func(approvalID string) error {
-		return approvalQ.Reject(approvalID)
-	}
+	decide := ss.Decider.NewChatDecision()
 
 	for _, ch := range channels {
 		switch ch.ChannelType {
@@ -423,9 +414,10 @@ func (s *Server) startApprovalListeners() {
 			if err := json.Unmarshal([]byte(ch.Config), &cfg); err != nil || cfg.BotToken == "" {
 				continue
 			}
-			gw := services.NewDiscordGateway(cfg.BotToken, cfg.ChannelID,
-				services.GuardChannelAction(notifQ, ch.ID, ch.Config, approveFunc),
-				services.GuardChannelAction(notifQ, ch.ID, ch.Config, rejectFunc))
+			// Every decision goes through the channel guard: the channel must still
+			// be active and unchanged, and the actor must be on its approver list.
+			gw := services.NewDiscordGateway(cfg.BotToken, cfg.ChannelID, nil, nil).
+				WithDecider(services.GuardChannelDecision(notifQ, ch.ID, ch.Config, decide))
 			gw.Start()
 			s.register(gw)
 			if notifier != nil {
@@ -441,9 +433,8 @@ func (s *Server) startApprovalListeners() {
 			if err := json.Unmarshal([]byte(ch.Config), &cfg); err != nil || cfg.BotToken == "" {
 				continue
 			}
-			poller := services.NewTelegramPoller(cfg.BotToken, cfg.ChatID,
-				services.GuardChannelAction(notifQ, ch.ID, ch.Config, approveFunc),
-				services.GuardChannelAction(notifQ, ch.ID, ch.Config, rejectFunc))
+			poller := services.NewTelegramPoller(cfg.BotToken, cfg.ChatID, nil, nil).
+				WithDecider(services.GuardChannelDecision(notifQ, ch.ID, ch.Config, decide))
 			poller.Start()
 			s.register(poller)
 			log.Printf("Started Telegram poller for chat %s (%s)", cfg.ChatID, ch.Name)
