@@ -43,6 +43,7 @@ for agent in "${AGENTS[@]}"; do
     claude) ducklord_require_demo_secret "$CLAUDE_AUTH" ;;
   esac
 done
+CODEX_AUTH="$CODEX_AUTH" CLAUDE_AUTH="$CLAUDE_AUTH" "$ROOT/scripts/live-credentials-preflight.sh" "${AGENTS[@]}" || exit 1
 if [ "$credential_kind" != codex ]; then
   echo "[live-tui] validating Claude OAuth before starting containers"
   "$ROOT/scripts/claude-oauth-live-e2e.sh" --llm-only || {

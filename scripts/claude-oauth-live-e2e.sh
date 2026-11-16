@@ -33,6 +33,10 @@ if [ "$mode" != "600" ]; then
 fi
 CLAUDE_AUTH="$(cd "$(dirname "$CLAUDE_AUTH")" && pwd)/$(basename "$CLAUDE_AUTH")"
 
+if [ "$RUN_REFRESH" = 1 ] && [ "$RUN_LLM" = 0 ]; then :; else
+  CLAUDE_AUTH="$CLAUDE_AUTH" "$ROOT/scripts/live-credentials-preflight.sh" claude || exit 1
+fi
+
 run_case() {
   name="$1"
   test_name="$2"

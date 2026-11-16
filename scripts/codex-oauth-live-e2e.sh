@@ -29,6 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PODMAN="${PODMAN:-podman}"
 source "$SCRIPT_DIR/live-credentials-dir.sh"
+source "$SCRIPT_DIR/live-cli-versions.sh"
 LIVE_CREDENTIALS_DIR="$(duckway_resolve_live_credentials_dir "$REPO_ROOT")"
 CODEX_AUTH="${CODEX_AUTH:-$LIVE_CREDENTIALS_DIR/codex-auth.json}"
 IMAGE="${DUCKWAY_LIVE_IMAGE:-docker.io/library/golang:1.26.10-alpine@sha256:5cb67f19c5e7994dcb80c074f7cfca8aeeada45bbdca035f73df269cefdcce61}"
@@ -65,6 +66,12 @@ mode="$(stat -c '%a' "$CODEX_AUTH" 2>/dev/null || stat -f '%Lp' "$CODEX_AUTH" 2>
 if [ "$mode" != "600" ]; then
   echo "Refusing to use $CODEX_AUTH because permissions are $mode; run: chmod 600 '$CODEX_AUTH'" >&2
   exit 1
+fi
+
+# --refresh-only is the refresh path itself and --check-token only inspects; every
+# other mode needs a credential that stays valid for the whole run.
+if [ "$CHECK_TOKEN" != "1" ] && ! { [ "$RUN_REFRESH" = 1 ] && [ "$RUN_LLM" = 0 ]; }; then
+  CODEX_AUTH="$CODEX_AUTH" "$SCRIPT_DIR/live-credentials-preflight.sh" codex
 fi
 
 if [ "$CHECK_TOKEN" = "1" ]; then
@@ -121,6 +128,7 @@ EOF
 "$PODMAN" run --rm -i \
   -v "$REPO_ROOT":/workspace:ro \
   -v "$CODEX_AUTH":/run/secrets/codex-auth.json:ro \
+  -e CODEX_CLI_VERSION \
   -w /workspace \
   "$IMAGE" \
   sh -s -- "$PROMPT" "$CC_WATCH" "$RUN_REFRESH" "$RUN_LLM" "$RUN_WSS" <<'CONTAINER_SCRIPT'
@@ -160,7 +168,8 @@ trap cleanup EXIT
 
 echo "Installing container test tools..."
 apk add --no-cache bash curl jq nodejs npm ca-certificates python3 >/dev/null
-npm install -g @openai/codex >/dev/null
+npm install -g "@openai/codex@${CODEX_CLI_VERSION:-latest}" >/dev/null
+echo "[live-e2e] cli codex=$(codex --version 2>&1 | head -n 1) claude=n/a (requested codex=${CODEX_CLI_VERSION:-latest})"
 
 echo "Building Duckway binaries..."
 /usr/local/go/bin/go build -buildvcs=false -o /tmp/duckway-server ./cmd/server

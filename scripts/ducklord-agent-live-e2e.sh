@@ -39,6 +39,11 @@ require_secret() {
 [ "$RUN_CODEX" = 0 ] || require_secret "$CODEX_AUTH"
 [ "$RUN_CLAUDE" = 0 ] || require_secret "$CLAUDE_AUTH"
 
+preflight_agents=()
+[ "$RUN_CODEX" = 0 ] || preflight_agents+=(codex)
+[ "$RUN_CLAUDE" = 0 ] || preflight_agents+=(claude)
+CODEX_AUTH="$CODEX_AUTH" CLAUDE_AUTH="$CLAUDE_AUTH" "$ROOT/scripts/live-credentials-preflight.sh" "${preflight_agents[@]}" || exit 1
+
 if [ "$RUN_CLAUDE" = 1 ]; then
   echo "[claude_code] validating the live credential before starting a PTY"
   if ! "$ROOT/scripts/claude-oauth-live-e2e.sh" --llm-only; then

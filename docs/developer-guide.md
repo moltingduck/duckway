@@ -1288,6 +1288,18 @@ CLAUDE_AUTH=live-credentials/claude-credentials.json ./scripts/claude-oauth-live
 CLAUDE_AUTH=live-credentials/claude-credentials.json ./scripts/claude-oauth-live-e2e.sh --llm-only
 ```
 
+Every live script runs `scripts/live-credentials-preflight.sh [codex] [claude]`
+first. It reads each credential's expiry without printing tokens and calls the
+provider's `--refresh-only` path only when the access token is expired or
+expires within `DUCKWAY_LIVE_PREFLIGHT_MARGIN_SECS` (default 1800), then
+verifies the new expiry, a refresh token and file mode 0600. Failure exits
+non-zero. `DUCKWAY_LIVE_PREFLIGHT=skip` is an explicit offline opt-out. The
+decision logic is covered offline by `scripts/live-credentials-preflight-test.sh`.
+
+Live scripts install the latest Codex and Claude Code CLIs and print one line,
+`[live-e2e] cli codex=X claude=Y`. Pin either for bisecting with
+`CODEX_CLI_VERSION` / `CLAUDE_CLI_VERSION` (default `latest`).
+
 Run Duckway upload/refresh E2E for Codex:
 
 ```bash

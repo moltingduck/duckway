@@ -10,6 +10,7 @@ LIVE_CREDENTIALS_DIR="$(duckway_resolve_live_credentials_dir "$ROOT")"
 CODEX_AUTH="${CODEX_AUTH:-$LIVE_CREDENTIALS_DIR/codex-auth.json}"
 CLAUDE_AUTH="${CLAUDE_AUTH:-$LIVE_CREDENTIALS_DIR/claude-credentials.json}"
 source "$ROOT/scripts/container-runtime.sh"
+source "$ROOT/scripts/live-cli-versions.sh"
 duckway_init_container_runtime
 RUNTIME="$CONTAINER_RUNTIME"
 KEEP="${DUCKWAY_LIVE_KEEP:-0}"
@@ -22,6 +23,8 @@ AGENT="dw-agent-$SAFE_ID"
 LORD="dw-lord-$SAFE_ID"
 IMAGE="duckway-live-e2e:$SAFE_ID"
 SUCCESS=0
+
+"$ROOT/scripts/live-credentials-preflight.sh" codex claude
 
 validate_credential() {
   local name="$1" path="$2" mode
@@ -103,15 +106,19 @@ ssh-keygen -q -t ed25519 -N '' -f "$WORK/build/id_ed25519"
 
 cat >"$WORK/build/Containerfile" <<'EOF'
 FROM alpine:3.21
+ARG CODEX_CLI_VERSION=latest
+ARG CLAUDE_CLI_VERSION=latest
 RUN apk add --no-cache bash ca-certificates curl jq nodejs npm openssh openssh-client python3 \
- && npm install -g @openai/codex@0.153.4 @anthropic-ai/claude-code@2.1.263 \
+ && npm install -g @openai/codex@"$CODEX_CLI_VERSION" @anthropic-ai/claude-code@"$CLAUDE_CLI_VERSION" \
+ && codex --version && claude --version \
  && npm cache clean --force \
  && ssh-keygen -A
 COPY duckway-server duckway ducklion ducklord /usr/local/bin/
 COPY id_ed25519.pub /root/.ssh/authorized_keys
 RUN chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys
 EOF
-"$RUNTIME" build -q -t "$IMAGE" -f "$WORK/build/Containerfile" "$WORK/build" >/dev/null
+"$RUNTIME" build -q --build-arg "CODEX_CLI_VERSION=$CODEX_CLI_VERSION" --build-arg "CLAUDE_CLI_VERSION=$CLAUDE_CLI_VERSION" -t "$IMAGE" -f "$WORK/build/Containerfile" "$WORK/build" >/dev/null
+duckway_print_cli_versions "$("$RUNTIME" run --rm "$IMAGE" codex --version)" "$("$RUNTIME" run --rm "$IMAGE" claude --version)"
 "$RUNTIME" network create "$NET" >/dev/null
 
 echo '[live-e2e] starting credential-isolated server'
