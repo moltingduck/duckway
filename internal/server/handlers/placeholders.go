@@ -326,29 +326,12 @@ func (h *PlaceholderHandler) Update(w http.ResponseWriter, r *http.Request) {
 		ph.KeyPath = *req.KeyPath
 	}
 	if req.PermissionConfig != nil {
-		if err := svc.ValidatePermissionConfig(*req.PermissionConfig); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if service, serr := h.services.GetByID(ph.ServiceID); serr != nil {
-			jsonError(w, "service not found", http.StatusNotFound)
-			return
-		} else if err := requireGitHubForBranchPolicies(*req.PermissionConfig, service.Name); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		normalized, nerr := svc.NormalizePermissionConfigPolicies(*req.PermissionConfig)
-		if nerr != nil {
-			jsonError(w, nerr.Error(), http.StatusBadRequest)
+		normalized, status, verr := h.normalizeDraftPermissionConfig(ph, *req.PermissionConfig)
+		if verr != nil {
+			jsonError(w, verr.Error(), status)
 			return
 		}
 		req.PermissionConfig = &normalized
-		if h.isGitHubAppMinterPlaceholder(ph) {
-			if err := svc.ValidateGitHubRepoScopePermissionConfig(*req.PermissionConfig); err != nil {
-				jsonError(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-		}
 		ph.PermissionConfig = req.PermissionConfig
 	}
 
@@ -357,6 +340,32 @@ func (h *PlaceholderHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, ph)
+}
+
+// normalizeDraftPermissionConfig validates and normalizes a permission_config
+// for ph exactly as Update does before it stores it; the preview endpoint
+// shares it so an invalid draft is refused the same way a save would be.
+func (h *PlaceholderHandler) normalizeDraftPermissionConfig(ph *models.PlaceholderKey, cfg string) (string, int, error) {
+	if err := svc.ValidatePermissionConfig(cfg); err != nil {
+		return "", http.StatusBadRequest, err
+	}
+	service, serr := h.services.GetByID(ph.ServiceID)
+	if serr != nil {
+		return "", http.StatusNotFound, errors.New("service not found")
+	}
+	if err := requireGitHubForBranchPolicies(cfg, service.Name); err != nil {
+		return "", http.StatusBadRequest, err
+	}
+	normalized, nerr := svc.NormalizePermissionConfigPolicies(cfg)
+	if nerr != nil {
+		return "", http.StatusBadRequest, nerr
+	}
+	if h.isGitHubAppMinterPlaceholder(ph) {
+		if err := svc.ValidateGitHubRepoScopePermissionConfig(normalized); err != nil {
+			return "", http.StatusBadRequest, err
+		}
+	}
+	return normalized, 0, nil
 }
 
 func (h *PlaceholderHandler) Delete(w http.ResponseWriter, r *http.Request) {
