@@ -27,6 +27,16 @@
   </div>
   <p id="pt-banner" class="pt-banner" hidden></p>
 
+  <div class="pt-pagetabs" role="tablist" aria-label="Phantom token sections" id="pt-pagetablist">
+    <button type="button" role="tab" class="pt-ptab" id="pt-ptab-overview" aria-selected="true" aria-controls="pt-panel-overview" data-action="ptPageTab" data-ptab="overview">Overview</button>
+    <button type="button" role="tab" class="pt-ptab" id="pt-ptab-test" aria-selected="false" tabindex="-1" aria-controls="pt-panel-test" data-action="ptPageTab" data-ptab="test">Test access</button>
+  </div>
+
+  <div id="pt-panel-test" role="tabpanel" aria-labelledby="pt-ptab-test" hidden>
+    <div id="as-root"></div>
+  </div>
+
+  <div id="pt-panel-overview" role="tabpanel" aria-labelledby="pt-ptab-overview">
   <div class="pt-layout">
     <div class="pt-main">
       <section class="card pt-card" aria-labelledby="pt-rules-h">
@@ -143,6 +153,7 @@
       </section>
     </aside>
   </div>
+  </div>
 
   <div class="pt-bar">
     <span class="pt-note" data-pt-note></span>
@@ -190,5 +201,8 @@
 <script nonce="{{$.CSPNonce}}" src="/static/phantom-common.js"></script>
 <script nonce="{{$.CSPNonce}}" src="/static/phantom-acl.js"></script>
 <script nonce="{{$.CSPNonce}}" src="/static/phantom-token-detail.js"></script>
+<script nonce="{{$.CSPNonce}}" src="/static/access-sim-hex.js"></script>
+<script nonce="{{$.CSPNonce}}" src="/static/access-sim-api.js"></script>
+<script nonce="{{$.CSPNonce}}" src="/static/access-sim.js"></script>
 {{end}}
 {{end}}
