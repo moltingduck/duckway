@@ -28,29 +28,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	activityStore := ducklord.ActivityStateStore{}
-	activityState, err := activityStore.Load()
-	stateWarning := ""
-	var recovered *ducklord.CorruptStateRecoveredError
-	var stateLoadWarning *ducklord.StateLoadWarning
-	if errors.As(err, &recovered) && activityState != nil {
-		stateWarning = recovered.Error()
-	} else if errors.As(err, &stateLoadWarning) && activityState != nil {
-		stateWarning = stateLoadWarning.Error()
-	} else if err != nil {
-		return fmt.Errorf("load Ducklord activity state: %w", err)
-	}
-	if warning := soundSetupWarning(cfg); warning != "" {
-		if stateWarning != "" {
-			stateWarning += "; "
-		}
-		stateWarning += warning
-	}
-	if warning := desktopSetupWarning(cfg, activityState); warning != "" {
-		if stateWarning != "" {
-			stateWarning += "; "
-		}
-		stateWarning += warning
+	activityStore, activityState, stateWarning, err := loadTUIActivityState(cfg)
+	if err != nil {
+		return err
 	}
 	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner,
 		terminalCookedState: oldState,
@@ -219,4 +199,34 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 		}
 	}
+}
+
+// loadTUIActivityState loads the persisted activity state and combines any
+// recovery, sound and desktop-notification setup warnings into one message.
+func loadTUIActivityState(cfg *ducklord.Config) (ducklord.ActivityStateStore, *ducklord.ActivityState, string, error) {
+	activityStore := ducklord.ActivityStateStore{}
+	activityState, err := activityStore.Load()
+	stateWarning := ""
+	var recovered *ducklord.CorruptStateRecoveredError
+	var stateLoadWarning *ducklord.StateLoadWarning
+	if errors.As(err, &recovered) && activityState != nil {
+		stateWarning = recovered.Error()
+	} else if errors.As(err, &stateLoadWarning) && activityState != nil {
+		stateWarning = stateLoadWarning.Error()
+	} else if err != nil {
+		return activityStore, nil, "", fmt.Errorf("load Ducklord activity state: %w", err)
+	}
+	if warning := soundSetupWarning(cfg); warning != "" {
+		if stateWarning != "" {
+			stateWarning += "; "
+		}
+		stateWarning += warning
+	}
+	if warning := desktopSetupWarning(cfg, activityState); warning != "" {
+		if stateWarning != "" {
+			stateWarning += "; "
+		}
+		stateWarning += warning
+	}
+	return activityStore, activityState, stateWarning, nil
 }
