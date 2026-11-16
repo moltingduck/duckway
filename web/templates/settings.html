@@ -10,6 +10,7 @@
   <nav class="st-nav" aria-label="Settings sections">
     <a href="#gateway" class="st-navlink" data-sec="gateway" data-action="stPick">Gateway<span class="st-dot" hidden><span class="sr-only"> (unsaved changes)</span></span></a>
     <a href="#approvals" class="st-navlink" data-sec="approvals" data-action="stPick">Approvals<span class="st-dot" hidden><span class="sr-only"> (unsaved changes)</span></span></a>
+    <a href="#approvers" class="st-navlink" data-sec="approvers" data-action="stPick">Approvers</a>
     <a href="#password" class="st-navlink" data-sec="password" data-action="stPick">Admin password<span class="st-dot" hidden><span class="sr-only"> (unsaved changes)</span></span></a>
     <a href="#statusline" class="st-navlink" data-sec="statusline" data-action="stPick">Agent statusline<span class="st-dot" hidden><span class="sr-only"> (unsaved changes)</span></span></a>
   </nav>
@@ -71,6 +72,44 @@
       </form>
     </section>
 
+    <!-- Approvers -->
+    <section class="card st-sec" id="sec-approvers" data-sec="approvers" aria-labelledby="approvers-h" hidden>
+      <h2 id="approvers-h">Approvers</h2>
+      <p class="text-sm text-muted">Approver tokens let someone approve or reject held requests from the <code>ducklord</code> terminal UI without an admin session. A token can only list and decide approvals: it cannot read credentials, ACLs or logs, and it is not accepted anywhere else. Create one per person or device and revoke it when it is lost.</p>
+      <form class="st-form ap-create" data-on-submit="apCreate" novalidate autocomplete="off">
+        <div class="form-group">
+          <label for="ap-name">Token name</label>
+          <input type="text" id="ap-name" maxlength="64" placeholder="alice laptop" autocomplete="off" aria-describedby="ap-name-hint ap-name-err">
+          <p class="text-sm text-muted" id="ap-name-hint">Shown in the approvals history as <code>approver:&lt;name&gt;</code>. Letters, digits, space, dot, dash and underscore.</p>
+          <p class="st-err" id="ap-name-err" role="status" hidden></p>
+        </div>
+        <div class="st-bar">
+          <button type="submit" class="btn btn-primary" id="ap-create-btn">Create approver token</button>
+        </div>
+      </form>
+
+      <div class="ap-reveal" id="ap-reveal" role="group" aria-labelledby="ap-reveal-t" hidden>
+        <p class="text-sm" id="ap-reveal-t"><strong>Copy this token now.</strong> It is shown once and cannot be retrieved later; Duckway stores only a hash.</p>
+        <div class="nt-input-row">
+          <input type="text" id="ap-token" readonly spellcheck="false" autocomplete="off" aria-label="New approver token">
+          <button type="button" class="btn" data-action="apCopy" id="ap-copy">Copy</button>
+        </div>
+        <p class="text-sm text-muted" id="ap-copy-status" role="status" aria-live="polite"></p>
+        <p class="text-sm text-muted">Use it with <code>ducklord approver login</code>. Do not paste it into agent sessions or hosts.</p>
+        <div class="nt-confirm-btns"><button type="button" class="btn" data-action="apDismiss">I have copied it</button></div>
+      </div>
+
+      <h3 class="ap-list-h" id="ap-list-h">Tokens</h3>
+      <div id="ap-load" class="text-muted text-sm" role="status">Loading tokens…</div>
+      <div id="ap-error" class="nt-error" role="alert" hidden>
+        <span id="ap-error-t">Could not load tokens.</span>
+        <button type="button" class="btn btn-sm" data-action="apReload">Retry</button>
+      </div>
+      <p id="ap-empty" class="text-muted text-sm" hidden>No approver tokens yet.</p>
+      <ul class="nt-list" id="ap-list" aria-labelledby="ap-list-h" hidden></ul>
+      <p class="text-sm text-muted" id="ap-status" role="status" aria-live="polite"></p>
+    </section>
+
     <!-- Password -->
     <section class="card st-sec" id="sec-password" data-sec="password" aria-labelledby="password-h" hidden>
       <h2 id="password-h">Admin password</h2>
@@ -130,6 +169,118 @@
   </div>
 </div>
 
+<script nonce="{{$.CSPNonce}}">
+/* Approver tokens (Settings -> Approvers). Independent of the save-per-section
+   forms above: tokens are created and revoked immediately. */
+(function () {
+  var tokens = [], confirming = '', busy = false;
+  function $(id) { return document.getElementById(id); }
+  function api(method, url, body) {
+    var opt = { method: method, credentials: 'same-origin', headers: {} };
+    if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+    return fetch(url, opt).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok || j.error) throw new Error(j.error || ('Request failed (' + r.status + ')'));
+        return j;
+      });
+    });
+  }
+  function when(s) {
+    if (!s) return '';
+    var t = Date.parse(String(s).replace(' ', 'T') + 'Z');
+    return isNaN(t) ? s : new Date(t).toLocaleString();
+  }
+  function item(t) {
+    var revoked = !!t.revoked_at;
+    var ask = confirming === t.id;
+    return DW.html`<li class="nt-item${revoked ? ' nt-off' : ''}" data-id="${t.id}">
+      <div class="nt-main">
+        <div class="nt-name"><strong>${t.name}</strong> ${revoked ? DW.raw('<span class="badge badge-gray">Revoked</span>') : DW.raw('<span class="badge badge-green">Active</span>')}</div>
+        <div class="nt-summary text-sm text-muted">Created ${when(t.created_at)} · ${t.last_used_at ? 'last used ' + when(t.last_used_at) : 'never used'}${revoked ? ' · revoked ' + when(t.revoked_at) : ''}</div>
+      </div>
+      <div class="nt-actions">${revoked ? '' : DW.html`<button type="button" class="btn nt-del" data-action="apAskRevoke" data-id="${t.id}" aria-label="${'Revoke ' + t.name}">Revoke</button>`}</div>
+      ${ask ? DW.html`<div class="nt-confirm" role="group" aria-label="Confirm revoke">
+        <p class="text-sm"><strong>Revoke ${t.name}?</strong> Anything using this token loses access at once. This cannot be undone.</p>
+        <div class="nt-confirm-btns">
+          <button type="button" class="btn" data-action="apCancelRevoke">Cancel</button>
+          <button type="button" class="btn btn-danger" data-action="apRevoke" data-id="${t.id}">Revoke token</button>
+        </div></div>` : ''}
+    </li>`;
+  }
+  function render() {
+    $('ap-load').hidden = true;
+    $('ap-error').hidden = true;
+    $('ap-empty').hidden = tokens.length !== 0;
+    $('ap-list').hidden = tokens.length === 0;
+    DW.setHTML($('ap-list'), DW.html`${tokens.map(item)}`);
+  }
+  function load() {
+    $('ap-load').hidden = false;
+    $('ap-error').hidden = true;
+    return api('GET', '/api/approvers').then(function (l) { tokens = l; render(); }).catch(function (e) {
+      $('ap-load').hidden = true; $('ap-list').hidden = true; $('ap-empty').hidden = true;
+      $('ap-error-t').textContent = 'Could not load tokens: ' + e.message;
+      $('ap-error').hidden = false;
+    });
+  }
+  function nameErr(msg) { var e = $('ap-name-err'); e.textContent = msg || ''; e.hidden = !msg; }
+  DW.actions.apReload = function () { load(); };
+  DW.actions.apCreate = function () {
+    if (busy) return;
+    var name = $('ap-name').value.trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(name)) {
+      nameErr('Use 1 to 64 letters, digits, spaces, dots, dashes or underscores, starting with a letter or digit.');
+      $('ap-name').focus();
+      return;
+    }
+    nameErr('');
+    busy = true; $('ap-create-btn').disabled = true;
+    return api('POST', '/api/approvers', { name: name }).then(function (r) {
+      $('ap-name').value = '';
+      $('ap-token').value = r.token;
+      $('ap-copy-status').textContent = '';
+      $('ap-reveal').hidden = false;
+      $('ap-token').focus(); $('ap-token').select();
+      return load();
+    }).catch(function (e) { nameErr('Could not create: ' + e.message); })
+      .then(function () { busy = false; $('ap-create-btn').disabled = false; });
+  };
+  DW.actions.apCopy = function () {
+    var i = $('ap-token');
+    var done = function (ok) { $('ap-copy-status').textContent = ok ? 'Copied to the clipboard.' : 'Copy failed: select the token and copy it manually.'; };
+    i.focus(); i.select();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(i.value).then(function () { done(true); }, function () { done(false); });
+    } else {
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { /* ignore */ }
+      done(ok);
+    }
+  };
+  DW.actions.apDismiss = function () {
+    $('ap-token').value = '';
+    $('ap-reveal').hidden = true;
+    $('ap-name').focus();
+  };
+  DW.actions.apAskRevoke = function (el) {
+    confirming = el.dataset.id; render();
+    var b = document.querySelector('#ap-list .nt-confirm .btn'); if (b) b.focus();
+  };
+  DW.actions.apCancelRevoke = function () {
+    var id = confirming; confirming = ''; render();
+    var b = id && document.querySelector('[data-action="apAskRevoke"][data-id="' + CSS.escape(id) + '"]'); if (b) b.focus();
+  };
+  DW.actions.apRevoke = function (el) {
+    var id = el.dataset.id;
+    return api('DELETE', '/api/approvers/' + encodeURIComponent(id)).then(function () {
+      confirming = '';
+      $('ap-status').textContent = 'Token revoked.';
+      return load();
+    }).catch(function (e) { confirming = ''; render(); $('ap-status').textContent = 'Could not revoke: ' + e.message; });
+  };
+  document.addEventListener('DOMContentLoaded', load);
+})();
+</script>
 <script nonce="{{$.CSPNonce}}">
 (function () {
   var MAXSCRIPT = 64 * 1024;
@@ -356,7 +507,7 @@
   // fromHash: an unknown hash (#main from a skip link, an anchor in the page) must not
   // reset the section the user is on; only the first load falls back to Gateway.
   function show(sec, fromHash) {
-    if (!SECS[sec]) { if (fromHash) return; sec = 'gateway'; }
+    if (!SECS[sec] && sec !== 'approvers') { if (fromHash) return; sec = 'gateway'; }
     currentSec = sec;
     Array.prototype.forEach.call(document.querySelectorAll('.st-sec'), function (s) { s.hidden = s.dataset.sec !== sec; });
     Array.prototype.forEach.call(document.querySelectorAll('.st-navlink'), function (a) {
