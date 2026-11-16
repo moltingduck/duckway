@@ -16,7 +16,9 @@
  */
 (function (root) {
   'use strict';
-  var H = typeof module === 'object' && module && module.exports ? require('./access-sim-hex.js') : root.ASHEX;
+  var node = typeof module === 'object' && module && module.exports;
+  var H = node ? require('./access-sim-hex.js') : root.ASHEX;
+  var R = node ? require('./refusal-log.js') : root.RLOG;
 
   var ACTIONS = [
     { id: 'clone', label: 'Clone / fetch', ref: false },
@@ -32,8 +34,7 @@
   ];
   function actionDef(id) { for (var i = 0; i < ACTIONS.length; i++) if (ACTIONS[i].id === id) return ACTIONS[i]; return ACTIONS[1]; }
 
-  var ROLE = { read: 'Read only', protected: 'Protected', agent: 'Agent-owned', tag: 'Tag' };
-  function roleLabel(r) { var k = String(r || '').toLowerCase(); return ROLE[k] || String(r || ''); }
+  function roleLabel(r) { return R.roleLabel(r); }
 
   function pick(o, names) {
     for (var i = 0; i < names.length; i++) if (o && o[names[i]] !== undefined && o[names[i]] !== null) return o[names[i]];
@@ -74,9 +75,10 @@
       verdict: v,
       verdictLabel: VERDICT[v],
       kind: str(r.kind),
+      kindLabel: r.kind ? R.kindLabel(r.kind) : '',
       title: str(r.title),
       layer: str(r.layer),
-      rule: str(r.rule),
+      rule: R.friendly(str(r.rule)),
       reason: str(r.reason),
       steps: (Array.isArray(r.steps) ? r.steps : []).map(function (s) {
         s = s || {};
@@ -84,7 +86,7 @@
       }),
       refs: (Array.isArray(r.refs) ? r.refs : []).map(function (x) {
         x = x || {};
-        return { ref: str(x.ref), ok: /^(ok|allow|allowed|pass)/i.test(str(x.verdict)), pattern: str(x.pattern), role: roleLabel(x.role), reason: str(x.reason) };
+        return { ref: str(x.ref), ok: x.verdict === 'allowed', pattern: R.friendly(str(x.pattern)), role: roleLabel(x.role), reason: str(x.reason) };
       }),
       sees: str(r.sees),
       dependsOnDefault: !!r.depends_on_default_branch,

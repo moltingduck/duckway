@@ -38,12 +38,13 @@
     return { bytes: Uint8Array.from(out) };
   }
 
-  // formatHex: lowercase pairs, 16 bytes per line, so parseHex(formatHex(b)) round-trips.
-  function formatHex(bytes) {
+  // formatHex: lowercase pairs, perLine (default 16) bytes per line, so parseHex(formatHex(b)) round-trips.
+  function formatHex(bytes, perLine) {
+    perLine = perLine > 0 ? perLine : 16;
     var lines = [];
-    for (var o = 0; o < bytes.length; o += 16) {
+    for (var o = 0; o < bytes.length; o += perLine) {
       var parts = [];
-      for (var i = o; i < Math.min(o + 16, bytes.length); i++) parts.push(hex2(bytes[i]));
+      for (var i = o; i < Math.min(o + perLine, bytes.length); i++) parts.push(hex2(bytes[i]));
       lines.push(parts.join(' '));
     }
     return lines.join('\n');

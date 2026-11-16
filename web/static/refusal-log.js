@@ -23,20 +23,26 @@
   KINDS.forEach(function (k) { LABEL[k[0]] = k[1]; });
   // Labels only (not filter chips): simulator-only and held kinds.
   LABEL.credential = 'Credential unavailable';
-  LABEL.approval = 'Approval'; 
+  LABEL.approval = 'Approval';
 
   var CAPS = {
     pull_requests_merge: 'Merge pull requests', pull_requests_approve: 'Approve pull requests',
     pull_requests_write: 'Open pull requests', pull_requests_read: 'Read pull requests',
     workflow_dispatch: 'Run workflows', push: 'Push', clone: 'Clone'
   };
-  var ROLES = { read: 'Read only', protected: 'Protected', agent: 'Agent-owned', tag: 'Tag' };
-  function roleLabel(r) { var k = String(r || '').toLowerCase(); return ROLES[k] || String(r || ''); }
+  // One role-label map: github-branch-rules.js (window.GBR) owns the names; "tag" is the
+  // role a tag rule reports. An unknown role is shown as written.
+  function roleMap() { var g = root.GBR && root.GBR.ROLE_LABEL; return g || {}; }
+  function roleLabel(r) {
+    var k = String(r || '').toLowerCase();
+    if (k === 'tag') return 'Tag';
+    return roleMap()[k] || String(r || '');
+  }
   // friendly: capability identifiers become labels; "pattern -> role" shows the role label.
   function friendly(s) {
     s = String(s || '');
     s = s.replace(/\b(pull_requests_merge|pull_requests_approve|pull_requests_write|pull_requests_read|workflow_dispatch)\b/g, function (m) { return CAPS[m]; });
-    return s.replace(/(\u2192\s*)(read|protected|agent|tag)\b/g, function (m, a, b) { return a + ROLES[b]; });
+    return s.replace(/(\u2192\s*)(read|protected|agent|tag)\b/g, function (m, a, b) { return a + roleLabel(b); });
   }
 
   function kindLabel(kind) { return LABEL[kind] || (kind ? String(kind).replace(/_/g, ' ') : 'Refused'); }
@@ -44,7 +50,7 @@
 
   function str(v) { return typeof v === 'string' ? v : (v === null || v === undefined ? '' : String(v)); }
 
-  function refOK(v) { return /^(ok|allow|allowed|pass|accepted)/i.test(str(v)); }
+  function refOK(v) { return v === 'allowed'; }
 
   // adapt(row) -> null when the row carries no reason (older rows), else a view model.
   function adapt(row) {
@@ -94,4 +100,4 @@
   var api = { friendly: friendly, roleLabel: roleLabel, KINDS: KINDS, kindLabel: kindLabel, validKind: validKind, adapt: adapt, repeatsOf: repeatsOf, simulatorHref: simulatorHref };
   if (typeof module === 'object' && module && module.exports) module.exports = api;
   else root.RLOG = api;
-})(typeof window !== 'undefined' ? window : this);
+})(typeof window !== 'undefined' ? window : globalThis);

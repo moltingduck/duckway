@@ -2551,3 +2551,17 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
   .lg-has-detail .lg-req { min-width: 9rem; }
   .lg-has-detail .lg-table th, .lg-has-detail .lg-table td { padding-inline: 0.5rem; }
 }
+/* rlog1116: simulator loading state and can-do cards */
+.as-checking { margin: 0; font-size: 0.875rem; font-weight: 600; color: var(--accent-text); }
+.as-stale { opacity: 0.5; }
+.as-rcards { list-style: none; margin: 0; padding: 0; display: none; flex-direction: column; gap: 0.5rem; }
+.as-rcard { padding: 0.65rem 0.75rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--track); }
+.as-rcard-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.4rem 0.75rem; margin-bottom: 0.45rem; }
+.as-rcard-pat { font-weight: 600; font-size: 0.875rem; overflow-wrap: anywhere; background: none; padding: 0; }
+.as-rcard-dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.3rem 0.75rem; margin: 0; font-size: 0.8125rem; }
+.as-rcard-dl dt { color: var(--muted); }
+.as-rcard-dl dd { margin: 0; text-align: right; }
+@media (max-width: 900px) {
+  #as-can .table-wrap { display: none; }
+  .as-rcards { display: flex; }
+}

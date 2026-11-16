@@ -3,7 +3,14 @@
 'use strict';
 const path = require('path');
 const assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
 const dir = process.argv[2];
+// Role names come from window.GBR (github-branch-rules.js), as in the browser.
+const sandbox = { window: {} };
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(path.join(dir, 'github-branch-rules.js'), 'utf8'), sandbox);
+globalThis.GBR = sandbox.window.GBR;
 const H = require(path.join(dir, 'access-sim-hex.js'));
 const A = require(path.join(dir, 'access-sim-api.js'));
 const R = require(path.join(dir, 'refusal-log.js'));
@@ -157,11 +164,12 @@ check('raw request picks text or hex', () => {
   assert.strictEqual(A.rawRequest({ method: 'POST', path: '/', bytes: u8(0), hexText: '00 ' }).body_hex, '00 ');
 });
 check('adaptResult', () => {
-  const r = A.adaptResult({ verdict: 'refused', title: 'T', steps: [{ status: 'stop', label: 'L', detail: 'D' }, { status: '?', label: 'x' }], refs: [{ ref: 'r', verdict: 'ok' }, { ref: 's', verdict: 'refused' }], sees: 'S', depends_on_default_branch: true, per_key: [{ key_id: 'id1', key_name: 'k1', verdict: 'allowed', kind: '', title: 'ok', sees: 'x' }], layer: 'placeholder', rule: 'r', reason: 'why' });
+  const r = A.adaptResult({ verdict: 'refused', title: 'T', steps: [{ status: 'stop', label: 'L', detail: 'D' }, { status: '?', label: 'x' }], refs: [{ ref: 'r', verdict: 'allowed' }, { ref: 's', verdict: 'refused' }, { ref: 't', verdict: 'ok' }], sees: 'S', depends_on_default_branch: true, per_key: [{ key_id: 'id1', key_name: 'k1', verdict: 'allowed', kind: '', title: 'ok', sees: 'x' }], layer: 'placeholder', rule: 'r', reason: 'why' });
   assert.strictEqual(r.verdictLabel, 'Refused');
   assert.strictEqual(r.steps[1].status, 'skip');
   assert.strictEqual(r.refs[0].ok, true);
   assert.strictEqual(r.refs[1].ok, false);
+  assert.strictEqual(r.refs[2].ok, false, 'only the exact value allowed counts');
   assert.strictEqual(r.dependsOnDefault, true);
   assert.strictEqual(r.perKey[0].key, 'k1');
   assert.strictEqual(r.perKey[0].verdictLabel, 'Allowed');
@@ -229,5 +237,21 @@ check('default branch in summary and chips', () => {
   assert.strictEqual(A.refExamples(s[0])[0], 'trunk');
   assert.strictEqual(A.refExamples(s[1])[0], 'main');
   assert.strictEqual(A.adaptResult({ refs: [{ ref: 'r', role: 'tag' }] }).refs[0].role, 'Tag');
+});
+check('formatHex per line and round trip', () => {
+  const b = new Uint8Array(20).map((_, i) => i);
+  assert.strictEqual(H.formatHex(b, 8).split('\n').length, 3);
+  assert.strictEqual(H.formatHex(b).split('\n').length, 2);
+  eq(H.parseHex(H.formatHex(b, 8)).bytes, b);
+});
+check('credential result and role map', () => {
+  const r = A.adaptResult({ verdict: 'refused', kind: 'credential', title: 'No usable key', sees: '500 {"message":"x"}' });
+  assert.strictEqual(r.kindLabel, 'Credential unavailable');
+  assert.strictEqual(r.sees, '500 {"message":"x"}');
+  assert.strictEqual(A.roleLabel('agent'), 'Agent-owned');
+  assert.strictEqual(A.roleLabel('tag'), 'Tag');
+  assert.strictEqual(A.roleLabel('weird'), 'weird');
+  assert.strictEqual(A.adaptResult({ verdict: 'allowed', kind: '' }).kindLabel, '');
+  assert.strictEqual(A.adaptResult({ rule: 'existing tags never move' }).rule, 'existing tags never move');
 });
 console.log('access-sim JS: ' + n + ' checks passed');

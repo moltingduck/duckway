@@ -72,7 +72,8 @@
     </section>
     <p class="sr-only" id="as-live" role="status" aria-live="polite" aria-atomic="true"></p>
     <p class="pt-bad pt-hint" id="as-err" role="alert" hidden></p>
-    <div id="as-out"></div>
+    <p class="as-checking" id="as-checking" role="status" hidden>Checking&hellip;</p>
+    <div id="as-out" aria-live="off"></div>
     <section class="card pt-card as-card" id="as-can" aria-labelledby="as-can-h"${gh ? '' : DW.raw(' hidden')}></section>`);
   }
 
@@ -80,7 +81,7 @@
   function paintRepos() {
     var sel = $('as-repo'); if (!sel) return;
     DW.setHTML(sel, DW.html`${S.summary.map(function (r) { return DW.html`<option value="${r.repo}"${r.repo === S.repo ? DW.raw(' selected') : ''}>${r.repo}</option>`; })}`);
-    if (!S.summary.length) DW.setHTML(sel, DW.html`<option value="">No repositories on this token</option>`);
+    if (!S.summary.length) DW.setHTML(sel, DW.html`<option value="">${S.summaryErr ? 'Could not load repositories' : 'No repositories on this token'}</option>`);
   }
   function paintChips() {
     var def = A.actionDef(S.action);
@@ -96,13 +97,18 @@
     var box = $('as-can'); if (!box) return;
     var r = repoSummary();
     if (!r) {
-      DW.setHTML(box, DW.html`<h2 id="as-can-h">What this token can do</h2><p class="text-muted text-sm">${S.summaryErr || 'No repository is granted on this token.'}</p>`);
+      if (S.summaryErr) DW.setHTML(box, DW.html`<h2 id="as-can-h">What this token can do</h2><p class="pt-bad pt-hint" role="alert">${'Could not load this token\u2019s access summary: ' + S.summaryErr}</p><button type="button" class="btn btn-sm" data-action="asRetrySummary">Retry</button>`);
+      else DW.setHTML(box, DW.html`<h2 id="as-can-h">What this token can do</h2><p class="text-muted text-sm">No repository is granted on this token.</p>`);
       return;
     }
     var yn = function (v) { return v ? DW.raw('<span class="as-yes">Yes</span>') : DW.raw('<span class="as-no">No</span>'); };
+    var cards = r.rules.map(function (x) {
+      var pat = x.pattern === '@default' ? '@default (' + (r.defaultBranch || 'default branch') + ')' : x.pattern;
+      return DW.html`<li class="as-rcard"><div class="as-rcard-head"><span class="mono as-rcard-pat">${pat}</span><span class="cl-pill cl-pill-mute">${x.role}</span></div><dl class="as-rcard-dl"><dt>Push</dt><dd>${yn(x.push)}</dd><dt>Create &middot; force &middot; delete</dt><dd>${yn(x.createForceDelete)}</dd><dt>Open PR into</dt><dd>${yn(x.prInto)}</dd><dt>Run workflows</dt><dd>${yn(x.runWorkflows)}</dd></dl></li>`;
+    });
     var rows = r.rules.map(function (x) { return DW.html`<tr><th scope="row" class="mono">${x.pattern === '@default' ? '@default (' + (r.defaultBranch || 'default branch') + ')' : x.pattern}</th><td>${x.role}</td><td>${yn(x.push)}</td><td>${yn(x.createForceDelete)}</td><td>${yn(x.prInto)}</td><td>${yn(x.runWorkflows)}</td></tr>`; });
     DW.setHTML(box, DW.html`<h2 id="as-can-h">${'What this token can do on ' + r.repo}</h2><p class="pt-hint">One row per branch rule, most specific first. Capabilities turned off for the repository apply to every row.</p>
-      ${r.legacy ? DW.html`<p class="pt-notice">${'This repository uses an older grant without branch rules.' + (r.refAllowlist.length ? ' Only these refs are allowed: ' + r.refAllowlist.join(', ') + '.' : ' It has no ref limit.')}</p>` : (r.rules.length ? DW.html`<div class="table-wrap"><table class="as-table"><thead><tr><th scope="col">Branches</th><th scope="col">Role</th><th scope="col">Push</th><th scope="col">Create &middot; force &middot; delete</th><th scope="col">Open PR into</th><th scope="col">Run workflows</th></tr></thead><tbody>${rows}</tbody></table></div>` : DW.html`<p class="text-muted text-sm">This repository has no branch rules.</p>`)}
+      ${r.legacy ? DW.html`<p class="pt-notice">${'This repository uses an older grant without branch rules.' + (r.refAllowlist.length ? ' Only these refs are allowed: ' + r.refAllowlist.join(', ') + '.' : ' It has no ref limit.')}</p>` : (r.rules.length ? DW.html`<div class="table-wrap"><table class="as-table"><thead><tr><th scope="col">Branches</th><th scope="col">Role</th><th scope="col">Push</th><th scope="col">Create &middot; force &middot; delete</th><th scope="col">Open PR into</th><th scope="col">Run workflows</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="as-rcards">${cards}</ul>` : DW.html`<p class="text-muted text-sm">This repository has no branch rules.</p>`)}
       <ul class="as-flags"><li>${'Tags: ' + (r.tagPatterns.length ? 'may create ' + r.tagPatterns.join(', ') + ' only; existing tags never move.' : (r.tags ? 'may be created.' : 'none can be created.'))}</li><li>${'Merge pull requests: ' + (r.merge ? 'on' : 'off')}</li><li>${'Approve pull requests: ' + (r.approve ? 'on' : 'off')}</li><li>${'Clone: ' + (r.clone ? 'on' : 'off')}</li></ul>`);
   }
 
@@ -116,9 +122,9 @@
     var refs = r.refs.length ? DW.html`<h3 class="as-sub">Refs in this push</h3><p class="pt-hint">Git pushes are all-or-nothing, so one refused ref rejects the whole push.</p><ul class="lg-refs">${r.refs.map(function (x) {
       return DW.html`<li class="lg-ref"><span class="mono lg-ref-n">${x.ref}</span><span class="lg-pill ${x.ok ? 'lg-pill-ok' : 'lg-pill-bad'}">${x.ok ? 'OK' : 'Refused'}</span>${[x.pattern, x.role, x.reason].filter(Boolean).length ? DW.html`<span class="text-sm text-muted lg-ref-why">${[x.pattern, x.role, x.reason].filter(Boolean).join(' · ')}</span>` : ''}</li>`;
     })}</ul>` : '';
-    var perKey = r.perKey.length ? DW.html`<h3 class="as-sub">The result differs by key</h3><ul class="as-perkey">${r.perKey.map(function (k) { return DW.html`<li><span class="mono">${k.key}</span> &mdash; <strong>${k.verdictLabel}</strong>${k.title ? ' ' + k.title : ''}${k.sees ? DW.html`<pre class="lg-sees mono">${k.sees}</pre>` : ''}</li>`; })}</ul>` : '';
-    return DW.html`<section class="card pt-card as-verdict as-v-${r.verdict}" aria-labelledby="as-verdict-h"><div class="as-vhead"><span class="cl-pill cl-pill-${cls} as-vpill">${r.verdictLabel}</span><h2 id="as-verdict-h">${r.title || subject}</h2></div>
-      ${r.reason && r.reason !== r.title ? DW.html`<p class="as-reason">${r.reason}</p>` : ''}${steps.length ? DW.html`<ol class="as-steps">${steps}</ol>` : ''}${refs}${perKey}
+    var perKey = r.perKey.length ? DW.html`<h3 class="as-sub">The result differs by key</h3><ul class="as-perkey">${r.perKey.map(function (k) { return DW.html`<li><span class="mono">${k.key}</span> &mdash; <strong>${k.verdictLabel}</strong>${k.kind ? ' (' + k.kind.replace(/_/g, ' ') + ')' : ''}${k.title ? ' ' + k.title : ''}${k.sees ? DW.html`<pre class="lg-sees mono">${k.sees}</pre>` : ''}</li>`; })}</ul>` : '';
+    return DW.html`<section class="card pt-card as-verdict as-v-${r.verdict}" aria-labelledby="as-verdict-h"><div class="as-vhead"><span class="cl-pill cl-pill-${cls} as-vpill">${r.verdictLabel}</span>${r.kindLabel ? DW.html`<span class="cl-pill cl-pill-mute">${r.kindLabel}</span>` : ''}<h2 id="as-verdict-h">${r.title || subject}</h2></div>
+      ${r.reason && r.reason !== r.title ? DW.html`<p class="as-reason">${r.reason}</p>` : ''}${r.rule ? DW.html`<p class="as-reason text-muted"><strong>Decided by</strong> ${r.rule}</p>` : ''}${steps.length ? DW.html`<ol class="as-steps">${steps}</ol>` : ''}${refs}${perKey}
       ${r.dependsOnDefault ? DW.html`<p class="pt-hint">This result depends on the repository’s current default branch, read from GitHub and cached for up to 5 minutes.</p>` : ''}
       ${r.sees ? DW.html`<h3 class="as-sub">What the agent would see</h3><pre class="lg-sees mono">${r.sees}</pre>` : ''}</section>`;
   }
@@ -132,19 +138,31 @@
   function showError(msg) {
     var e = $('as-err'); e.textContent = msg || ''; e.hidden = !msg;
   }
+  // While a check is in flight the previous verdict stays visible but marked stale,
+  // the region is aria-busy and the submit button is disabled. Only the latest request renders.
+  function setBusy(on) {
+    $('as-out').setAttribute('aria-busy', on ? 'true' : 'false');
+    $('as-out').classList.toggle('as-stale', on && !!$('as-out').firstChild);
+    $('as-checking').hidden = !on;
+    var go = $('as-raw-go'); if (go) go.disabled = on;
+  }
   function run(body, subject) {
     var seq = ++S.seq;
     showError('');
-    say('Checking…');
+    setBusy(true);
+    say('Checking\u2026');
     return PT.api('POST', SIM_URL, body).then(function (res) {
       if (seq !== S.seq) return;
+      setBusy(false);
       showResult(res, subject);
     }).catch(function (e) {
       if (seq !== S.seq) return;
+      setBusy(false);
       DW.setHTML($('as-out'), DW.raw(''));
       showError(e.message);
       var off = e.data && typeof e.data.offset === 'number' ? e.data.offset : -1;
       if (off >= 0 && body.body_hex !== undefined) markHex(off);
+      else if (e.status === 400 && body.mode === 'raw' && /path|redirect|fragment|#/i.test(e.message)) $('as-path').focus();
       say('The check failed. ' + e.message);
     });
   }
@@ -155,11 +173,15 @@
     var t = $('as-hex');
     t.focus();
     try { t.setSelectionRange(off, Math.min(off + 1, t.value.length)); } catch (e) { /* ignore */ }
+    // Scroll the selected character into view (a textarea does not always do it on focus).
+    var lh = parseFloat(window.getComputedStyle(t).lineHeight) || 18;
+    var line = (t.value.slice(0, off).match(/\n/g) || []).length;
+    t.scrollTop = Math.max(0, line * lh - t.clientHeight / 2);
     var he = $('as-hex-err');
     he.textContent = 'The server rejected the hex at character ' + (off + 1) + '.'; he.hidden = false;
   }
   function runAction() {
-    if (!S.repo) { showError('This token has no repository to test.'); return; }
+    if (!S.repo) { showError(S.summaryErr ? 'The repository list could not be loaded. Use Retry under \u201cWhat this token can do\u201d.' : 'This token has no repository to test.'); return; }
     var def = A.actionDef(S.action);
     return run(A.actionRequest(S), def.label + (def.ref && S.ref ? ' ' + S.ref : '') + ' on ' + S.repo);
   }
@@ -177,6 +199,7 @@
     if ($('as-can')) $('as-can').hidden = mode !== 'action' || !D.is_github;
     S.seq++;
     DW.setHTML($('as-out'), DW.raw(''));
+    setBusy(false);
     showError('');
     say('');
     if (mode === 'action') runAction();
@@ -195,11 +218,11 @@
     var bin = binary();
     $('as-size').textContent = '· ' + S.bytes.length + (S.bytes.length === 1 ? ' byte' : ' bytes') + (S.bytes.length ? (bin ? ' · binary' : ' · UTF-8 text') : '');
     var t = $('as-text');
-    if (from !== 'text' && from !== 'dump') t.value = bin ? H.textView(S.bytes) : H.decodeUTF8(S.bytes);
+    if (from !== 'text' && from !== 'dump' && from !== 'resize') t.value = bin ? H.textView(S.bytes) : H.decodeUTF8(S.bytes);
     t.readOnly = bin;
     $('as-text-note').hidden = !bin;
-    if (from !== 'hex' && from !== 'dump') $('as-hex').value = H.formatHex(S.bytes);
     var per = narrow() ? 8 : 16;
+    if ((from !== 'hex' && from !== 'dump') || (from === 'resize' && !S.hexErr)) $('as-hex').value = H.formatHex(S.bytes, per);
     var rows = H.dumpRows(S.bytes, DUMP_ROWS, per);
     var more = S.bytes.length > DUMP_ROWS * per ? '\n\u2026 ' + (S.bytes.length - DUMP_ROWS * per) + ' more bytes not shown' : '';
     $('as-dump').textContent = rows.length ? rows.map(function (r) { return r.offset + ' ' + r.hex + ' ' + r.ascii; }).join('\n') + more : '(empty body)';
@@ -215,6 +238,7 @@
     $('as-hex-err').hidden = true;
     syncBody('');
     setView(binary() ? 'hex' : 'text');
+    if (binary()) say('This body has non-text bytes, so it opened in Hex.');
   }
   function setMethod(m) {
     m = String(m || 'GET').toUpperCase();
@@ -228,8 +252,13 @@
     S.bytes = H.encodeUTF8(el.value); S.hexErr = '';
     $('as-hex-err').hidden = true;
     var wasBin = binary();
-    syncBody('text');
-    if (wasBin) setView('hex');
+    if (wasBin) {
+      // Typed or pasted a non-text byte: Text turns read-only, so move to Hex and say so.
+      syncBody('');
+      setView('hex');
+      $('as-hex').focus();
+      say('This body now has non-text bytes, so it opened in Hex.');
+    } else syncBody('text');
   };
   DW.actions.asHexInput = function (el) {
     var p = H.parseHex(el.value), e = $('as-hex-err');
@@ -258,6 +287,11 @@
     if (S.bytes.length > H.MAX_BODY) { showError('The body is larger than 16 MiB.'); return; }
     var method = $('as-method').value;
     return run(A.rawRequest({ method: method, path: path, headers: hd.headers, bytes: S.bytes, hexText: $('as-hex').value }), method + ' ' + path);
+  };
+
+  DW.actions.asRetrySummary = function () {
+    S.summaryErr = ''; S.summaryLoaded = false;
+    return loadSummary().then(function () { if (S.mode === 'action') runAction(); });
   };
 
   /* ---------- summary ---------- */
@@ -316,7 +350,7 @@
   /* ---------- init ---------- */
   buildShell();
   var lastNarrow = narrow();
-  window.addEventListener('resize', function () { if (narrow() !== lastNarrow) { lastNarrow = narrow(); syncBody('dump'); } });
+  window.addEventListener('resize', function () { if (narrow() !== lastNarrow) { lastNarrow = narrow(); syncBody('resize'); } });
   setView('text');
   syncBody('');
   if (D.is_github) { $('as-ref').value = S.ref; paintRepos(); paintChips(); paintCan(); }
