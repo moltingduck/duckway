@@ -265,5 +265,7 @@ client grants"), because the proxy never enforces policies from those layers.
   seconds, so the client sees the rejection instead of a connection reset.
 - Approval-held requests whose decision needs `@default` are held before the
   guard can refuse them.
-- The request log records why a request was refused (`deny_detail`, with the
-  per-ref verdicts of a push), but never a request body.
+- Refusals are logged with their reasons (`deny_detail`, with per-ref verdicts
+  for pushes; see `docs/access-explain.md`). The log never stores a request
+  body, so a refused push can be re-tested in the access simulator only by
+  method and path.
