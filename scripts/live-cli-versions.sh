@@ -18,3 +18,12 @@ export CODEX_CLI_VERSION CLAUDE_CLI_VERSION
 duckway_print_cli_versions() {
   echo "[live-e2e] cli codex=${1:-unknown} claude=${2:-unknown} (requested codex=$CODEX_CLI_VERSION claude=$CLAUDE_CLI_VERSION)"
 }
+
+# Print the first line of a "<cli> --version" run that looks like a version.
+# Reads stdout only and ignores warnings (e.g. Codex PATH-alias warnings).
+# Usage: duckway_cli_version codex
+duckway_cli_version() {
+  local out
+  out="$("$@" --version 2>/dev/null)" || true
+  printf '%s\n' "$out" | grep -m1 -E '[0-9]+\.[0-9]+\.[0-9]+' || echo unknown
+}

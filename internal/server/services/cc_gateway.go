@@ -49,6 +49,35 @@ func ccReconnectDelay(prevBase, uptime, min, max, stableAfter time.Duration) (wa
 	return wait, nextBase
 }
 
+// Discord rejecting the bot token (401/403) is a permanent credential failure:
+// retrying every minute only spams logs and Discord. After such a failure the
+// loop waits ccAuthFailureMin, doubling up to ccAuthFailureMax, and logs the
+// actionable message once per failure streak.
+const (
+	ccAuthFailureMin = 5 * time.Minute
+	ccAuthFailureMax = 1 * time.Hour
+)
+
+// isPermanentGatewayAuthErr reports whether err is Discord rejecting the bot
+// credential (401 invalid token, 403 forbidden).
+func isPermanentGatewayAuthErr(err error) bool {
+	var derr *DiscordError
+	return errors.As(err, &derr) && (derr.Status == http.StatusUnauthorized || derr.Status == http.StatusForbidden)
+}
+
+// ccAuthFailureDelay returns the wait after the nth consecutive auth failure
+// (n >= 1): 5m, 10m, 20m, 40m, then 1h.
+func ccAuthFailureDelay(n int) time.Duration {
+	d := ccAuthFailureMin
+	for i := 1; i < n && d < ccAuthFailureMax; i++ {
+		d *= 2
+	}
+	if d > ccAuthFailureMax {
+		d = ccAuthFailureMax
+	}
+	return d
+}
+
 // parseHello validates Discord's Hello (op 10) frame and returns the heartbeat
 // interval. It rejects a non-positive interval explicitly: feeding 0 into
 // time.NewTicker panics, and an unrecovered panic in the heartbeat goroutine
@@ -210,6 +239,28 @@ type ccBotConn struct {
 	botUserID            string
 	awaitingHeartbeatAck bool
 	lastHeartbeatAck     time.Time
+	authFailures         int // consecutive Discord 401/403 failures; guarded by mu
+}
+
+// AuthFailed reports whether Discord is currently rejecting this bot's token.
+func (c *ccBotConn) AuthFailed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.authFailures > 0
+}
+
+// AuthFailedKeys returns the api_key IDs whose bot token Discord is rejecting
+// (401/403), so an admin surface can flag them.
+func (m *CCGatewayManager) AuthFailedKeys() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for id, c := range m.conns {
+		if c.AuthFailed() {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 type ccGatewayCommand struct {
@@ -426,18 +477,41 @@ func (c *ccBotConn) connectLoop() {
 		}
 
 		start := time.Now()
+		var authWait time.Duration
 		// Recover here so a panic anywhere in the connect/read/dispatch path
 		// (e.g. a malformed Discord frame) becomes one logged reconnect, not a
 		// process crash that drops the :80 listener.
 		func() {
 			defer recoverCC(c.apiKeyID, "connect")
-			if err := c.connect(); err != nil {
+			err := c.connect()
+			switch {
+			case err != nil && isPermanentGatewayAuthErr(err):
+				c.mu.Lock()
+				c.authFailures++
+				n := c.authFailures
+				c.mu.Unlock()
+				authWait = ccAuthFailureDelay(n)
+				if n == 1 {
+					log.Printf("[cc-gw] %s: Discord rejected the bot token (%v); the token is invalid or revoked. Update the api_key's bot token and restart the server; retrying every %s up to %s", c.apiKeyID, err, ccAuthFailureMin, ccAuthFailureMax)
+				}
+			case err != nil:
+				c.mu.Lock()
+				c.authFailures = 0
+				c.mu.Unlock()
 				log.Printf("[cc-gw] %s connection error: %v", c.apiKeyID, err)
+			default:
+				c.mu.Lock()
+				c.authFailures = 0
+				c.mu.Unlock()
 			}
 		}()
 
 		var wait time.Duration
-		wait, base = ccReconnectDelay(base, time.Since(start), ccReconnectMin, ccReconnectMax, ccStableThreshold)
+		if authWait > 0 {
+			wait, base = authWait, ccReconnectMin
+		} else {
+			wait, base = ccReconnectDelay(base, time.Since(start), ccReconnectMin, ccReconnectMax, ccStableThreshold)
+		}
 		// Add up to 1s of jitter so a flapping connection doesn't re-identify
 		// in lockstep and re-trip Discord's IDENTIFY rate limit.
 		wait += time.Duration(rand.Int63n(int64(time.Second)))

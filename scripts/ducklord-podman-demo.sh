@@ -104,7 +104,7 @@ EOF
 
 echo "[ducklord-demo] building demo image with $RUNTIME"
 "$RUNTIME" build --build-arg "CODEX_CLI_VERSION=$CODEX_CLI_VERSION" --build-arg "CLAUDE_CLI_VERSION=$CLAUDE_CLI_VERSION" -t "$IMAGE" -f "$WORK/Containerfile" "$WORK" >/dev/null
-duckway_print_cli_versions "$("$RUNTIME" run --rm "$IMAGE" codex --version)" "$("$RUNTIME" run --rm "$IMAGE" claude --version)"
+duckway_print_cli_versions "$("$RUNTIME" run --rm "$IMAGE" codex --version 2>/dev/null | grep -m1 -E "[0-9]+\.[0-9]+\.[0-9]+")" "$("$RUNTIME" run --rm "$IMAGE" claude --version)"
 
 cleanup_existing
 # A caller may own NET (the TUI E2E does). Inspect first and only create when
