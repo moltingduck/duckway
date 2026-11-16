@@ -466,7 +466,7 @@ func (q *APIKeyQueries) Deactivate(id string) error {
 	return err
 }
 
-func (q *APIKeyQueries) DeactivateIfCredentialSnapshot(id, keyEncrypted, refreshToken, tokenEndpoint, upstreamProxyURL string) (bool, error) {
+func (q *APIKeyQueries) DeactivateIfCredentialSnapshot(id, keyEncrypted, refreshToken, tokenEndpoint, upstreamProxyURL, subscriptionInfo string) (bool, error) {
 	res, err := q.db.Exec(
 		`UPDATE api_keys
 		 SET is_active = 0
@@ -474,8 +474,9 @@ func (q *APIKeyQueries) DeactivateIfCredentialSnapshot(id, keyEncrypted, refresh
 		   AND key_encrypted = ?
 		   AND refresh_token = ?
 		   AND token_endpoint = ?
-		   AND upstream_proxy_url = ?`,
-		id, keyEncrypted, refreshToken, tokenEndpoint, upstreamProxyURL,
+		   AND upstream_proxy_url = ?
+		   AND subscription_info = ?`,
+		id, keyEncrypted, refreshToken, tokenEndpoint, upstreamProxyURL, subscriptionInfo,
 	)
 	if err != nil {
 		return false, err

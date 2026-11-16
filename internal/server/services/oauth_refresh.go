@@ -260,6 +260,7 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 					latest.RefreshToken,
 					latest.TokenEndpoint,
 					latest.UpstreamProxyURL,
+					latest.SubscriptionInfo,
 				)
 				if deactivateErr != nil {
 					return fmt.Errorf("permanent OAuth error — key %s access token test failed but deactivate failed: %w", key.ID, deactivateErr)
@@ -362,6 +363,16 @@ func (r *TokenRefresher) testStoredAccessToken(key *models.APIKey) (accessTokenT
 	if err != nil {
 		return accessTokenTestInconclusive, err
 	}
+	// Never follow a Codex probe redirect: login pages cannot establish auth,
+	// and a redirect must not receive the stored bearer credential.
+	codex := isCodexOpenAIRefresh(key)
+	if codex {
+		probeClient := *httpClient
+		probeClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		httpClient = &probeClient
+	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return accessTokenTestInconclusive, fmt.Errorf("token test request: %s", RedactProxyError(upstreamProxyURL, err))
@@ -369,10 +380,12 @@ func (r *TokenRefresher) testStoredAccessToken(key *models.APIKey) (accessTokenT
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+	if resp.StatusCode >= 200 && (resp.StatusCode < 300 || (!codex && resp.StatusCode < 400)) {
 		return accessTokenTestPassed, nil
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	// A Codex 403 may mean workspace permissions or an edge challenge, rather
+	// than rejection of the access credential. Keep it inconclusive.
+	if resp.StatusCode == http.StatusUnauthorized || (!codex && resp.StatusCode == http.StatusForbidden) {
 		return accessTokenTestFailed, fmt.Errorf("token test returned %d", resp.StatusCode)
 	}
 	return accessTokenTestInconclusive, fmt.Errorf("token test returned %d", resp.StatusCode)
@@ -381,7 +394,11 @@ func (r *TokenRefresher) testStoredAccessToken(key *models.APIKey) (accessTokenT
 func buildAccessTokenTestRequest(key *models.APIKey, accessToken string) (*http.Request, error) {
 	var endpoint string
 	switch {
-	case isCodexOpenAIRefresh(key) || key.ServiceName == "openai" || strings.Contains(key.TokenEndpoint, "auth.openai.com"):
+	case isCodexOpenAIRefresh(key):
+		// This read-only session endpoint is also used by the Codex proxy.
+		// ChatGPT OAuth credentials do not grant Platform API model access.
+		endpoint = "https://chatgpt.com/backend-api/wham/accounts/check"
+	case key.ServiceName == "openai" || strings.Contains(key.TokenEndpoint, "auth.openai.com"):
 		endpoint = "https://api.openai.com/v1/models"
 	case key.ServiceName == "anthropic" || strings.Contains(key.TokenEndpoint, "anthropic"):
 		endpoint = "https://api.anthropic.com/v1/models"
@@ -400,7 +417,36 @@ func buildAccessTokenTestRequest(key *models.APIKey, accessToken string) (*http.
 	} else {
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 	}
+	if isCodexOpenAIRefresh(key) {
+		if accountID := codexAccessTokenAccountID(accessToken, oauthMetadataString(key.SubscriptionInfo, "id_token")); accountID != "" {
+			req.Header.Set("ChatGPT-Account-Id", accountID)
+		}
+	}
 	return req, nil
+}
+
+// Use source token claims, as the proxy does: top-level subscription account_id
+// can contain Duckway's synthetic account ID and must not be sent upstream.
+func codexAccessTokenAccountID(tokens ...string) string {
+	for _, token := range tokens {
+		parts := strings.Split(token, ".")
+		if len(parts) != 3 {
+			continue
+		}
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			continue
+		}
+		var claims struct {
+			Auth struct {
+				AccountID string `json:"chatgpt_account_id"`
+			} `json:"https://api.openai.com/auth"`
+		}
+		if json.Unmarshal(payload, &claims) == nil && claims.Auth.AccountID != "" && claims.Auth.AccountID != "duckway-account" {
+			return claims.Auth.AccountID
+		}
+	}
+	return ""
 }
 
 func (r *TokenRefresher) updateCodexRefreshMetadata(keyID, subscriptionInfo, idToken string) {

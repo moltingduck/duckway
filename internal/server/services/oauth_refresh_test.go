@@ -132,90 +132,110 @@ func TestIsPermanentOAuthError(t *testing.T) {
 // ---- refreshKey integration tests: permanent refresh errors only deactivate
 // when the current access token also fails a provider auth check. ----
 
-func TestRefreshNowPermanentErrorPreservesActiveWhenCurrentAccessTokenWorks(t *testing.T) {
-	db, err := database.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
-
-	cryptoKey := make([]byte, 32)
-	if _, err := rand.Read(cryptoKey); err != nil {
-		t.Fatalf("rand key: %v", err)
-	}
-	crypto := services.NewCrypto(cryptoKey)
-	apiKeyQ := queries.NewAPIKeyQueries(db)
-
-	svcQ := queries.NewServiceQueries(db)
-	openaiSvc, err := svcQ.GetByName("openai")
-	if err != nil {
-		t.Fatalf("get openai service: %v", err)
-	}
-
-	encRefresh, err := crypto.Encrypt("rt.invalid-refresh")
-	if err != nil {
-		t.Fatalf("encrypt refresh token: %v", err)
-	}
-	encAccess, err := crypto.Encrypt("working-access-token")
-	if err != nil {
-		t.Fatalf("encrypt access token: %v", err)
-	}
-
-	const keyID = "key-refresh-fails-access-works"
-	key := &models.APIKey{
-		ID:               keyID,
-		ServiceID:        openaiSvc.ID,
-		Name:             "codex-auth",
-		KeyEncrypted:     encAccess,
-		RefreshToken:     encRefresh,
-		ExpiresAt:        1,
-		TokenEndpoint:    officialCodexRefreshEndpoint,
-		SubscriptionInfo: `{"credential_kind":"codex_oauth","client_id":"app_codex_test"}`,
-	}
-	if err := apiKeyQ.Create(key); err != nil {
-		t.Fatalf("create api key: %v", err)
-	}
-
-	refresher := services.NewTokenRefresher(apiKeyQ, crypto)
-	services.SetTokenRefresherHTTPClientForTest(refresher, &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		switch r.URL.String() {
-		case officialCodexRefreshEndpoint:
-			return &http.Response{
-				StatusCode: http.StatusBadRequest,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"refresh_token_invalidated","message":"invalidated"}}`)),
-				Request:    r,
-			}, nil
-		case "https://api.openai.com/v1/models":
-			if got := r.Header.Get("Authorization"); got != "Bearer working-access-token" {
-				t.Fatalf("Authorization = %q", got)
+func TestRefreshNowCodexExpiredRefreshPreservesAccessState(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      int
+		network     bool
+		wantActive  bool
+		wantMessage string
+	}{
+		{"valid access", 200, false, true, "access token test still succeeds"},
+		{"rejected access", 401, false, false, "deactivated"},
+		{"permission denied", 403, false, true, "inconclusive"},
+		{"rate limited", 429, false, true, "inconclusive"},
+		{"upstream failure", 500, false, true, "inconclusive"},
+		{"network failure", 0, true, true, "inconclusive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := database.Open(t.TempDir())
+			if err != nil {
+				t.Fatalf("open db: %v", err)
 			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(`{"data":[]}`)),
-				Request:    r,
-			}, nil
-		default:
-			t.Fatalf("unexpected request URL: %s", r.URL.String())
-			return nil, nil
-		}
-	})})
+			defer db.Close()
 
-	_, err = refresher.RefreshNow(keyID)
-	if err == nil {
-		t.Fatal("expected refresh error, got nil")
-	}
-	if !strings.Contains(err.Error(), "access token test still succeeds") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+			cryptoKey := make([]byte, 32)
+			if _, err := rand.Read(cryptoKey); err != nil {
+				t.Fatalf("rand key: %v", err)
+			}
+			crypto := services.NewCrypto(cryptoKey)
+			apiKeyQ := queries.NewAPIKeyQueries(db)
 
-	after, err := apiKeyQ.GetByID(keyID)
-	if err != nil {
-		t.Fatalf("get key after: %v", err)
-	}
-	if !after.IsActive {
-		t.Errorf("key should remain active when access token still works, but is_active=%v", after.IsActive)
+			svcQ := queries.NewServiceQueries(db)
+			openaiSvc, err := svcQ.GetByName("openai")
+			if err != nil {
+				t.Fatalf("get openai service: %v", err)
+			}
+
+			encRefresh, err := crypto.Encrypt("rt.invalid-refresh")
+			if err != nil {
+				t.Fatalf("encrypt refresh token: %v", err)
+			}
+			encAccess, err := crypto.Encrypt("working-access-token")
+			if err != nil {
+				t.Fatalf("encrypt access token: %v", err)
+			}
+
+			const keyID = "key-refresh-fails-access-works"
+			key := &models.APIKey{
+				ID:               keyID,
+				ServiceID:        openaiSvc.ID,
+				Name:             "codex-auth",
+				KeyEncrypted:     encAccess,
+				RefreshToken:     encRefresh,
+				ExpiresAt:        1,
+				TokenEndpoint:    officialCodexRefreshEndpoint,
+				SubscriptionInfo: `{"credential_kind":"codex_oauth","client_id":"app_codex_test"}`,
+			}
+			if err := apiKeyQ.Create(key); err != nil {
+				t.Fatalf("create api key: %v", err)
+			}
+
+			refresher := services.NewTokenRefresher(apiKeyQ, crypto)
+			services.SetTokenRefresherHTTPClientForTest(refresher, &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				switch r.URL.String() {
+				case officialCodexRefreshEndpoint:
+					return &http.Response{
+						StatusCode: http.StatusBadRequest,
+						Header:     http.Header{"Content-Type": []string{"application/json"}},
+						Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"refresh_token_expired","message":"invalidated"}}`)),
+						Request:    r,
+					}, nil
+				case "https://chatgpt.com/backend-api/wham/accounts/check":
+					if tc.network {
+						return nil, fmt.Errorf("offline")
+					}
+					if got := r.Header.Get("Authorization"); got != "Bearer working-access-token" {
+						t.Fatalf("Authorization = %q", got)
+					}
+					return &http.Response{
+						StatusCode: tc.status,
+						Header:     http.Header{"Content-Type": []string{"application/json"}},
+						Body:       io.NopCloser(strings.NewReader(`{"data":[]}`)),
+						Request:    r,
+					}, nil
+				default:
+					t.Fatalf("unexpected request URL: %s", r.URL.String())
+					return nil, nil
+				}
+			})})
+
+			_, err = refresher.RefreshNow(keyID)
+			if err == nil {
+				t.Fatal("expected refresh error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantMessage) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			after, err := apiKeyQ.GetByID(keyID)
+			if err != nil {
+				t.Fatalf("get key after: %v", err)
+			}
+			if after.IsActive != tc.wantActive {
+				t.Errorf("active=%v want=%v", after.IsActive, tc.wantActive)
+			}
+		})
 	}
 }
 
@@ -273,7 +293,7 @@ func TestRefreshKey_PermanentErrorDeactivatesKeyOnlyWhenAccessTokenTestFails(t *
 				Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"refresh_token_invalidated","message":"invalidated"}}`)),
 				Request:    r,
 			}, nil
-		case "https://api.openai.com/v1/models":
+		case "https://chatgpt.com/backend-api/wham/accounts/check":
 			return &http.Response{
 				StatusCode: http.StatusUnauthorized,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -356,7 +376,7 @@ func TestRefreshNowPermanentErrorDoesNotDeactivateWhenCredentialChangesBeforeAcc
 				Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"refresh_token_invalidated","message":"invalidated"}}`)),
 				Request:    r,
 			}, nil
-		case "https://api.openai.com/v1/models":
+		case "https://chatgpt.com/backend-api/wham/accounts/check":
 			repairedAccess, err := crypto.Encrypt("repaired-access-token")
 			if err != nil {
 				t.Fatalf("encrypt repaired access: %v", err)
@@ -390,6 +410,110 @@ func TestRefreshNowPermanentErrorDoesNotDeactivateWhenCredentialChangesBeforeAcc
 	}
 	if !after.IsActive {
 		t.Fatalf("key should remain active after concurrent credential repair: %+v", after)
+	}
+}
+
+func TestRefreshNowPermanentErrorDoesNotDeactivateWhenAccountMetadataChangesBeforeAccessTestFailure(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	cryptoKey := make([]byte, 32)
+	if _, err := rand.Read(cryptoKey); err != nil {
+		t.Fatalf("rand key: %v", err)
+	}
+	crypto := services.NewCrypto(cryptoKey)
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatalf("get openai service: %v", err)
+	}
+
+	encRefresh, err := crypto.Encrypt("rt.invalid-refresh")
+	if err != nil {
+		t.Fatalf("encrypt refresh token: %v", err)
+	}
+	encAccess, err := crypto.Encrypt("bad-access-token")
+	if err != nil {
+		t.Fatalf("encrypt access token: %v", err)
+	}
+
+	accountMetadata := func(account string) string {
+		claims := fmt.Sprintf(`{"https://api.openai.com/auth":{"chatgpt_account_id":%q}}`, account)
+		idToken := "e30." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".signature"
+		metadata, err := json.Marshal(map[string]string{"credential_kind": "codex_oauth", "client_id": "app_codex_test", "id_token": idToken})
+		if err != nil {
+			t.Fatalf("marshal metadata: %v", err)
+		}
+		return string(metadata)
+	}
+	originalMetadata := accountMetadata("original-account")
+	repairedMetadata := accountMetadata("repaired-account")
+	const keyID = "key-refresh-fails-account-metadata-changes"
+	if err := apiKeyQ.Create(&models.APIKey{
+		ID:               keyID,
+		ServiceID:        openaiSvc.ID,
+		Name:             "codex-auth",
+		KeyEncrypted:     encAccess,
+		RefreshToken:     encRefresh,
+		ExpiresAt:        1,
+		TokenEndpoint:    officialCodexRefreshEndpoint,
+		SubscriptionInfo: originalMetadata,
+	}); err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+
+	refresher := services.NewTokenRefresher(apiKeyQ, crypto)
+	services.SetTokenRefresherHTTPClientForTest(refresher, &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case officialCodexRefreshEndpoint:
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"refresh_token_invalidated","message":"invalidated"}}`)),
+				Request:    r,
+			}, nil
+		case "https://chatgpt.com/backend-api/wham/accounts/check":
+			if got := r.Header.Get("ChatGPT-Account-Id"); got != "original-account" {
+				t.Fatalf("probe account header = %q, want original-account", got)
+			}
+			// Repair only the account claims while the old account's probe is in flight.
+			if err := apiKeyQ.UpdateSubscriptionInfo(keyID, repairedMetadata); err != nil {
+				t.Fatalf("store repaired metadata: %v", err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_api_key"}`)),
+				Request:    r,
+			}, nil
+		default:
+			t.Fatalf("unexpected request URL: %s", r.URL.String())
+			return nil, nil
+		}
+	})})
+
+	_, err = refresher.RefreshNow(keyID)
+	if err == nil {
+		t.Fatal("expected refresh error, got nil")
+	}
+	if !strings.Contains(err.Error(), "credentials changed before deactivate") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	after, err := apiKeyQ.GetByID(keyID)
+	if err != nil {
+		t.Fatalf("get key after: %v", err)
+	}
+	if !after.IsActive {
+		t.Fatalf("key should remain active after concurrent credential repair: %+v", after)
+	}
+	if after.SubscriptionInfo != repairedMetadata || after.KeyEncrypted != encAccess || after.RefreshToken != encRefresh {
+		t.Fatal("metadata repair or unchanged credential snapshot was not preserved")
 	}
 }
 
@@ -449,7 +573,7 @@ func TestRefreshNowPermanentErrorAccessTokenWorksPreservesInactiveState(t *testi
 				Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"refresh_token_invalidated","message":"invalidated"}}`)),
 				Request:    r,
 			}, nil
-		case "https://api.openai.com/v1/models":
+		case "https://chatgpt.com/backend-api/wham/accounts/check":
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
