@@ -159,6 +159,32 @@ func (c *githubDefaultBranchCache) get(ctx context.Context, key string, fetch fu
 	}
 }
 
+// peek returns a cached, unexpired default branch without any lookup.
+func (c *githubDefaultBranchCache) peek(key string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[key]; ok && c.now().Before(e.expires) {
+		return e.branch, true
+	}
+	return "", false
+}
+
+var errDefaultNotCached = errors.New("default branch not cached")
+
+// githubDefaultBranchPeek is a defaultBranchFn that only reads the cache: it
+// never calls upstream, so it is safe on a refusal path that must not wait on
+// the network. It is used to name the rule behind a refusal in the request log.
+func (h *ProxyHandler) githubDefaultBranchPeek(credentialID, repo string) defaultBranchFn {
+	return func() (string, error) {
+		h.githubDefaultOnce.Do(func() { h.githubDefaultCache = newGitHubDefaultBranchCache() })
+		sum := sha256.Sum256([]byte(credentialID))
+		if b, ok := h.githubDefaultCache.peek(hex.EncodeToString(sum[:]) + "|" + strings.ToLower(repo)); ok {
+			return b, nil
+		}
+		return "", errDefaultNotCached
+	}
+}
+
 // WithGitHubDefaultBranchFetcher replaces the upstream default-branch lookup
 // (tests). The cache in front of it stays in place.
 func (h *ProxyHandler) WithGitHubDefaultBranchFetcher(f GitHubDefaultBranchFetcher) *ProxyHandler {

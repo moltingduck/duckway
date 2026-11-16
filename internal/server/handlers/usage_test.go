@@ -336,7 +336,7 @@ func TestUsageSessions_ExcludesHeldDeniedAndStatusZero(t *testing.T) {
 	_ = d.clientQ.Create(&models.Client{ID: "c1", Name: "laptop"})
 	_ = d.logQ.Log("c1", "", "anthropic", "POST", "/v1/messages", 200)
 	_ = d.logQ.Log("c1", "", "anthropic", "POST", "/v1/messages", 0)
-	_ = d.logQ.LogACLDenied("c1", "", "anthropic", "DELETE", "/v1/x")
+	_ = d.logQ.LogACLDenied("c1", "", "anthropic", "DELETE", "/v1/x", "")
 	_ = d.logQ.LogHeldOnce("c1", "", "anthropic", "POST", "/v1/messages", "ap1", true)
 	rec := httptest.NewRecorder()
 	d.h.Sessions(rec, httptest.NewRequest("GET", "/api/usage/sessions?hours=0", nil))

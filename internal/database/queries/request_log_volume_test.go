@@ -44,7 +44,7 @@ func TestStoredPathIsTruncatedForEveryRow(t *testing.T) {
 	if _, err := q.LogWithReturn("c1", "", "s", "GET", multi, 200); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.LogACLDenied("c1", "", "s", "GET", long); err != nil {
+	if err := q.LogACLDenied("c1", "", "s", "GET", long, ""); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := db.Query(`SELECT path FROM request_log`)
@@ -73,7 +73,7 @@ func TestStoredPathIsTruncatedForEveryRow(t *testing.T) {
 func TestACLDeniedRepeatsAreCoalescedPerMinute(t *testing.T) {
 	db, q := logDB(t)
 	for i := 0; i < 20; i++ {
-		if err := q.LogACLDenied("c1", "", "s", "POST", "/v1/admin"); err != nil {
+		if err := q.LogACLDenied("c1", "", "s", "POST", "/v1/admin", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -81,9 +81,9 @@ func TestACLDeniedRepeatsAreCoalescedPerMinute(t *testing.T) {
 		t.Fatalf("20 identical denials stored %d rows, want 1", n)
 	}
 	// A different client, method or path is a different denial.
-	_ = q.LogACLDenied("c2", "", "s", "POST", "/v1/admin")
-	_ = q.LogACLDenied("c1", "", "s", "GET", "/v1/admin")
-	_ = q.LogACLDenied("c1", "", "s", "POST", "/v1/other")
+	_ = q.LogACLDenied("c2", "", "s", "POST", "/v1/admin", "")
+	_ = q.LogACLDenied("c1", "", "s", "GET", "/v1/admin", "")
+	_ = q.LogACLDenied("c1", "", "s", "POST", "/v1/other", "")
 	if n := countWhere(t, db, `decision = 'acl_denied'`); n != 4 {
 		t.Fatalf("distinct denials stored %d rows, want 4", n)
 	}
@@ -92,7 +92,7 @@ func TestACLDeniedRepeatsAreCoalescedPerMinute(t *testing.T) {
 		time.Now().UTC().Add(-3*time.Minute).Format("2006-01-02 15:04:05")); err != nil {
 		t.Fatal(err)
 	}
-	_ = q.LogACLDenied("c1", "", "s", "POST", "/v1/admin")
+	_ = q.LogACLDenied("c1", "", "s", "POST", "/v1/admin", "")
 	if n := countWhere(t, db, `decision = 'acl_denied' AND client_id = 'c1' AND path = '/v1/admin' AND method = 'POST'`); n != 2 {
 		t.Fatalf("denial after the minute boundary: %d rows, want 2", n)
 	}
@@ -177,7 +177,7 @@ func TestACLDeniedPerClientPerMinuteCap(t *testing.T) {
 	q.SetClock(func() time.Time { return clk })
 	probe := func(client string, i int) {
 		t.Helper()
-		if err := q.LogACLDenied(client, "", "s", "GET", "/probe/"+strings.Repeat("x", i%7)+string(rune('a'+i%26))+string(rune('A'+i/26))); err != nil {
+		if err := q.LogACLDenied(client, "", "s", "GET", "/probe/"+strings.Repeat("x", i%7)+string(rune('a'+i%26))+string(rune('A'+i/26)), ""); err != nil {
 			t.Fatal(err)
 		}
 	}

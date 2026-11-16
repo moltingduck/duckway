@@ -461,6 +461,11 @@ func runMigrations(db *sql.DB) error {
 		// acl_denied or held. approval_id links a held row to its approval.
 		"ALTER TABLE request_log ADD COLUMN decision TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE request_log ADD COLUMN approval_id TEXT NOT NULL DEFAULT ''",
+		// Why the gateway refused the request (JSON, see queries.DenyDetail;
+		// '' on older rows) and how many identical denials in the same minute
+		// were coalesced into this row.
+		"ALTER TABLE request_log ADD COLUMN deny_detail TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE request_log ADD COLUMN repeat_count INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE clients ADD COLUMN canary_enabled INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE clients ADD COLUMN short_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE clients ADD COLUMN update_policy TEXT NOT NULL DEFAULT 'managed'",
