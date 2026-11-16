@@ -108,6 +108,12 @@
         <p class="pt-bad pt-hint" id="pt-test-blocked" hidden>Fix the JSON error before testing.</p>
         <div id="pt-test-out" aria-live="polite"></div>
       </section>
+
+      <section class="card pt-card" aria-labelledby="pt-impact-h">
+        <h2 id="pt-impact-h">Preview impact</h2>
+        <p class="pt-lede">See what this draft would have done to the requests this token made in the last 7 days, before you save it.</p>
+        <div id="pt-impact"></div>
+      </section>
     </div>
 
     <aside class="pt-side">
@@ -209,6 +215,7 @@
 <script nonce="{{$.CSPNonce}}" src="/static/github-branch-rules.js"></script>
 <script nonce="{{$.CSPNonce}}" src="/static/phantom-common.js"></script>
 <script nonce="{{$.CSPNonce}}" src="/static/phantom-acl.js"></script>
+<script nonce="{{$.CSPNonce}}" src="/static/rule-preview.js"></script>
 <script nonce="{{$.CSPNonce}}" src="/static/phantom-token-detail.js"></script>
 <script nonce="{{$.CSPNonce}}" src="/static/refusal-log.js"></script>
 <script nonce="{{$.CSPNonce}}" src="/static/access-sim-hex.js"></script>

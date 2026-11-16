@@ -93,6 +93,7 @@
         <h3 id="sv-acl-h">Default ACL template</h3>
         <p class="text-sm text-muted">Applied to phantom tokens that have no rules of their own. Pick a ready-made template.</p>
         <div id="sv-acl-list" class="sv-cards"></div>
+        <div id="sv-impact"></div>
         <details class="sv-json"><summary>Current ACL JSON (read-only)</summary><textarea id="sv-acl-json" readonly rows="6" aria-label="Current ACL JSON"></textarea></details>
       </section>
 
@@ -158,6 +159,7 @@
 </div>
 
 <script nonce="{{$.CSPNonce}}" src="/static/audit.js"></script>
+<script nonce="{{$.CSPNonce}}" src="/static/rule-preview.js"></script>
 <script nonce="{{$.CSPNonce}}">
 var SV = {list: [], stats: {}, cur: null, acl: null, aclPending: '', pricing: [], priceEdit: '', priceDel: '', dirty: false, impact: null, q: ''};
 
@@ -304,6 +306,7 @@ function openDrawer(s) {
   DW.setHTML(el('sv-sub'), s ? DW.html`<span class="mono">${s.name}</span> · ${s.is_active ? 'Active' : 'Inactive'}` : DW.raw('Create a service, then add pricing and ACL templates.'));
   el('sv-save').textContent = s ? 'Save changes' : 'Create service';
   el('sv-extras').hidden = !s;
+  if (svImpact) svImpact.reset();
   if (s) { SV.aclPending = ''; SV.priceEdit = ''; SV.priceDel = ''; resetPriceForm(); loadAcl(); loadPricing(); if (window.AUDIT) AUDIT.mountHistory(el('sv-history'), {resource_type: 'service', resource_id: s.id}); }
   var dr = el('sv-drawer');
   if (dr.hidden || dr.style.display === 'none') DW.modal.open(dr);
@@ -394,23 +397,45 @@ function renderAcl() {
     </div>`;
   })}`);
 }
+var svImpact = window.RPREV ? window.RPREV.mount(el('sv-impact'), {
+  kind: 'service', id: function() { return SV.cur ? SV.cur.id : ''; }, what: 'this service\u2019s default rules',
+  hint: 'Replays the last 7 days of requests of every phantom token on this service against the selected template. Nothing is sent, saved or counted.',
+  blocked: 'Choose Apply on a template first, then preview it.',
+  call: function(url, body) { return send('POST', url, body); },
+  body: function() {
+    var t = pendingTemplate();
+    return t ? window.RPREV.serviceBody(t.config) : null;
+  }
+}) : null;
+function pendingTemplate() {
+  var ts = (SV.acl && SV.acl.templates) || [];
+  return ts.filter(function(t) { return t.id === SV.aclPending; })[0] || null;
+}
 DW.actions.svAclReload = function() { loadAcl(); };
 DW.actions.svAclAsk = function(b) {
   SV.aclPending = b.dataset.templateId; renderAcl();
+  if (svImpact) { svImpact.reset(); svImpact.run(); }
   var ok = el('sv-acl-list').querySelector('[data-action="svAclApply"]'); if (ok) ok.focus();
 };
 DW.actions.svAclCancel = function() {
   var tid = SV.aclPending; SV.aclPending = ''; renderAcl();
+  if (svImpact) svImpact.reset();
   var ask = Array.prototype.filter.call(el('sv-acl-list').querySelectorAll('[data-action="svAclAsk"]'), function(x) { return x.dataset.templateId === tid; })[0]; if (ask) ask.focus();
 };
 DW.actions.svAclApply = function(b) {
   var id = SV.cur.id, tid = b.dataset.templateId;
   b.disabled = true;
-  send('POST', '/api/services/' + encodeURIComponent(id) + '/acl-templates', {template_id: tid}).then(function(d) {
-    DW.toast('Applied: ' + d.template, 'success');
-    SV.aclPending = '';
-    loadAcl();
-    return fetchJSON('/api/services/' + encodeURIComponent(id)).then(function(s) { if (SV.cur && SV.cur.id === id) SV.cur = s; });
+  // Ask once when the template would refuse recent traffic that goes through today.
+  var check = svImpact ? svImpact.checkBeforeSave() : Promise.resolve(true);
+  check.then(function(go) {
+    if (!go) { b.disabled = false; return; }
+    return send('POST', '/api/services/' + encodeURIComponent(id) + '/acl-templates', {template_id: tid}).then(function(d) {
+      DW.toast('Applied: ' + d.template, 'success');
+      SV.aclPending = '';
+      if (svImpact) svImpact.reset();
+      loadAcl();
+      return fetchJSON('/api/services/' + encodeURIComponent(id)).then(function(s) { if (SV.cur && SV.cur.id === id) SV.cur = s; });
+    });
   }).catch(function(e) { DW.toast('Could not apply template: ' + e.message, 'error'); b.disabled = false; });
 };
 

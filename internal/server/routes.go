@@ -242,6 +242,12 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	simH := handlers.NewAccessSimulator(ss.PlaceholderQ, ss.ServiceQ, ss.APIKeyQ, ss.GroupQ, ss.ApprovalQ, ss.Crypto)
 	adminAPIMux.HandleFunc("POST /api/phantom-tokens/{id}/simulate", simH.Simulate)
 	adminAPIMux.HandleFunc("GET /api/phantom-tokens/{id}/access-summary", simH.AccessSummary)
+	// Rule change preview: replays the last 7 days of the request log against
+	// a draft of a token's, credential's or service's rules, read-only.
+	impactH := handlers.NewImpactPreview(simH, placeholderH, ss.PlaceholderQ, ss.ServiceQ, ss.APIKeyQ, ss.GroupQ, ss.RequestLogQ)
+	adminAPIMux.HandleFunc("POST /api/placeholders/{id}/preview-impact", impactH.Token)
+	adminAPIMux.HandleFunc("POST /api/keys/{id}/preview-impact", impactH.Key)
+	adminAPIMux.HandleFunc("POST /api/services/{id}/preview-impact", impactH.Service)
 	adminAPIMux.HandleFunc("DELETE /api/placeholders/{id}", placeholderH.Delete)
 
 	adminAPIMux.HandleFunc("GET /api/clients", clientH.List)
