@@ -77,7 +77,8 @@
   // How many groups of a bucket exist beyond the 200 items the server returns.
   function hiddenCount(r, tab) { return Math.max(0, counts(r)[tab] - itemsFor(r, tab).length); }
 
-  function summary(r) {
+  // subject names what was replayed against ("the "Read only" template"), when the caller has one.
+  function summary(r, subject) {
     if (!r) return '';
     var total = num(r.total_requests), distinct = num(r.distinct), days = num(r.window_days) || 7;
     if (total === 0 && distinct === 0) return 'No requests in the last ' + plural(days, 'day') + ', so there is nothing to compare yet.';
@@ -86,7 +87,7 @@
     if (c.newly_held) parts.push(plural(c.newly_held, 'pattern') + ' would wait for approval');
     if (c.newly_allowed) parts.push(plural(c.newly_allowed, 'pattern') + ' would be allowed');
     if (c.no_longer_held) parts.push(plural(c.no_longer_held, 'pattern') + ' would no longer wait');
-    var head = 'Replayed ' + plural(total, 'request') + ' (' + plural(distinct, 'distinct pattern') + ') from the last ' + plural(days, 'day') + '. ';
+    var head = 'Replayed ' + plural(total, 'request') + ' (' + plural(distinct, 'distinct pattern') + ') from the last ' + plural(days, 'day') + (subject ? ' against ' + subject : '') + '. ';
     var body = parts.length ? parts.join(', ') + '.' : 'Nothing changes for the traffic that could be checked.';
     if (c.unknown) body += ' ' + plural(c.unknown, 'pattern') + ' could not be decided from the log.';
     if (r.truncated) body += ' The preview stopped early (too many patterns or too slow), so this is a partial result.';
@@ -96,11 +97,18 @@
   function needsConfirm(r) { return !!r && num((r.buckets || {}).newly_refused) > 0; }
   function confirmText(r, what) {
     var n = num(((r && r.buckets) || {}).newly_refused), h = num(((r && r.bucket_hits) || {}).newly_refused);
+    var unknown = num(((r && r.buckets) || {}).unknown), extra = '';
+    if (unknown) extra += ' ' + plural(unknown, 'more pattern') + ' could not be checked and may be refused too.';
+    if (r && r.truncated) extra += ' The preview stopped early, so there may be more.';
     return {
       title: 'Save rules that refuse recent traffic?',
-      body: 'With this change ' + plural(n, 'request pattern') + ' (' + plural(h, 'request') + ' in the last 7 days) that ' + (what || 'the rules') + ' allow or hold today would be refused. Save anyway?',
+      body: 'With this change ' + plural(n, 'request pattern') + ' (' + plural(h, 'request') + ' in the last 7 days) that ' + (what || 'the rules') + ' allow or hold today would be refused.' + extra + ' Save anyway?',
       confirmLabel: 'Save anyway', cancelLabel: 'Keep editing', danger: true
     };
+  }
+  // Asked when the preview itself failed, so a save is never blocked by it.
+  function errorConfirmText() {
+    return { title: 'Could not check recent traffic', body: 'Could not check recent traffic. Save anyway?', confirmLabel: 'Save anyway', cancelLabel: 'Keep editing', danger: true };
   }
 
   /* ---- rows ---- */
@@ -113,9 +121,17 @@
   }
   // Only same-origin links into a phantom token's Test access tab are used.
   function safeHref(u) { u = str(u); return /^\/admin\/phantom-tokens\/[^/?#]+\?/.test(u) ? u : ''; }
+  // A token-wide approval holds a request before the rules run, so a request the
+  // rules refuse today shows as "newly held" although approving it does not let it through.
+  function heldNote(it) {
+    var b = it.before || {}, a = it.after || {};
+    return a.verdict === 'held' && a.kind === 'approval' && b.verdict === 'refused'
+      ? 'Held first; after approval the rules still refuse it.' : '';
+  }
   function rowModel(it) {
     var hits = num(it && it.hits);
     return {
+      note: heldNote(it),
       method: str(it.method), path: str(it.path),
       who: str(it.token_name), client: str(it.client),
       hits: hits, hitsText: plural(hits, 'request'),
@@ -137,7 +153,7 @@
   var api = {
     BUCKETS: BUCKETS, endpoint: endpoint, tokenBody: tokenBody, keyBody: keyBody, serviceBody: serviceBody,
     counts: counts, tabs: tabs, defaultTab: defaultTab, itemsFor: itemsFor, hiddenCount: hiddenCount,
-    summary: summary, needsConfirm: needsConfirm, confirmText: confirmText, verdictLabel: verdictLabel,
+    summary: summary, needsConfirm: needsConfirm, confirmText: confirmText, errorConfirmText: errorConfirmText, verdictLabel: verdictLabel,
     rowModel: rowModel, tokenRows: tokenRows, bucketDef: bucketDef, safeHref: safeHref
   };
 
@@ -161,10 +177,10 @@
       return m.href ? DW.html`<a class="btn btn-sm" href="${m.href}">Test in simulator</a>` : '';
     }
     function tableRow(m) {
-      return DW.html`<tr><td class="rp-req"><code class="mono">${m.method} ${m.path}</code>${m.reason ? DW.html`<p class="rp-why">${m.reason}</p>` : ''}${refList(m)}</td><td>${m.who}${m.client ? DW.html`<span class="rp-sub">${m.client}</span>` : ''}</td><td class="rp-num">${m.hitsText}</td><td>${sideText(m.before)}</td><td>${sideText(m.after)}</td><td>${link(m)}</td></tr>`;
+      return DW.html`<tr><td class="rp-req"><code class="mono">${m.method} ${m.path}</code>${m.reason ? DW.html`<p class="rp-why">${m.reason}</p>` : ''}${m.note ? DW.html`<p class="rp-why">${m.note}</p>` : ''}${refList(m)}</td><td>${m.who}${m.client ? DW.html`<span class="rp-sub">${m.client}</span>` : ''}</td><td class="rp-num">${m.hitsText}</td><td>${sideText(m.before)}</td><td>${sideText(m.after)}</td><td>${link(m)}</td></tr>`;
     }
     function card(m) {
-      return DW.html`<li class="rp-card"><div class="rp-card-head"><code class="mono rp-card-path">${m.method} ${m.path}</code><span class="rp-num">${m.hitsText}</span></div>${m.reason ? DW.html`<p class="rp-why">${m.reason}</p>` : ''}${refList(m)}<dl class="rp-card-dl"><dt>Token</dt><dd>${m.who}${m.client ? ' · ' + m.client : ''}</dd><dt>Today</dt><dd>${sideText(m.before)}</dd><dt>With this change</dt><dd>${sideText(m.after)}</dd></dl>${link(m)}</li>`;
+      return DW.html`<li class="rp-card"><div class="rp-card-head"><code class="mono rp-card-path">${m.method} ${m.path}</code><span class="rp-num">${m.hitsText}</span></div>${m.reason ? DW.html`<p class="rp-why">${m.reason}</p>` : ''}${m.note ? DW.html`<p class="rp-why">${m.note}</p>` : ''}${refList(m)}<dl class="rp-card-dl"><dt>Token</dt><dd>${m.who}${m.client ? ' · ' + m.client : ''}</dd><dt>Today</dt><dd>${sideText(m.before)}</dd><dt>With this change</dt><dd>${sideText(m.after)}</dd></dl>${link(m)}</li>`;
     }
     function tokenTable(r) {
       var rows = api.tokenRows(r).filter(function (t) { return t.refused > 0; });
@@ -188,7 +204,7 @@
           var on = t.id === S.tab;
           return DW.html`<button type="button" role="tab" class="lg-chip rp-tab rp-tab-${t.tone}" id="${idBase + '-t-' + t.id}" aria-selected="${on ? 'true' : 'false'}" aria-controls="${idBase + '-p'}" tabindex="${on ? '0' : '-1'}" data-action="rpTab" data-rp="${idBase}" data-tab="${t.id}">${t.label} <span class="rp-count">${t.count}</span></button>`;
         });
-        body = DW.html`<div class="rp-result${S.stale ? ' rp-stale' : ''}"><p class="rp-summary">${api.summary(r)}</p>${S.stale ? DW.html`<p class="rp-stalenote">The draft changed after this preview. Run it again.</p>` : ''}${tokenTable(r)}<div class="rp-tabs" role="tablist" aria-label="Outcome of the change">${tabsEl}</div><div id="${idBase + '-p'}" role="tabpanel" aria-labelledby="${idBase + '-t-' + S.tab}" tabindex="0">${panel()}</div></div>`;
+        body = DW.html`<div class="rp-result${S.stale ? ' rp-stale' : ''}"><p class="rp-summary">${api.summary(r, opts.subject ? opts.subject() : '')}</p>${S.stale ? DW.html`<p class="rp-stalenote">The draft changed after this preview. Run it again.</p>` : ''}${tokenTable(r)}<div class="rp-tabs" role="tablist" aria-label="Outcome of the change">${tabsEl}</div><div id="${idBase + '-p'}" role="tabpanel" aria-labelledby="${idBase + '-t-' + S.tab}" tabindex="0">${panel()}</div></div>`;
       }
       DW.setHTML(headEl, head);
       DW.setHTML(liveEl, DW.html`${body}`);
@@ -202,6 +218,7 @@
       return call(api.endpoint(opts.kind, opts.id()), b).then(function (res) {
         if (seq !== S.seq) return null;
         S.status = 'done'; S.result = res; S.sig = sig; S.stale = false; S.tab = api.defaultTab(res); render();
+        if (opts.scroll && host.scrollIntoView) host.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
         return res;
       }).catch(function (e) {
         if (seq !== S.seq) return null;
@@ -224,13 +241,24 @@
       var sig = JSON.stringify(b);
       var have = S.result && !S.stale && S.sig === sig ? Promise.resolve(S.result) : run();
       return have.then(function (res) {
-        if (!res || !api.needsConfirm(res) || S.ackSig === sig) return true;
+        if (!res) {
+          // A failed preview (not a superseded one) must not block the save silently: ask.
+          if (S.status === 'error' && S.ackSig !== sig) {
+            return DW.confirm(api.errorConfirmText()).then(function (ok) { if (ok) S.ackSig = sig; return ok; });
+          }
+          return true;
+        }
+        if (!api.needsConfirm(res) || S.ackSig === sig) return true;
         return DW.confirm(api.confirmText(res, opts.what)).then(function (ok) { if (ok) S.ackSig = sig; return ok; });
       }).catch(function () { return true; });
     }
     function reset() { S.seq++; S.status = 'idle'; S.result = null; S.stale = false; S.err = ''; S.ackSig = ''; render(); }
 
-    DW.actions.rpRun = function (el) { if (el.dataset.rp === idBase) return run(); };
+    var prevRun = DW.actions.rpRun;
+    DW.actions.rpRun = function (el) {
+      if (el.dataset.rp !== idBase) { if (prevRun) return prevRun(el); return; }
+      return run();
+    };
     var prevTab = DW.actions.rpTab;
     DW.actions.rpTab = function (el) {
       if (el.dataset.rp !== idBase) { if (prevTab) prevTab(el); return; }

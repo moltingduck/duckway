@@ -806,7 +806,8 @@ pre code, pre kbd, pre samp { overflow-wrap: normal; word-break: normal; }
 .lg-empty > * { margin-bottom: 0.5rem; }
 .lg-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.625rem 0.875rem; }
 .lg-pager-btns { display: inline-flex; gap: 0.375rem; }
-.lg-detail { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; margin-bottom: 0; }
+/* The sticky topbar is 48px high: the panel clears it so its header is never covered. */
+.lg-detail { position: sticky; top: calc(var(--topbar-h, 48px) + 1rem); max-height: calc(100vh - var(--topbar-h, 48px) - 2rem); overflow-y: auto; margin-bottom: 0; }
 .lg-dethead { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
 .lg-dethead h2 { font-size: 0.95rem; font-weight: 600; flex: 1; }
 .lg-dethead h2:focus-visible, .lg-detail:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -2546,8 +2547,8 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
 .lg-list .table-wrap { background: linear-gradient(to right, var(--surface) 30%, transparent), linear-gradient(to left, var(--surface) 30%, transparent), linear-gradient(to right, color-mix(in srgb, var(--ink) 18%, transparent), transparent), linear-gradient(to left, color-mix(in srgb, var(--ink) 18%, transparent), transparent); background-position: left center, right center, left center, right center; background-repeat: no-repeat; background-size: 2.5rem 100%, 2.5rem 100%, 0.75rem 100%, 0.75rem 100%; background-attachment: local, local, scroll, scroll; }
 @media (min-width: 901px) {
   .lg-has-detail .lg-table { min-width: 0; }
-  .lg-has-detail .lg-table th:nth-child(3), .lg-has-detail .lg-table td.lg-c-svc,
-  .lg-has-detail .lg-table th:nth-child(7), .lg-has-detail .lg-table td.lg-c-ms { display: none; }
+  .lg-has-detail .lg-table th.lg-c-svc, .lg-has-detail .lg-table td.lg-c-svc,
+  .lg-has-detail .lg-table th.lg-c-ms, .lg-has-detail .lg-table td.lg-c-ms { display: none; }
   .lg-has-detail .lg-req { min-width: 9rem; }
   .lg-has-detail .lg-table th, .lg-has-detail .lg-table td { padding-inline: 0.5rem; }
 }
@@ -2569,6 +2570,7 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
 }
 
 /* Audit log (fx1116) */
+.lg-table td.lg-t { min-width: 10.5rem; }
 .au-summary { font-weight: 600; margin: 0 0 0.5rem; overflow-wrap: anywhere; }
 .au-meta { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: 0.375rem 0.75rem; font-size: 0.8125rem; margin: 0 0 0.75rem; }
 .au-meta dt { color: var(--muted); }
@@ -2577,6 +2579,8 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
 .au-diff { margin: 0; padding: 0.5rem; background: var(--track); border-radius: 4px; max-height: 24rem; overflow: auto; font-family: var(--mono); font-size: 0.75rem; line-height: 1.5; white-space: pre; }
 .au-l { display: block; }
 .au-sym { user-select: none; color: var(--muted); }
+.au-fold { color: var(--muted); font-style: italic; }
+.au-key { color: var(--muted); }
 .au-add { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok-text); }
 .au-del { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger-text); }
 .au-hist { list-style: none; margin: 0 0 0.5rem; padding: 0; }
@@ -2590,7 +2594,7 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
 .au-hist-detail[hidden] { display: none; }
 @media (max-width: 900px) { .au-hist-btn { min-height: 44px; } }
 /* fx1116: rule change preview (rule-preview.js) */
-.rp { margin-top: 0.75rem; }
+.rp { margin-top: 0.75rem; container: rp / inline-size; }
 .rp-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.9rem; }
 .rp-hint { font-size: 0.8125rem; color: var(--muted); flex: 1 1 14rem; }
 .rp-live { margin-top: 0.6rem; }
@@ -2624,9 +2628,13 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
 .rp-h { margin: 0 0 0.25rem; font-size: 0.875rem; }
 .rp-toklist { margin: 0; padding-left: 1.1rem; font-size: 0.8125rem; }
 .rp-card .btn { align-self: flex-start; }
-@media (max-width: 900px) {
+/* Cards instead of the six-column table whenever the preview's own container is narrower than
+   ~1100px (a drawer, a modal or a card beside a sidebar), not whenever the viewport is. */
+@container rp (max-width: 1100px) {
   .rp-table { display: none; }
   .rp-cards { display: flex; }
+}
+@media (max-width: 900px) {
   .rp-tab, .rp-card .btn, .rp-bar .btn { min-height: 44px; }
 }
 /* Settings -> Approvers */

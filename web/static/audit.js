@@ -87,6 +87,50 @@
     return out;
   }
 
+  function parseVal(v) {
+    if (v === null || v === undefined || v === '') return null;
+    if (typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return v; } }
+    return v;
+  }
+  function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+  function same(a, b) { return JSON.stringify(sortKeys(a)) === JSON.stringify(sortKeys(b)); }
+  function valueLines(prefix, v, t, out) {
+    var pad = prefix.replace(/\S.*$/, '');
+    var lines = JSON.stringify(sortKeys(v), null, 2).split('\n');
+    lines.forEach(function (l, i) { out.push({ t: t, s: (i === 0 ? prefix : pad) + l }); });
+  }
+  function foldNote(indent, names) {
+    var shown = names.slice(0, 6).join(', ') + (names.length > 6 ? ' and ' + (names.length - 6) + ' more' : '');
+    return { t: 'fold', s: indent + '\u2026 ' + names.length + ' unchanged: ' + shown };
+  }
+  function diffObjects(bm, am, indent, out) {
+    var keys = Object.keys(bm).concat(Object.keys(am).filter(function (k) { return !(k in bm); })).sort();
+    var unchanged = [];
+    keys.forEach(function (k) {
+      var inB = k in bm, inA = k in am, pre = indent + JSON.stringify(k) + ': ';
+      if (inB && inA && same(bm[k], am[k])) { unchanged.push(k); return; }
+      if (inB && inA && isObj(bm[k]) && isObj(am[k])) {
+        out.push({ t: 'same', s: pre + '{' });
+        diffObjects(bm[k], am[k], indent + '  ', out);
+        out.push({ t: 'same', s: indent + '}' });
+        return;
+      }
+      if (inB) valueLines(pre, bm[k], 'del', out);
+      if (inA) valueLines(pre, am[k], 'add', out);
+    });
+    if (unchanged.length) out.push(foldNote(indent, unchanged));
+  }
+  // changeLines(before, after) -> [{t: 'same'|'add'|'del'|'fold', s}]: only the changed keys, as
+  // "- before" / "+ after" lines, with unchanged keys collapsed into one note per object.
+  function changeLines(before, after) {
+    var b = parseVal(before), a = parseVal(after), out = [];
+    if ((isObj(b) || b === null) && (isObj(a) || a === null) && (b !== null || a !== null)) {
+      diffObjects(b || {}, a || {}, '', out);
+      return out;
+    }
+    return lineDiff(pretty(before), pretty(after));
+  }
+
   // buildQuery(state) -> URLSearchParams string for GET /api/audit.
   function buildQuery(s) {
     var p = new URLSearchParams();
@@ -105,7 +149,7 @@
   }
 
   var api = { KINDS: KINDS, typeLabel: typeLabel, actionLabel: actionLabel, actorLabel: actorLabel, fmtTime: fmtTime,
-    pretty: pretty, lineDiff: lineDiff, buildQuery: buildQuery, sinceFor: sinceFor };
+    pretty: pretty, lineDiff: lineDiff, changeLines: changeLines, buildQuery: buildQuery, sinceFor: sinceFor };
 
   /* ---------------- DOM ---------------- */
   var DW = root.DW;
@@ -113,9 +157,9 @@
     var html = DW.html;
 
     api.diffNode = function (before, after) {
-      var d = lineDiff(pretty(before), pretty(after));
-      var sym = { same: '  ', add: '+ ', del: '- ' };
-      return DW.html`<pre class="au-diff" aria-label="Changes, removed lines first">${d.map(function (l) {
+      var d = changeLines(before, after);
+      var sym = { same: '  ', add: '+ ', del: '- ', fold: '  ' };
+      return DW.html`<pre class="au-diff" aria-label="Changes: removed lines marked minus, added lines marked plus">${d.map(function (l) {
         return DW.html`<span class="au-l au-${l.t}"><span class="au-sym" aria-hidden="true">${sym[l.t]}</span>${l.s}\n</span>`;
       })}</pre>`;
     };
