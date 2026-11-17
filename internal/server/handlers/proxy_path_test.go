@@ -140,7 +140,7 @@ func TestApprovalScopeCoversPathQueryAndBody(t *testing.T) {
 			t.Errorf("%s change must need its own approval: %v", name, other)
 		}
 	}
-	if err := rig.f.approvalQ.Approve(a["approval_id"], queries.ApprovalExpiry(time.Hour)); err != nil {
+	if err := rig.f.approvalQ.ApproveBy(a["approval_id"], queries.ApprovalExpiry(time.Hour), "test", "web"); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := rig.doBody("POST", "/v1/messages?x=1", `{"a":1}`); code != http.StatusOK {

@@ -82,8 +82,9 @@ func (s *Server) initShared() *SharedServices {
 
 	crypto := services.NewCrypto(s.config.EncryptionKey)
 	resolver := services.NewKeyResolver(crypto, apiKeyQ, placeholderQ, groupQ, approvalQ)
-	notifier := services.NewNotifier(notifQ)
+	notifier := services.NewNotifier(notifQ).WithDecisionLookup(approvalQ.GetDecision)
 	s.notifier = notifier
+	s.stoppers = append(s.stoppers, notifier)
 	canarySvc := services.NewCanaryService(canaryQ)
 
 	adminAuth := middleware.NewAdminAuth(s.config.SessionSecret).WithEpochStore(settingsQ)
@@ -129,6 +130,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	})
 	auditRec := audit.New(s.db)
 	audit.SetDefault(auditRec)
+	s.auditRec = auditRec
 	auditSnaps := &handlers.AuditSnapshots{
 		Services: ss.ServiceQ, APIKeys: ss.APIKeyQ, Placeholders: ss.PlaceholderQ, Groups: ss.GroupQ,
 		Clients: ss.ClientQ, Notifications: ss.NotifQ, Approvals: ss.ApprovalQ, Approvers: queries.NewApproverTokenQueries(s.db), Settings: ss.SettingsQ,

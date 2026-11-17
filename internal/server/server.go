@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/hackerduck/duckway/internal/audit"
 	"io/fs"
 	"log"
 	"net/http"
@@ -39,6 +40,8 @@ type Server struct {
 	// approver API, Discord, Telegram, sweeper). It is how an audit recorder
 	// observes decisions; it must be quick and must not panic.
 	OnDecision services.DecisionHook
+
+	auditRec *audit.Recorder // set by routes; tests inject a clock through it
 }
 
 // Shutdown stops all background goroutines and services. Call after
@@ -441,6 +444,7 @@ func (s *Server) startApprovalListeners(ss *SharedServices) {
 			// Every decision goes through the channel guard: the channel must still
 			// be active and unchanged, and the actor must be on its approver list.
 			gw := services.NewDiscordGateway(cfg.BotToken, cfg.ChannelID, nil, nil).
+				WithDecisionLookup(ss.ApprovalQ.GetDecision).
 				WithDecider(services.GuardChannelDecision(notifQ, ch.ID, ch.Config, decide))
 			gw.Start()
 			s.register(gw)
@@ -458,6 +462,7 @@ func (s *Server) startApprovalListeners(ss *SharedServices) {
 				continue
 			}
 			poller := services.NewTelegramPoller(cfg.BotToken, cfg.ChatID, nil, nil).
+				WithMessageDone(notifier.TelegramMessageDone).
 				WithDecider(services.GuardChannelDecision(notifQ, ch.ID, ch.Config, decide))
 			poller.Start()
 			s.register(poller)

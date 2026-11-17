@@ -3,7 +3,9 @@ package queries
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,5 +147,31 @@ func TestDecisionAttributionAndFirstDeciderWins(t *testing.T) {
 	}
 	if d, _ := q.GetDecision("old"); d.Status != "ignored" || d.DecidedBy != SweeperDecidedBy || d.DecidedVia != SweeperDecidedVia {
 		t.Fatalf("sweeper decision: %+v", d)
+	}
+}
+
+func TestApproverCreateRaceMapsToNameTaken(t *testing.T) {
+	q := NewApproverTokenQueries(approverDB(t))
+	var wg sync.WaitGroup
+	errs := make([]error, 8)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = q.Create(fmt.Sprintf("r%d", i), "racer", fmt.Sprintf("hash%d", i))
+		}(i)
+	}
+	wg.Wait()
+	ok := 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case !errors.Is(err, ErrApproverNameTaken):
+			t.Fatalf("raw error leaked: %v", err)
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("want exactly one winner, got %d", ok)
 	}
 }

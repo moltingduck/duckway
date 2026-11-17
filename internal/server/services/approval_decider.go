@@ -14,6 +14,7 @@ import (
 const (
 	ViaWeb      = "web"
 	ViaTUI      = "tui"
+	ViaAPI      = "api" // approver token used by anything that does not identify itself as the TUI
 	ViaDiscord  = "discord"
 	ViaTelegram = "telegram"
 	ViaSweeper  = "sweeper"

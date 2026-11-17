@@ -462,6 +462,19 @@ flags are unchanged.
 ./scripts/prod.sh rollback --to backups/upgrade-<UTC timestamp> --keep-data  # images only, keep current data
 ```
 
+### Upgrading approval channels: approver lists are now required
+
+Telegram and Discord bot channels decide an approval only for the approvers
+listed on the channel (Settings, Notifications, Edit: *Approver user IDs*, and
+for Discord also *Approver role IDs*). A channel upgraded from an earlier
+release has no list, so **after the upgrade its Approve and Reject buttons,
+reactions and `!approve` commands stop working** (the presser sees "Not an
+approver") until you add at least one user or role. Alerts keep arriving, and
+admins can still decide in the console, in the TUI or through an approver
+token. The Notifications page shows a banner for each channel that cannot
+decide yet. The list is read on every press, so adding someone takes effect at
+once with no restart.
+
 ### Rolling back
 
 `rollback --to DIR` reads the manifest, then, before changing anything:

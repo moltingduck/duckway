@@ -1414,8 +1414,10 @@ AU_ALL=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/audit?limit=200")
 assert_not_empty "audit: list returns entries" "$(echo "$AU_ALL" | jq -r '.entries[0].id // empty')"
 AU_SIGNIN=$(echo "$AU_ALL" | jq '[.entries[] | select(.action=="signin.success")] | length')
 assert_eq "audit: the e2e sign-in is recorded" "true" "$([ "$AU_SIGNIN" -ge 1 ] && echo true || echo false)"
-AU_FAILED=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/audit?kind=signins&q=wrong" | jq '[.entries[] | select(.action=="signin.failed")] | length')
+AU_FAILED=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/audit?kind=signins&q=unknown%20user" | jq '[.entries[] | select(.action=="signin.failed")] | length')
 assert_eq "audit: failed sign-ins are throttled into one row per IP per minute" "1" "$AU_FAILED"
+AU_TYPED=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/audit?kind=signins&q=wrong" | jq '[.entries[] | select(.action=="signin.failed")] | length')
+assert_eq "audit: a username that is not an admin is not stored" "0" "$AU_TYPED"
 AU_SVC=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/services" -H 'Content-Type: application/json' \
   -d '{"name":"e2e-audit-svc","display_name":"E2E Audit","upstream_url":"https://api.e2e-audit.example"}' | jq -r '.id')
 curl -s -b /tmp/dw-e2e-cookies -X PUT "$BASE/api/services/$AU_SVC" -H 'Content-Type: application/json' \

@@ -79,7 +79,7 @@ func TestTokenWideApprovedForwardIsLabelled(t *testing.T) {
 	if err := f.rawDB.QueryRow(`SELECT id FROM approvals WHERE placeholder_id = ? AND status = 'pending'`, f.placeholderID).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.approvalQ.Approve(id, queries.ApprovalExpiry(time.Hour)); err != nil {
+	if err := f.approvalQ.ApproveBy(id, queries.ApprovalExpiry(time.Hour), "test", "web"); err != nil {
 		t.Fatal(err)
 	}
 	if code := do(); code != http.StatusOK {

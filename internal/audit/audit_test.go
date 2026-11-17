@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hackerduck/duckway/internal/database"
 )
@@ -107,7 +109,7 @@ func TestRecordFailureIsSwallowed(t *testing.T) {
 func TestSignInThrottlePerIPPerMinute(t *testing.T) {
 	r, db := newRec(t)
 	now := time.Date(2026, 11, 16, 10, 0, 5, 0, time.UTC)
-	r.now = func() time.Time { return now }
+	r.SetClock(func() time.Time { return now })
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
 		r.RecordSignIn(ctx, "root", false, "9.9.9.9", "web")
@@ -136,5 +138,62 @@ func TestSignInThrottlePerIPPerMinute(t *testing.T) {
 	}
 	if n := count(t, db, "action = 'signin.failed' AND resource_name = 'root' AND status = 'failed'"); n != 3 {
 		t.Fatalf("failed rows keep the username tried: %d", n)
+	}
+}
+
+func TestClipAndRedactCutOnRuneBoundaries(t *testing.T) {
+	cjk := strings.Repeat("警", 500) // 3 bytes per rune
+	for _, n := range []int{1, 2, 3, 100, 101, 299} {
+		if got := clip(cjk, n); !utf8.ValidString(got) || len(got) > n {
+			t.Fatalf("clip(%d) invalid or too long: valid=%v len=%d", n, utf8.ValidString(got), len(got))
+		}
+	}
+	long := strings.Repeat("警", maxStringBytes) // 6000 bytes
+	b, _ := RedactPair(map[string]any{"note": long}, nil)
+	var m map[string]string
+	if err := json.Unmarshal([]byte(b), &m); err != nil || !utf8.ValidString(m["note"]) {
+		t.Fatalf("redacted string invalid: %v", err)
+	}
+	if !strings.Contains(m["note"], "bytes)") || strings.Contains(m["note"], "�") {
+		t.Fatalf("truncation marker or replacement char: %q", m["note"][len(m["note"])-30:])
+	}
+	if got := clip("ok\xff\xfe", 50); !utf8.ValidString(got) {
+		t.Fatal("invalid input bytes survive clip")
+	}
+	// Insert succeeds with CJK at the clip limit.
+	r, db := newRec(t)
+	r.Record(context.Background(), Entry{Action: "x.y", Summary: cjk, ResourceName: cjk})
+	if n := count(t, db, "action = 'x.y'"); n != 1 {
+		t.Fatalf("row lost: %d", n)
+	}
+}
+
+func TestSignInDoesNotHoldMutexDuringWrites(t *testing.T) {
+	r, db := newRec(t)
+	r.SetClock(func() time.Time { return time.Date(2026, 11, 16, 10, 0, 5, 0, time.UTC) })
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.RecordSignIn(context.Background(), "(unknown user)", false, "7.7.7.7", "web")
+		}()
+	}
+	wg.Wait()
+	if n := count(t, db, "action = 'signin.failed' AND remote_addr = '7.7.7.7'"); n != 1 {
+		t.Fatalf("burst rows = %d", n)
+	}
+	var summary string
+	_ = db.QueryRow(`SELECT summary FROM admin_audit_log WHERE remote_addr = '7.7.7.7'`).Scan(&summary)
+	if !strings.Contains(summary, "failed sign-in") { // concurrent updates may land out of order, so the count is not asserted
+		t.Fatalf("summary = %q", summary)
+	}
+	// The lock is free while a write is in flight: SetClock takes it.
+	done := make(chan struct{})
+	go func() { r.SetClock(time.Now); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("mutex held")
 	}
 }

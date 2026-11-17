@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/hackerduck/duckway/internal/audit"
 	"github.com/hackerduck/duckway/internal/server/handlers"
@@ -16,17 +17,19 @@ func approvalSummary(verb, approvalID, name string) string {
 	return fmt.Sprintf("%s request %s for %s", past, approvalID, name)
 }
 
-// auditDecisionHook records every committed approval decision that did not
-// come from the web console. Web decisions (via "web") are recorded by auditMux
-// from the same request, so skipping them here avoids a double entry. Entries
-// follow the web convention: resource_type placeholder (the token the decision
-// unlocks), action approval.approve|reject|expire, actor and via from the
-// decider.
+// auditDecisionHook records every committed approval decision, including the
+// web console's (auditMux skips the four approval routes). Because it runs only
+// after the decision commits, a request that loses a race records nothing.
+// Entries use resource_type placeholder (the token the decision unlocks),
+// action approval.approve|reject|expire, and actor and via from the decider.
+// It runs on Discord and sweeper goroutines, so it never panics.
 func auditDecisionHook(rec *audit.Recorder, snaps *handlers.AuditSnapshots) services.DecisionHook {
 	return func(ctx context.Context, approvalID, by, via, status string) {
-		if via == services.ViaWeb {
-			return
-		}
+		defer func() {
+			if p := recover(); p != nil {
+				log.Printf("audit: decision hook panic: %v", p)
+			}
+		}()
 		verb := map[string]string{"approved": "approve", "rejected": "reject", "ignored": "expire"}[status]
 		if verb == "" {
 			return
@@ -51,7 +54,7 @@ func auditDecisionHook(rec *audit.Recorder, snaps *handlers.AuditSnapshots) serv
 			delete(b, "expires_at")
 			before = b
 		}
-		ictx := audit.WithIdentity(audit.WithRecorder(context.WithoutCancel(ctx), rec), audit.Identity{Actor: by, Via: via})
+		ictx := audit.WithIdentity(audit.WithRecorder(context.WithoutCancel(ctx), rec), audit.Identity{Actor: by, Via: via, RemoteAddr: audit.IdentityFrom(ctx).RemoteAddr})
 		rec.Record(ictx, audit.Entry{
 			Action: apvT + "." + verb, ResourceType: phT, ResourceID: placeholderID, ResourceName: name,
 			Before: before, After: after, Summary: approvalSummary(verb, approvalID, name),

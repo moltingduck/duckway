@@ -401,6 +401,8 @@ var svImpact = window.RPREV ? window.RPREV.mount(el('sv-impact'), {
   kind: 'service', id: function() { return SV.cur ? SV.cur.id : ''; }, what: 'this service\u2019s default rules',
   hint: 'Replays the last 7 days of requests of every phantom token on this service against the selected template. Nothing is sent, saved or counted.',
   blocked: 'Choose Apply on a template first, then preview it.',
+  scroll: true,
+  subject: function() { var t = pendingTemplate(); return t ? 'the \u201c' + t.name + '\u201d template' : ''; },
   call: function(url, body) { return send('POST', url, body); },
   body: function() {
     var t = pendingTemplate();

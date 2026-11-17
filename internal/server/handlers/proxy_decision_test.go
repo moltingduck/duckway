@@ -48,7 +48,7 @@ func TestProxyLogsDecisions(t *testing.T) {
 	if code != http.StatusForbidden || held["approval_id"] == "" {
 		t.Fatalf("held: %d %v", code, held)
 	}
-	if err := rig.f.approvalQ.Approve(held["approval_id"], queries.ApprovalExpiry(time.Hour)); err != nil {
+	if err := rig.f.approvalQ.ApproveBy(held["approval_id"], queries.ApprovalExpiry(time.Hour), "test", "web"); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := rig.do("POST", "/v1/messages"); code != http.StatusOK {

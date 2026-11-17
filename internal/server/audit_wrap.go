@@ -81,10 +81,11 @@ var auditRoutes = map[string]auditRoute{
 	"POST /api/notifications/{id}/active": {Type: ntfT, Verb: "active", IDParam: "id", Snap: ntfT},
 	"POST /api/notifications/{id}/test":   {Skip: true},
 
-	"POST /api/approvals/{id}/approve":   {Type: apvT, Verb: "approve", IDParam: "id", Snap: apvT},
-	"POST /api/approvals/{id}/reject":    {Type: apvT, Verb: "reject", IDParam: "id", Snap: apvT},
-	"POST /admin/approvals/{id}/approve": {Type: apvT, Verb: "approve", IDParam: "id", Snap: apvT},
-	"POST /admin/approvals/{id}/reject":  {Type: apvT, Verb: "reject", IDParam: "id", Snap: apvT},
+	// Decisions are recorded by auditDecisionHook once they commit (a lost race records nothing).
+	"POST /api/approvals/{id}/approve":   {Skip: true},
+	"POST /api/approvals/{id}/reject":    {Skip: true},
+	"POST /admin/approvals/{id}/approve": {Skip: true},
+	"POST /admin/approvals/{id}/reject":  {Skip: true},
 
 	"POST /api/settings":             {Type: setT, Verb: "update", Snap: setT},
 	"POST /api/canary/settings":      {Type: setT, Verb: "update", Snap: setT},
@@ -100,10 +101,15 @@ var routeTypeNames = map[string]string{
 	"client-drafts": "client_draft", "client-updates": "client_update", "auth": "admin_user", "logs": "request_log",
 }
 
-func verbOf(method string) string {
+// verbOf names an un-tabled route's action: a POST without an id creates, a
+// POST on an id is an action.
+func verbOf(method string, hasID bool) string {
 	switch method {
 	case http.MethodPost:
-		return "post"
+		if hasID {
+			return "action"
+		}
+		return "create"
 	case http.MethodPut:
 		return "update"
 	case http.MethodPatch:
@@ -206,6 +212,18 @@ func auditMux(mux *http.ServeMux, rec *audit.Recorder, snaps *handlers.AuditSnap
 		}
 		_, pattern := mux.Handler(r)
 		route, tabled := auditRoutes[pattern]
+		// Identity goes into the context even for skipped routes: the approval
+		// decision hook (which records web decisions) reads the remote address from it.
+		// "web" covers the browser console and its JSON API alike; both are
+		// signed-in admin sessions, and the client cannot be told apart reliably.
+		user, _ := r.Context().Value(middleware.AdminUserKey).(string)
+		actor := "admin:" + user
+		if user == "" {
+			actor = "anonymous"
+		}
+		ident := audit.Identity{Actor: actor, Via: "web", RemoteAddr: audit.RemoteHost(r)}
+		ctx := audit.WithIdentity(audit.WithRecorder(r.Context(), rec), ident)
+		r = r.WithContext(ctx)
 		if pattern == "" || (tabled && route.Skip) {
 			mux.ServeHTTP(w, r)
 			return
@@ -219,17 +237,8 @@ func auditMux(mux *http.ServeMux, rec *audit.Recorder, snaps *handlers.AuditSnap
 			route, id = genericRoute(pattern, r.URL.Path)
 		}
 		if route.Verb == "" {
-			route.Verb = verbOf(r.Method)
+			route.Verb = verbOf(r.Method, id != "")
 		}
-
-		user, _ := r.Context().Value(middleware.AdminUserKey).(string)
-		actor := "admin:" + user
-		if user == "" {
-			actor = "anonymous"
-		}
-		ident := audit.Identity{Actor: actor, Via: "web", RemoteAddr: audit.RemoteHost(r)}
-		ctx := audit.WithIdentity(audit.WithRecorder(r.Context(), rec), ident)
-		r = r.WithContext(ctx)
 
 		var before any
 		var name string
@@ -267,18 +276,7 @@ func auditMux(mux *http.ServeMux, rec *audit.Recorder, snaps *handlers.AuditSnap
 				}
 			}()
 		}
-		approvalID, resType := "", route.Type
-		if route.Type == apvT && beforeOK {
-			if m, _ := before.(map[string]any); m != nil {
-				if m["status"] != "pending" {
-					return // already decided: the redirect changed nothing
-				}
-				// Decisions are filed under the phantom token they unlock, so the
-				// token's History shows them; the approval id stays in the summary.
-				approvalID, resType = id, "placeholder"
-				id, _ = m["placeholder_id"].(string)
-			}
-		}
+		resType := route.Type
 		if !beforeOK {
 			before = nil
 		}
@@ -291,12 +289,6 @@ func auditMux(mux *http.ServeMux, rec *audit.Recorder, snaps *handlers.AuditSnap
 		entry := audit.Entry{
 			Action: route.Type + "." + route.Verb, ResourceType: resType, ResourceID: id, ResourceName: name,
 			Before: before, After: after, Summary: auditSummary(route, name, id, before, after, status),
-		}
-		if approvalID != "" {
-			entry.Summary = approvalSummary(route.Verb, approvalID, name)
-			if !ok {
-				entry.Summary += fmt.Sprintf(" (failed, HTTP %d)", status)
-			}
 		}
 		if !ok {
 			entry.Status = "failed"

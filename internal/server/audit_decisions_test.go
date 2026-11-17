@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -38,7 +40,7 @@ func TestApprovalDecisionsAreAuditedOncePerPath(t *testing.T) {
 		t.Fatalf("web approve: %d %s", rec.Code, rec.Body.String())
 	}
 	_, tok := e.newToken(t, "ci bot")
-	if rec := e.call(bearer(tok), "POST", "/approver/approvals/a-tui/reject", ""); rec.Code != 200 {
+	if rec := e.call(tuiClient(tok), "POST", "/approver/approvals/a-tui/reject", ""); rec.Code != 200 {
 		t.Fatalf("approver reject: %d %s", rec.Code, rec.Body.String())
 	}
 	if err := e.ss.Decider.Approve(t.Context(), "a-discord", 5, "discord:123", "discord"); err != nil {
@@ -118,5 +120,54 @@ func TestNotificationApproverListShowsInAudit(t *testing.T) {
 	}
 	if strings.Contains(r.Before+r.After, "BOT-SECRET-TOKEN-123") {
 		t.Fatal("bot token leaked into audit")
+	}
+}
+
+// A web decision that loses the race (the redirect still says 303) records
+// nothing, and a panicking hook never reaches the deciding goroutine.
+func TestWebLostRaceAuditsNothingAndHookRecovers(t *testing.T) {
+	e := newApproverEnv(t)
+	e.addApproval(t, "race-1")
+	if rec := e.admin("alice", "POST", "/api/approvals/race-1/approve", ""); rec.Code != 200 {
+		t.Fatalf("approve: %d", rec.Code)
+	}
+	_ = e.admin("bob", "POST", "/api/approvals/race-1/reject", "") // lost: already decided
+	rows := e.auditRows(t, "action LIKE 'approval.%'")
+	if len(rows) != 1 || rows[0].actor != "admin:alice" || rows[0].via != "web" {
+		t.Fatalf("rows: %+v", rows)
+	}
+	hook := auditDecisionHook(nil, nil) // nil recorder and snapshots would panic
+	hook(t.Context(), "x", "discord:1", "discord", "approved")
+}
+
+// Failed sign-ins only store the username when it names a real admin.
+func TestFailedSignInStoresOnlyKnownUsernames(t *testing.T) {
+	e := newNtEnv(t)
+	if _, err := e.s.db.Exec(`INSERT INTO admin_users (id, username, password_hash) VALUES ('u1', 'root', '$2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012345')`); err != nil {
+		t.Fatal(err)
+	}
+	for i, name := range []string{"hunter2-typed-password", "root"} {
+		body, _ := json.Marshal(map[string]string{"username": name, "password": "x"})
+		req := httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(string(body)))
+		req.RemoteAddr = "198.51.100." + string(rune('1'+i)) + ":1"
+		testSameOrigin(req)
+		e.s.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	rows := e.audit("action = 'signin.failed'")
+	if len(rows) != 2 {
+		t.Fatalf("rows: %+v", rows)
+	}
+	blob := fmt.Sprintf("%+v", rows)
+	if strings.Contains(blob, "hunter2") {
+		t.Fatalf("typed unknown username stored: %s", blob)
+	}
+	if !strings.Contains(blob, "(unknown user)") || !strings.Contains(blob, "root") {
+		t.Fatalf("expected placeholder and real name: %s", blob)
+	}
+}
+
+func TestGenericRouteVerbs(t *testing.T) {
+	if verbOf("POST", false) != "create" || verbOf("POST", true) != "action" || verbOf("PUT", true) != "update" {
+		t.Fatal("verbs")
 	}
 }

@@ -13,21 +13,24 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hackerduck/duckway/internal/database/queries"
 )
 
 // TelegramPoller uses long-polling getUpdates to receive callback_query events
 // from inline keyboard buttons. No public webhook needed.
 type TelegramPoller struct {
-	botToken  string
-	chatID    string
-	onApprove func(approvalID string) error
-	onReject  func(approvalID string) error
-	decide    DecisionFunc // when set, handles decisions with the actor (allowlist enforced by the guard)
-	base      string       // Telegram API base URL (tests override)
-	client    *http.Client
-	offset    int
-	stopCh    chan struct{}
-	stopOnce  sync.Once
+	botToken    string
+	chatID      string
+	onApprove   func(approvalID string) error
+	onReject    func(approvalID string) error
+	messageDone func(approvalID string, chatID int64, msgID int) // told when this poller edited a message itself
+	decide      DecisionFunc                                     // when set, handles decisions with the actor (allowlist enforced by the guard)
+	base        string                                           // Telegram API base URL (tests override)
+	client      *http.Client
+	offset      int
+	stopCh      chan struct{}
+	stopOnce    sync.Once
 
 	cancelMu sync.Mutex
 	cancel   context.CancelFunc // cancels the in-flight long-poll HTTP request; guarded by cancelMu
@@ -52,6 +55,13 @@ func (p *TelegramPoller) WithDecider(fn DecisionFunc) *TelegramPoller {
 	return p
 }
 
+// WithMessageDone registers fn, called after the poller edits the message a
+// button was pressed on, so the decision observer does not edit it again.
+func (p *TelegramPoller) WithMessageDone(fn func(approvalID string, chatID int64, msgID int)) *TelegramPoller {
+	p.messageDone = fn
+	return p
+}
+
 func telegramAPIBase() string {
 	if b := os.Getenv("DUCKWAY_TELEGRAM_BASE_URL"); b != "" {
 		return strings.TrimRight(b, "/")
@@ -59,14 +69,14 @@ func telegramAPIBase() string {
 	return "https://api.telegram.org"
 }
 
+// decideAs applies a decision through the wired DecisionFunc only. With none
+// wired it fails closed: the plain onApprove/onReject callbacks carry no actor
+// and would bypass the approver allowlist.
 func (p *TelegramPoller) decideAs(approvalID string, approve bool, minutes int, actor ChatActor) error {
-	if p.decide != nil {
-		return p.decide(approvalID, approve, minutes, actor)
+	if p.decide == nil {
+		return ErrChannelNotAuthoritative
 	}
-	if approve {
-		return p.onApprove(approvalID)
-	}
-	return p.onReject(approvalID)
+	return p.decide(approvalID, approve, minutes, actor)
 }
 
 func (p *TelegramPoller) Start() {
@@ -174,6 +184,9 @@ func (p *TelegramPoller) handleCallback(cb *tgCallbackQuery) {
 			verb += " for " + fmtMinutes(minutes)
 		}
 	}
+	if p.messageDone != nil {
+		p.messageDone(approvalID, cb.Message.Chat.ID, cb.Message.MessageID)
+	}
 	p.editMessage(cb.Message.Chat.ID, cb.Message.MessageID,
 		fmt.Sprintf("%s `%s` by %s at %s UTC", verb, approvalID, who, time.Now().UTC().Format("2006-01-02 15:04")))
 }
@@ -181,7 +194,11 @@ func (p *TelegramPoller) handleCallback(cb *tgCallbackQuery) {
 // decisionFailure is the short reply for a button press that did not change
 // the approval: "Already decided" when it was decided before, else the error.
 func decisionFailure(err error) string {
-	if strings.Contains(err.Error(), "already decided") {
+	var ad *AlreadyDecidedError
+	if errors.As(err, &ad) {
+		return alreadyDecidedLine(err) // names the decider, like Discord
+	}
+	if strings.Contains(err.Error(), "already decided") || errors.Is(err, queries.ErrApprovalNotPending) {
 		return "Already decided"
 	}
 	return "Failed: " + err.Error()

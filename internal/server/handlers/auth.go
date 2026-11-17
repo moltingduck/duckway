@@ -50,13 +50,14 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.users.GetByUsername(req.Username)
 	if err != nil {
-		h.recordSignIn(r, req.Username, false)
+		// Only names of real admin users are stored: a mistyped password must not land in the log.
+		h.recordSignIn(r, audit.UnknownUser, false)
 		jsonError(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		h.recordSignIn(r, req.Username, false)
+		h.recordSignIn(r, user.Username, false)
 		jsonError(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}

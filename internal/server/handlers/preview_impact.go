@@ -30,12 +30,13 @@ type ImpactPreview struct {
 	groups       *queries.GroupQueries
 	log          *queries.RequestLogQueries
 	timeout      time.Duration
+	running      chan struct{} // one preview at a time: each replays up to 5,000 groups
 }
 
 // NewImpactPreview wires the preview. groups may be nil (group tokens are then
 // not fanned out for a key preview).
 func NewImpactPreview(sim *AccessSimulator, ph *PlaceholderHandler, placeholders *queries.PlaceholderQueries, svcs *queries.ServiceQueries, apiKeys *queries.APIKeyQueries, groups *queries.GroupQueries, log *queries.RequestLogQueries) *ImpactPreview {
-	return &ImpactPreview{sim: sim, ph: ph, placeholders: placeholders, services: svcs, apiKeys: apiKeys, groups: groups, log: log, timeout: previewTimeout}
+	return &ImpactPreview{sim: sim, ph: ph, placeholders: placeholders, services: svcs, apiKeys: apiKeys, groups: groups, log: log, timeout: previewTimeout, running: make(chan struct{}, 1)}
 }
 
 // WithTimeout overrides the evaluation deadline (tests).
@@ -251,6 +252,11 @@ func (p *ImpactPreview) Key(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to list tokens", http.StatusInternalServerError)
 		return
 	}
+	// Tokens reach a key only through placeholder_keys.api_key_id or a pool
+	// (group_id): the proxy's resolver reads nothing else. Key-suite assignments
+	// materialise as ordinary placeholder rows (suite_id) with the same two
+	// columns, and the placeholder's key_group_id is not read by the resolver,
+	// so this fan-out covers every token that can resolve to the key.
 	memberOf := map[string]bool{} // group id -> includes the key
 	var tokens []models.PlaceholderKey
 	for _, ph := range all {
@@ -313,6 +319,14 @@ func (p *ImpactPreview) Service(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *ImpactPreview) respond(w http.ResponseWriter, r *http.Request, tokens []models.PlaceholderKey, d previewDraft) {
+	select {
+	case p.running <- struct{}{}:
+		defer func() { <-p.running }()
+	default:
+		w.Header().Set("Retry-After", "2")
+		jsonError(w, "a preview is already running", http.StatusTooManyRequests)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), p.timeout)
 	defer cancel()
 	resp, err := p.run(ctx, tokens, d)
@@ -373,11 +387,11 @@ func (p *ImpactPreview) run(ctx context.Context, tokens []models.PlaceholderKey,
 	for i := range tokens {
 		ids[i] = tokens[i].ID
 	}
-	groups, total, truncated, err := p.log.ReplayGroups(ids, previewWindowDays, previewMaxGroups)
+	groups, total, truncated, err := p.log.ReplayGroups(ctx, ids, previewWindowDays, previewMaxGroups)
 	if err != nil {
 		return nil, err
 	}
-	if err := p.log.AttachReplayRefs(groups, previewWindowDays, previewRefRows); err != nil {
+	if err := p.log.AttachReplayRefs(ctx, groups, previewWindowDays, previewRefRows); err != nil {
 		return nil, err
 	}
 	resp.TotalRequests, resp.Truncated = total, truncated
@@ -563,7 +577,9 @@ func (p *ImpactPreview) evalCandidate(ctx context.Context, t *previewTarget, sd 
 	layers := []proxyACLLayer{{queries.LayerService, s.DefaultACL}, {queries.LayerAPIKey, cand.ACL}, {queries.LayerPlaceholder, sd.tokenConfig}}
 	aclMethod, aclPath := proxyACLRequest(g.Method, g.Path, "")
 	if strings.EqualFold(g.Method, http.MethodGet) && strings.HasSuffix(g.Path, ".git/info/refs") {
-		return sideResult{Unknown: ReasonQuery}
+		// The query (service=git-upload-pack or git-receive-pack) is not logged, so
+		// the verdict is unknown unless the ACL layers refuse it whatever it says.
+		return p.aclOnly(g, layers, ReasonQuery)
 	}
 	if requestBodyRequiredForProxyACL(layers, aclMethod, aclPath) {
 		return sideResult{Unknown: ReasonBodyConstraints}

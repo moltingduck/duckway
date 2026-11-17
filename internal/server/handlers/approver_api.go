@@ -125,15 +125,27 @@ func (h *ApproverAPIHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req) // an empty body means the default
 	}
 	id := r.PathValue("id")
-	err := h.decider.Approve(r.Context(), id, req.DurationMinutes, approverActor(r), svc.ViaTUI)
+	err := h.decider.Approve(r.Context(), id, req.DurationMinutes, approverActor(r), approverVia(r))
 	respondDecision(w, h.approvals, id, err)
 }
 
 // POST /approver/approvals/{id}/reject
 func (h *ApproverAPIHandler) Reject(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	err := h.decider.Reject(r.Context(), id, approverActor(r), svc.ViaTUI)
+	err := h.decider.Reject(r.Context(), id, approverActor(r), approverVia(r))
 	respondDecision(w, h.approvals, id, err)
+}
+
+// ApproverClientHeader names the approver client. Only the ducklord TUI sends
+// "ducklord-tui"; decisions by any other holder of an approver token are
+// recorded with via "api".
+const ApproverClientHeader = "X-Duckway-Approver-Client"
+
+func approverVia(r *http.Request) string {
+	if r.Header.Get(ApproverClientHeader) == "ducklord-tui" {
+		return svc.ViaTUI
+	}
+	return svc.ViaAPI
 }
 
 func approverActor(r *http.Request) string {

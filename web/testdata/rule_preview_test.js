@@ -82,6 +82,12 @@ check('row model', () => {
   assert.strictEqual(u.reason, 'body not logged'); assert.strictEqual(u.before.label, 'Unknown'); assert.strictEqual(u.changed, false);
   assert.strictEqual(R.rowModel({ hits: 1, before: {}, after: {} }).hitsText, '1 request');
 });
+check('token-wide approval over a refused request carries a hint', () => {
+  const held = { bucket: 'newly_held', method: 'GET', path: '/x', hits: 1, before: { verdict: 'refused', kind: 'token_acl' }, after: { verdict: 'held', kind: 'approval', rule: 'token-wide approval' } };
+  assert.strictEqual(R.rowModel(held).note, 'Held first; after approval the rules still refuse it.');
+  assert.strictEqual(R.rowModel(Object.assign({}, held, { before: { verdict: 'allowed' } })).note, '');
+  assert.strictEqual(R.rowModel(Object.assign({}, held, { after: { verdict: 'held', kind: 'rule' } })).note, '');
+});
 check('simulator links are same-origin token links only', () => {
   assert.strictEqual(R.rowModel(result.items[1]).href, '');
   assert.strictEqual(R.safeHref('https://evil.example/admin/phantom-tokens/x?a=1'), '');
@@ -96,4 +102,47 @@ check('per-token rows for key and service previews', () => {
   assert.strictEqual(rows[1].refused, 0);
   assert.deepStrictEqual(R.tokenRows({}), []);
 });
+check('confirm text carries unknown and truncated counts', () => {
+  const c = R.confirmText(Object.assign({}, result, { truncated: true }), 'rules');
+  assert(c.body.includes('1 more pattern could not be checked'), c.body);
+  assert(c.body.includes('stopped early'), c.body);
+  assert(!R.confirmText({ buckets: { newly_refused: 1 }, bucket_hits: { newly_refused: 2 } }).body.includes('could not be checked'));
+  assert.strictEqual(R.errorConfirmText().body, 'Could not check recent traffic. Save anyway?');
+});
+check('summary names what was replayed against', () => {
+  assert(R.summary(result, 'the \u201cRead only\u201d template').includes('last 7 days against the \u201cRead only\u201d template. '));
+  assert(!R.summary(result).includes(' against '));
+});
+
+// Controller: a failed preview asks before saving; rpRun/rpTab chain to earlier handlers.
+function mountWith(call, confirmFn) {
+  const DW = {
+    html: (strs, ...vals) => strs.reduce((a, x, i) => a + x + (i < vals.length ? [].concat(vals[i]).join('') : ''), ''),
+    setHTML: () => {}, actions: {}, confirm: confirmFn
+  };
+  globalThis.DW = DW; globalThis.document = { getElementById: () => null };
+  const host = { querySelector: () => ({}), addEventListener: () => {} };
+  return { DW, c: R.mount(host, { kind: 'key', id: () => 'k', body: () => ({ acl: '' }), call }) };
+}
+(async () => {
+  let asked = [];
+  let m = mountWith(() => Promise.reject(new Error('boom')), (t) => { asked.push(t.body); return Promise.resolve(false); });
+  assert.strictEqual(await m.c.checkBeforeSave(), false);
+  assert.deepStrictEqual(asked, ['Could not check recent traffic. Save anyway?']);
+  m = mountWith(() => Promise.reject(new Error('boom')), () => Promise.resolve(true));
+  assert.strictEqual(await m.c.checkBeforeSave(), true);
+  const calls = [];
+  const d2 = mountWith(() => Promise.resolve({ buckets: {} }), () => Promise.resolve(true));
+  const first = []; 
+  d2.DW.actions.rpRun = (el) => first.push(el.dataset.rp);
+  const d3 = (function () {
+    const DW = d2.DW; const prev = DW.actions.rpRun;
+    const host = { querySelector: () => ({}), addEventListener: () => {} };
+    R.mount(host, { kind: 'key', id: () => 'k', body: () => ({ acl: '' }), call: () => Promise.resolve({ buckets: {} }) });
+    return { DW, prev };
+  })();
+  d3.DW.actions.rpRun({ dataset: { rp: 'someone-else' } });
+  assert.deepStrictEqual(first, ['someone-else'], 'rpRun must chain to the previous handler');
+  console.log('controller checks passed');
+})().catch((e) => { console.error('FAIL controller: ' + e.message); process.exitCode = 1; });
 console.log(n + ' checks passed');

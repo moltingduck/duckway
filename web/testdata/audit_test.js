@@ -44,4 +44,22 @@ check('sinceFor', () => {
   assert.strictEqual(A.sinceFor('all'), '');
   assert.strictEqual(A.sinceFor('24h', Date.UTC(2026, 10, 16, 12)), '2026-11-15T12:00:00.000Z');
 });
+check('changeLines shows only changed keys and folds the rest', () => {
+  const d = A.changeLines({ id: 'x', name: 'n', enabled: true, rules: { a: 1, b: 2 } }, { id: 'x', name: 'n', enabled: false, rules: { a: 1, b: 3 } });
+  assert.deepStrictEqual(d.map((l) => l.t + '|' + l.s), [
+    'del|"enabled": true', 'add|"enabled": false',
+    'same|"rules": {', 'del|  "b": 2', 'add|  "b": 3', 'fold|  \u2026 1 unchanged: a', 'same|}',
+    'fold|\u2026 2 unchanged: id, name']);
+});
+check('changeLines for create, delete and JSON text', () => {
+  assert.deepStrictEqual(A.changeLines(null, '{"a":1}').map((l) => l.t + '|' + l.s), ['add|"a": 1']);
+  assert.deepStrictEqual(A.changeLines({ a: [1, 2] }, '').map((l) => l.t), ['del', 'del', 'del', 'del']);
+  assert.deepStrictEqual(A.changeLines({ a: 1 }, { a: 1 }).map((l) => l.t), ['fold']);
+  assert.deepStrictEqual(A.changeLines('x', 'y').map((l) => l.t), ['del', 'add']); // non-JSON text falls back to a line diff
+});
+check('changeLines folds a long list of unchanged keys', () => {
+  const o = {}; 'abcdefghij'.split('').forEach((k) => { o[k] = 1; });
+  const d = A.changeLines(Object.assign({}, o, { z: 1 }), Object.assign({}, o, { z: 2 }));
+  assert(d[d.length - 1].s.includes('10 unchanged: a, b, c, d, e, f and 4 more'), d[d.length - 1].s);
+});
 console.log('audit.js: ' + n + ' checks passed');

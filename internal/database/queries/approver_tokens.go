@@ -21,8 +21,10 @@ type ApproverToken struct {
 var ErrApproverNotFound = errors.New("approver token not found")
 
 // ErrApproverNameTaken means another approver token (active or revoked) already
-// uses the name.
-var ErrApproverNameTaken = errors.New("an approver token with this name already exists")
+// uses the name. Names stay unique even after revocation: decided_by is
+// "approver:<name>", so reusing a name would make past decisions ambiguous
+// (and dropping the table-level UNIQUE constraint needs a SQLite table rebuild).
+var ErrApproverNameTaken = errors.New("an approver token with this name already exists (revoked tokens keep their name); choose a new name")
 
 type ApproverTokenQueries struct{ db *sql.DB }
 
@@ -38,6 +40,9 @@ func (q *ApproverTokenQueries) Create(id, name, tokenHash string) error {
 		return ErrApproverNameTaken
 	}
 	_, err := q.db.Exec(`INSERT INTO approver_tokens (id, name, token_hash) VALUES (?, ?, ?)`, id, name, tokenHash)
+	if IsUniqueViolation(err) { // lost a race with a concurrent Create of the same name
+		return ErrApproverNameTaken
+	}
 	return err
 }
 

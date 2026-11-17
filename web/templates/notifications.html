@@ -370,6 +370,12 @@
     var el = $(id); if (!el) return;
     el.textContent = msg || '';
     el.hidden = !msg;
+    // The field the message belongs to is marked invalid for assistive technology.
+    var input = $(id.replace(/-err$/, ''));
+    if (input && /^(INPUT|TEXTAREA|SELECT)$/.test(input.tagName)) {
+      if (msg) { input.setAttribute('aria-invalid', 'true'); input.setAttribute('aria-describedby', id); }
+      else { input.removeAttribute('aria-invalid'); input.removeAttribute('aria-describedby'); }
+    }
   }
   function validate() {
     var type = state.editing ? state.editing.channel_type : $('nt-type').value;
