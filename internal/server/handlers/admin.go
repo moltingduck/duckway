@@ -240,13 +240,14 @@ func (h *AdminHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.users.GetByUsername(username)
 	if err != nil {
-		h.recordSignIn(r, username, false)
+		// Only names of real admin users are stored: a mistyped password must not land in the log.
+		h.recordSignIn(r, audit.UnknownUser, false)
 		h.loginTmpl.ExecuteTemplate(w, "login.html", pageData{Error: "Invalid credentials", CSPNonce: middleware.CSPNonce(r.Context())})
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		h.recordSignIn(r, username, false)
+		h.recordSignIn(r, user.Username, false)
 		h.loginTmpl.ExecuteTemplate(w, "login.html", pageData{Error: "Invalid credentials", CSPNonce: middleware.CSPNonce(r.Context())})
 		return
 	}

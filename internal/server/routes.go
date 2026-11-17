@@ -129,6 +129,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	})
 	auditRec := audit.New(s.db)
 	audit.SetDefault(auditRec)
+	s.auditRec = auditRec
 	auditSnaps := &handlers.AuditSnapshots{
 		Services: ss.ServiceQ, APIKeys: ss.APIKeyQ, Placeholders: ss.PlaceholderQ, Groups: ss.GroupQ,
 		Clients: ss.ClientQ, Notifications: ss.NotifQ, Approvals: ss.ApprovalQ, Approvers: queries.NewApproverTokenQueries(s.db), Settings: ss.SettingsQ,

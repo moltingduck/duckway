@@ -292,6 +292,9 @@ func TestAuditSignInsAndPage(t *testing.T) {
 	if _, err := e.s.db.Exec(`INSERT INTO admin_users (id, username, password_hash) VALUES ('u1', 'root', '$2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012345')`); err != nil {
 		t.Fatal(err)
 	}
+	// A frozen clock keeps the four attempts in one minute (the real clock could cross a boundary).
+	frozen := time.Date(2026, 11, 16, 10, 0, 5, 0, time.UTC)
+	e.s.auditRec.SetClock(func() time.Time { return frozen })
 	for i := 0; i < 4; i++ {
 		body, _ := json.Marshal(map[string]string{"username": "root", "password": "wrong-password"})
 		req := httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(string(body)))

@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 )
@@ -63,6 +64,23 @@ func New(db *sql.DB) *Recorder {
 	return &Recorder{q: queries.NewAuditQueries(db), now: time.Now, signins: map[string]*signinBurst{}}
 }
 
+// SetClock replaces the recorder's time source (tests; safe at any time).
+func (r *Recorder) SetClock(now func() time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if now == nil {
+		now = time.Now
+	}
+	r.now = now
+}
+
+func (r *Recorder) clock() time.Time {
+	r.mu.Lock()
+	f := r.now
+	r.mu.Unlock()
+	return f()
+}
+
 // Queries exposes the read side (the /api/audit handler uses it).
 func (r *Recorder) Queries() *queries.AuditQueries { return r.q }
 
@@ -87,6 +105,15 @@ func WithRecorder(ctx context.Context, r *Recorder) context.Context {
 // Identity is the actor of a request, stored in the context so deeper code can
 // call Record without knowing the request.
 type Identity struct{ Actor, Via, RemoteAddr string }
+
+// IdentityFrom returns the identity stored in ctx (zero when none).
+func IdentityFrom(ctx context.Context) Identity {
+	if ctx == nil {
+		return Identity{}
+	}
+	id, _ := ctx.Value(identityKey).(Identity)
+	return id
+}
 
 // WithIdentity returns ctx carrying the actor.
 func WithIdentity(ctx context.Context, id Identity) context.Context {
@@ -148,7 +175,7 @@ func (r *Recorder) record(ctx context.Context, e Entry) (id int64) {
 	}
 	before, after := RedactPair(e.Before, e.After)
 	row := queries.AuditRow{
-		CreatedAt: queries.UTCNow(r.now()), Actor: clip(e.Actor, 200), Via: clip(e.Via, 32), RemoteAddr: clip(e.RemoteAddr, 100),
+		CreatedAt: queries.UTCNow(r.clock()), Actor: clip(e.Actor, 200), Via: clip(e.Via, 32), RemoteAddr: clip(e.RemoteAddr, 100),
 		Action: clip(e.Action, 100), ResourceType: clip(e.ResourceType, 64), ResourceID: clip(e.ResourceID, 200),
 		ResourceName: clip(e.ResourceName, 300), Summary: clip(e.Summary, 1000),
 		Before: before, After: after, Status: e.Status,
@@ -161,6 +188,18 @@ func (r *Recorder) record(ctx context.Context, e Entry) (id int64) {
 	return n
 }
 
+// truncUTF8 cuts s to at most n bytes without splitting a rune (Postgres
+// rejects invalid UTF-8, which would lose the whole row).
+func truncUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
 func clip(s string, n int) string {
 	s = strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {
@@ -168,11 +207,11 @@ func clip(s string, n int) string {
 		}
 		return r
 	}, s)
-	if len(s) > n {
-		return s[:n]
-	}
-	return s
+	return truncUTF8(strings.ToValidUTF8(s, "\uFFFD"), n)
 }
+
+// UnknownUser is stored instead of a username that matches no admin user.
+const UnknownUser = "(unknown user)"
 
 // RecordSignIn records a sign-in. Failures from one address collapse into one
 // row per minute whose summary carries the running count.
@@ -191,9 +230,10 @@ func (r *Recorder) RecordSignIn(ctx context.Context, username string, ok bool, r
 		return
 	}
 	tried := clip(username, 64)
-	minute := r.now().Unix() / 60
+	minute := r.clock().Unix() / 60
+	// The mutex guards only the burst map; DB writes happen outside it so a slow
+	// database cannot serialize every failed login.
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if len(r.signins) > 2048 {
 		for k, b := range r.signins {
 			if b.minute != minute {
@@ -201,16 +241,32 @@ func (r *Recorder) RecordSignIn(ctx context.Context, username string, ok bool, r
 			}
 		}
 	}
-	if b := r.signins[remoteAddr]; b != nil && b.minute == minute && b.id > 0 {
+	if b := r.signins[remoteAddr]; b != nil && b.minute == minute {
 		b.count++
-		if err := r.q.UpdateSummary(b.id, fmt.Sprintf("%d failed sign-ins in this minute, latest tried %q", b.count, tried)); err != nil {
-			log.Printf("audit: signin throttle update failed: %v", err)
+		id, count := b.id, b.count
+		r.mu.Unlock()
+		if id > 0 { // id 0: the first row is still being written; it re-reads the count
+			if err := r.q.UpdateSummary(id, fmt.Sprintf("%d failed sign-ins in this minute, latest tried %q", count, tried)); err != nil {
+				log.Printf("audit: signin throttle update failed: %v", err)
+			}
 		}
 		return
 	}
+	b := &signinBurst{minute: minute, count: 1}
+	r.signins[remoteAddr] = b
+	r.mu.Unlock()
+
 	id := r.record(ctx, Entry{Actor: "anonymous", Via: via, RemoteAddr: remoteAddr, Action: "signin.failed",
 		ResourceType: "signin", ResourceName: tried, Summary: fmt.Sprintf("failed sign-in, tried %q", tried), Status: "failed"})
-	r.signins[remoteAddr] = &signinBurst{minute: minute, id: id, count: 1}
+	r.mu.Lock()
+	b.id = id
+	count := b.count
+	r.mu.Unlock()
+	if id > 0 && count > 1 {
+		if err := r.q.UpdateSummary(id, fmt.Sprintf("%d failed sign-ins in this minute, latest tried %q", count, tried)); err != nil {
+			log.Printf("audit: signin throttle update failed: %v", err)
+		}
+	}
 }
 
 /* ---------------- redaction ---------------- */
@@ -336,7 +392,7 @@ func redactWalk(cur, other any, isAfter bool) any {
 		return t
 	case string:
 		if len(t) > maxStringBytes {
-			return fmt.Sprintf("%s... (%d bytes)", t[:maxStringBytes], len(t))
+			return fmt.Sprintf("%s... (%d bytes)", truncUTF8(t, maxStringBytes), len(t))
 		}
 		return t
 	default:

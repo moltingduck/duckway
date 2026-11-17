@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/hackerduck/duckway/internal/audit"
 	"io/fs"
 	"log"
 	"net/http"
@@ -39,6 +40,8 @@ type Server struct {
 	// approver API, Discord, Telegram, sweeper). It is how an audit recorder
 	// observes decisions; it must be quick and must not panic.
 	OnDecision services.DecisionHook
+
+	auditRec *audit.Recorder // set by routes; tests inject a clock through it
 }
 
 // Shutdown stops all background goroutines and services. Call after
