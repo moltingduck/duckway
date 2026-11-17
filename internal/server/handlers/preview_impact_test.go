@@ -454,3 +454,50 @@ func TestPreviewDefaultBranchLookupFailureIsUnknown(t *testing.T) {
 		t.Fatalf("a failed default-branch lookup must be unknown, not a rule change: %+v", u)
 	}
 }
+
+// A git discovery request refused by the ACL layers whatever its query says has
+// a known verdict; only an ACL-allowed one is unknown (the query is not logged).
+func TestPreviewInfoRefsKnownWhenACLRefusesRegardlessOfQuery(t *testing.T) {
+	rig := newApproveRig(t, pvCurrent)
+	f := rig.f
+	seedLogRow(t, f, f.placeholderID, "anthropic", "GET", "/other/repo.git/info/refs", "acl_denied", 3, "")
+	seedLogRow(t, f, f.placeholderID, "anthropic", "GET", "/v1/repo.git/info/refs", "allowed", 1, "")
+	p := newPreviewFor(f, newSimFor(f))
+	code, r := previewDo(t, p.Token, f.placeholderID, map[string]interface{}{"permission_config": pvDraft})
+	if code != 200 {
+		t.Fatalf("%d %s", code, r.Error)
+	}
+	refused := r.item("/other/repo.git/info/refs")
+	if refused == nil || refused.Bucket != "unchanged" || refused.Before.Verdict != "refused" || refused.After.Verdict != "refused" {
+		t.Fatalf("refused discovery must be a known verdict, not unknown: %+v", refused)
+	}
+	allowed := r.item("/v1/repo.git/info/refs")
+	if allowed == nil || allowed.Bucket != "unknown" || allowed.ReasonCode != "query_not_logged" {
+		t.Fatalf("allowed discovery stays unknown: %+v", allowed)
+	}
+}
+
+// Tokens made by a key suite are ordinary token rows on the key (suite_id set),
+// so the key preview's fan-out includes them.
+func TestPreviewKeyFanOutIncludesKeySuiteTokens(t *testing.T) {
+	rig := newApproveRig(t, "")
+	f := rig.f
+	for _, q := range []string{
+		`INSERT INTO key_suites (id, name) VALUES ('suite-1', 'team')`,
+		`INSERT INTO clients (id, name, token_hash) VALUES ('cli-s', 'suite client', 'hs')`,
+		`INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, client_id, suite_id, requires_approval) VALUES ('ph-suite', 'SUITE', 'sk-dw-suite', '` + f.serviceID + `', '` + f.apiKeyID + `', 'cli-s', 'suite-1', 0)`,
+	} {
+		if _, err := f.rawDB.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	seedLogRow(t, f, "ph-suite", "anthropic", "GET", "/v1/models", "allowed", 2, "")
+	deny := `{"version":"1","provider":"anthropic","rules":[{"name":"d","endpoints":[{"method":"GET","path":"/v1/models"}]}]}`
+	code, r := previewDo(t, newPreviewFor(f, newSimFor(f)).Key, f.apiKeyID, map[string]interface{}{"acl": deny})
+	if code != 200 {
+		t.Fatalf("%d %s", code, r.Error)
+	}
+	if it := r.item("/v1/models"); it == nil || it.PlaceholderID != "ph-suite" || it.Bucket != "newly_refused" {
+		t.Fatalf("suite token missing from key fan-out: %+v", r.Items)
+	}
+}

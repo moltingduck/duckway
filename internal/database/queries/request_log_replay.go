@@ -1,6 +1,7 @@
 package queries
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 )
@@ -37,7 +38,9 @@ func placeholdersIn(ids []string) (string, []interface{}) {
 // newest first, at most limit groups. total is the sum of repeat_count of every
 // row in the window (not just of the returned groups); truncated reports that
 // more than limit groups exist. Marker rows of suppressed denials are skipped.
-func (q *RequestLogQueries) ReplayGroups(placeholderIDs []string, windowDays, limit int) (groups []ReplayGroup, total int64, truncated bool, err error) {
+// When ctx is cancelled (a client that went away, a timeout) it returns what it
+// has so far with truncated set and no error.
+func (q *RequestLogQueries) ReplayGroups(ctx context.Context, placeholderIDs []string, windowDays, limit int) (groups []ReplayGroup, total int64, truncated bool, err error) {
 	since := utcFormat(q.clock().AddDate(0, 0, -windowDays))
 	for start := 0; start < len(placeholderIDs); start += replayChunk {
 		end := start + replayChunk
@@ -48,19 +51,28 @@ func (q *RequestLogQueries) ReplayGroups(placeholderIDs []string, windowDays, li
 		base := ` FROM request_log WHERE placeholder_id IN (` + marks + `) AND created_at >= ? AND path <> ?`
 		args = append(args, since, DeniedSuppressedPath)
 		var t int64
-		if err = q.db.QueryRow(`SELECT COALESCE(SUM(repeat_count), 0)`+base, args...).Scan(&t); err != nil {
+		if err = q.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(repeat_count), 0)`+base, args...).Scan(&t); err != nil {
+			if ctx.Err() != nil {
+				return finishReplay(groups, total, limit, true)
+			}
 			return nil, 0, false, err
 		}
 		total += t
-		rows, qerr := q.db.Query(`SELECT placeholder_id, method, path, SUM(repeat_count), MAX(id)`+base+
+		rows, qerr := q.db.QueryContext(ctx, `SELECT placeholder_id, method, path, SUM(repeat_count), MAX(id)`+base+
 			` GROUP BY placeholder_id, method, path ORDER BY MAX(id) DESC LIMIT ?`, append(args, limit+1)...)
 		if qerr != nil {
+			if ctx.Err() != nil {
+				return finishReplay(groups, total, limit, true)
+			}
 			return nil, 0, false, qerr
 		}
 		for rows.Next() {
 			var g ReplayGroup
 			if err = rows.Scan(&g.PlaceholderID, &g.Method, &g.Path, &g.Hits, &g.MaxID); err != nil {
 				rows.Close()
+				if ctx.Err() != nil {
+					return finishReplay(groups, total, limit, true)
+				}
 				return nil, 0, false, err
 			}
 			groups = append(groups, g)
@@ -68,9 +80,16 @@ func (q *RequestLogQueries) ReplayGroups(placeholderIDs []string, windowDays, li
 		err = rows.Err()
 		rows.Close()
 		if err != nil {
+			if ctx.Err() != nil {
+				return finishReplay(groups, total, limit, true)
+			}
 			return nil, 0, false, err
 		}
 	}
+	return finishReplay(groups, total, limit, false)
+}
+
+func finishReplay(groups []ReplayGroup, total int64, limit int, truncated bool) ([]ReplayGroup, int64, bool, error) {
 	sortReplayGroups(groups)
 	if len(groups) > limit {
 		groups, truncated = groups[:limit], true
@@ -87,8 +106,9 @@ func sortReplayGroups(g []ReplayGroup) {
 }
 
 // AttachReplayRefs fills Refs of the groups that are refused receive-pack
-// pushes with stored per-ref detail. It reads at most maxRows denial rows.
-func (q *RequestLogQueries) AttachReplayRefs(groups []ReplayGroup, windowDays, maxRows int) error {
+// pushes with stored per-ref detail. It reads at most maxRows denial rows in
+// total (across all chunks). A cancelled ctx stops it quietly: refs are detail.
+func (q *RequestLogQueries) AttachReplayRefs(ctx context.Context, groups []ReplayGroup, windowDays, maxRows int) error {
 	idx := map[string]int{}
 	var ids []string
 	seen := map[string]bool{}
@@ -112,12 +132,16 @@ func (q *RequestLogQueries) AttachReplayRefs(groups []ReplayGroup, windowDays, m
 		}
 		marks, args := placeholdersIn(ids[start:end])
 		args = append(args, DecisionACLDenied, since, `%"refs":[{%`, maxRows)
-		rows, err := q.db.Query(`SELECT placeholder_id, method, path, deny_detail FROM request_log WHERE placeholder_id IN (`+marks+
+		rows, err := q.db.QueryContext(ctx, `SELECT placeholder_id, method, path, deny_detail FROM request_log WHERE placeholder_id IN (`+marks+
 			`) AND decision = ? AND created_at >= ? AND deny_detail LIKE ? AND method = 'POST' ORDER BY id DESC LIMIT ?`, args...)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			return err
 		}
 		for rows.Next() {
+			maxRows--
 			var ph, m, p, dd string
 			if err = rows.Scan(&ph, &m, &p, &dd); err != nil {
 				rows.Close()
