@@ -97,7 +97,10 @@ func TestApproverAuthRateLimitsFailuresPerAddress(t *testing.T) {
 			t.Fatalf("failure %d: %d", i, rec.Code)
 		}
 	}
-	rec := do("Bearer "+tok, "198.51.100.7:4001") // even a valid token is refused while throttled
+	if rec := do("Bearer "+tok, "198.51.100.7:4001"); rec.Code != http.StatusNoContent { // a valid token is never throttled
+		t.Fatalf("valid token while throttled: %d", rec.Code)
+	}
+	rec := do("Bearer dwa_wrong", "198.51.100.7:4001")
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("throttled: %d %v", rec.Code, rec.Header())
 	}
@@ -107,5 +110,59 @@ func TestApproverAuthRateLimitsFailuresPerAddress(t *testing.T) {
 	now = now.Add(approverFailWindow + time.Second)
 	if rec := do("Bearer "+tok, "198.51.100.7:4002"); rec.Code != http.StatusNoContent {
 		t.Fatalf("after the window: %d", rec.Code)
+	}
+}
+
+// A valid token is never throttled, even from an address that has used up its
+// failures; invalid requests are still counted and get 429.
+func TestApproverThrottleNeverBlocksValidToken(t *testing.T) {
+	_, q, h := approverAuthFixture(t)
+	const tok = "dwa_validtoken123"
+	_ = q.Create("t1", "alice", services.HashToken(tok))
+	do := func(auth string) int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, approverReq(auth, "192.0.2.50:1"))
+		return rec.Code
+	}
+	for i := 0; i < approverMaxFailures; i++ {
+		do("Bearer dwa_wrong")
+	}
+	if got := do("Bearer dwa_wrong"); got != http.StatusTooManyRequests {
+		t.Fatalf("invalid after limit: %d", got)
+	}
+	if got := do("Bearer " + tok); got != http.StatusNoContent {
+		t.Fatalf("valid token blocked by shared-address throttle: %d", got)
+	}
+}
+
+// A full table evicts the oldest entry instead of resetting every counter.
+func TestApproverThrottleEvictsOldestNotAll(t *testing.T) {
+	a, _, _ := approverAuthFixture(t)
+	base := time.Now()
+	i := 0
+	a.now = func() time.Time { i++; return base.Add(time.Duration(i) * time.Millisecond) }
+	for n := 0; n < approverMaxFailures; n++ {
+		a.recordFailure("victim")
+	}
+	for n := 0; n < approverMaxTracked+10; n++ {
+		a.recordFailure("flood-" + string(rune('a'+n%26)) + time.Duration(n).String())
+	}
+	a.mu.Lock()
+	size := len(a.fails)
+	a.mu.Unlock()
+	if size > approverMaxTracked {
+		t.Fatalf("table grew to %d", size)
+	}
+	// The victim was oldest, so it is the one evicted; the newest flood entry survives.
+	if a.blocked("victim") {
+		t.Fatal("oldest entry should have been evicted")
+	}
+	a.recordFailure("late")
+	a.mu.Lock()
+	_, ok := a.fails["late"]
+	n := len(a.fails)
+	a.mu.Unlock()
+	if !ok || n > approverMaxTracked || n < approverMaxTracked-1 {
+		t.Fatalf("late present=%v size=%d (table must stay near capacity, not reset)", ok, n)
 	}
 }

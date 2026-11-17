@@ -40,7 +40,7 @@ func TestApprovalDecisionsAreAuditedOncePerPath(t *testing.T) {
 		t.Fatalf("web approve: %d %s", rec.Code, rec.Body.String())
 	}
 	_, tok := e.newToken(t, "ci bot")
-	if rec := e.call(bearer(tok), "POST", "/approver/approvals/a-tui/reject", ""); rec.Code != 200 {
+	if rec := e.call(tuiClient(tok), "POST", "/approver/approvals/a-tui/reject", ""); rec.Code != 200 {
 		t.Fatalf("approver reject: %d %s", rec.Code, rec.Body.String())
 	}
 	if err := e.ss.Decider.Approve(t.Context(), "a-discord", 5, "discord:123", "discord"); err != nil {

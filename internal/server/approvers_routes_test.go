@@ -271,7 +271,7 @@ func TestApproverDecisionsAreAttributedAndRaceSafe(t *testing.T) {
 	e.addApproval(t, "ap2")
 	_, token := e.newToken(t, "ci pipeline")
 
-	rec := e.call(bearer(token), "POST", "/approver/approvals/ap1/approve", `{"duration_minutes":30}`)
+	rec := e.call(tuiClient(token), "POST", "/approver/approvals/ap1/approve", `{"duration_minutes":30}`)
 	if rec.Code != 200 {
 		t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
 	}
@@ -282,8 +282,8 @@ func TestApproverDecisionsAreAttributedAndRaceSafe(t *testing.T) {
 	}
 	// A second decision (any surface) is a 409 naming the existing decider.
 	for _, rec := range []*httptest.ResponseRecorder{
-		e.call(bearer(token), "POST", "/approver/approvals/ap1/reject", ``),
-		e.call(bearer(token), "POST", "/approver/approvals/ap1/approve", `{}`),
+		e.call(tuiClient(token), "POST", "/approver/approvals/ap1/reject", ``),
+		e.call(tuiClient(token), "POST", "/approver/approvals/ap1/approve", `{}`),
 		e.admin("bob", "POST", "/api/approvals/ap1/approve", `{}`),
 		e.admin("bob", "POST", "/api/approvals/ap1/reject", ``),
 	} {
@@ -293,10 +293,10 @@ func TestApproverDecisionsAreAttributedAndRaceSafe(t *testing.T) {
 			t.Fatalf("conflict: %d %s", rec.Code, rec.Body.String())
 		}
 	}
-	if rec := e.call(bearer(token), "POST", "/approver/approvals/missing/approve", `{}`); rec.Code != 404 {
+	if rec := e.call(tuiClient(token), "POST", "/approver/approvals/missing/approve", `{}`); rec.Code != 404 {
 		t.Fatalf("unknown approval: %d", rec.Code)
 	}
-	if rec := e.call(bearer(token), "POST", "/approver/approvals/ap2/reject", ``); rec.Code != 200 {
+	if rec := e.call(tuiClient(token), "POST", "/approver/approvals/ap2/reject", ``); rec.Code != 200 {
 		t.Fatalf("reject: %d", rec.Code)
 	}
 	var by, via string
@@ -472,6 +472,35 @@ func TestApproverEventsStreamCarriesOnlyApprovalChanges(t *testing.T) {
 	for _, l := range rest {
 		if l == "event: logs" || l == "event: badge" || l == "event: rollouts" {
 			t.Fatalf("approver stream leaked %q", l)
+		}
+	}
+}
+
+// tuiClient is bearer(token) plus the header ducklord's approvals panel sends.
+func tuiClient(token string) map[string]string {
+	h := bearer(token)
+	h["X-Duckway-Approver-Client"] = "ducklord-tui"
+	return h
+}
+
+// decided_via is "tui" only when the client says so; any other holder of an
+// approver token is "api".
+func TestApproverDecidedViaTUIOnlyWhenClientSaysSo(t *testing.T) {
+	e := newApproverEnv(t)
+	e.addApproval(t, "v1")
+	e.addApproval(t, "v2")
+	_, token := e.newToken(t, "script")
+	if rec := e.call(bearer(token), "POST", "/approver/approvals/v1/approve", `{}`); rec.Code != 200 {
+		t.Fatalf("approve: %d", rec.Code)
+	}
+	if rec := e.call(tuiClient(token), "POST", "/approver/approvals/v2/reject", ``); rec.Code != 200 {
+		t.Fatalf("reject: %d", rec.Code)
+	}
+	for id, want := range map[string]string{"v1": "api", "v2": "tui"} {
+		var via string
+		_ = e.db.QueryRow(`SELECT decided_via FROM approvals WHERE id=?`, id).Scan(&via)
+		if via != want {
+			t.Errorf("%s decided_via = %q, want %q", id, via, want)
 		}
 	}
 }
