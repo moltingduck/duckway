@@ -2579,7 +2579,7 @@ details:not(.more-menu) > summary:focus-visible { outline: 2px solid var(--accen
 .au-diff { margin: 0; padding: 0.5rem; background: var(--track); border-radius: 4px; max-height: 24rem; overflow: auto; font-family: var(--mono); font-size: 0.75rem; line-height: 1.5; white-space: pre; }
 .au-l { display: block; }
 .au-sym { user-select: none; color: var(--muted); }
-.au-fold { color: var(--muted); font-style: italic; }
+.au-fold { color: var(--muted); font-style: italic; white-space: pre-wrap; overflow-wrap: anywhere; }
 .au-key { color: var(--muted); }
 .au-add { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok-text); }
 .au-del { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger-text); }
