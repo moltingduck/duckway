@@ -150,8 +150,16 @@
     });
   }
 
+  // errorText is the line shown when a preview request fails. A 429 means another
+  // preview holds the server's single slot.
+  function errorText(e) {
+    var msg = e && e.message ? String(e.message) : '';
+    if ((e && e.status === 429) || /already running|HTTP 429|Too Many/i.test(msg)) return 'Another preview is running. Try again in a moment.';
+    return 'Could not preview: ' + msg;
+  }
+
   var api = {
-    BUCKETS: BUCKETS, endpoint: endpoint, tokenBody: tokenBody, keyBody: keyBody, serviceBody: serviceBody,
+    errorText: errorText, BUCKETS: BUCKETS, endpoint: endpoint, tokenBody: tokenBody, keyBody: keyBody, serviceBody: serviceBody,
     counts: counts, tabs: tabs, defaultTab: defaultTab, itemsFor: itemsFor, hiddenCount: hiddenCount,
     summary: summary, needsConfirm: needsConfirm, confirmText: confirmText, errorConfirmText: errorConfirmText, verdictLabel: verdictLabel,
     rowModel: rowModel, tokenRows: tokenRows, bucketDef: bucketDef, safeHref: safeHref
@@ -222,7 +230,7 @@
         return res;
       }).catch(function (e) {
         if (seq !== S.seq) return null;
-        S.status = 'error'; S.err = 'Could not preview: ' + e.message; render();
+        S.status = 'error'; S.err = api.errorText(e); render();
         return null;
       });
     }
