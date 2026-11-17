@@ -145,6 +145,11 @@ type tgCallbackQuery struct {
 }
 
 func (p *TelegramPoller) handleCallback(cb *tgCallbackQuery) {
+	// A press from any chat other than the configured one is ignored silently
+	// (no answer, no decision), like Discord's channel check.
+	if strconv.FormatInt(cb.Message.Chat.ID, 10) != strings.TrimSpace(p.chatID) {
+		return
+	}
 	// Answer exactly once (Telegram accepts a single answer per callback): empty
 	// on success, a short reason when the decision could not be applied.
 	reply := ""
