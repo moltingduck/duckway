@@ -1,11 +1,12 @@
 package services
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -498,7 +499,7 @@ func TestTelegramNotificationHasButtonsAndIsUpdatedOnOtherDecisions(t *testing.T
 	}
 }
 
-func TestDiscordBotRESTFallbackAlsoCarriesButtons(t *testing.T) {
+func TestDiscordBotRESTFallbackHasNoDeadButtonsOrButtonsFooter(t *testing.T) {
 	fh := &fakeHTTP{}
 	n := NewNotifier(nil)
 	n.client = &http.Client{Transport: fh}
@@ -506,12 +507,208 @@ func TestDiscordBotRESTFallbackAlsoCarriesButtons(t *testing.T) {
 		t.Fatal(err)
 	}
 	post := fh.find("POST", "/channels/chan9/messages")
-	if post == nil || post.body["components"] == nil {
-		t.Fatalf("REST fallback must include the buttons: %+v", post)
+	if post == nil {
+		t.Fatal("nothing posted")
 	}
-	var buf bytes.Buffer
-	_ = json.NewEncoder(&buf).Encode(post.body["components"])
-	if !strings.Contains(buf.String(), "dwa:a:ap1") {
-		t.Fatalf("components: %s", buf.String())
+	if post.body["components"] != nil {
+		t.Fatalf("no listener runs, so no buttons: %v", post.body["components"])
+	}
+	blob, _ := json.Marshal(post.body)
+	if strings.Contains(strings.ToLower(string(blob)), "buttons") {
+		t.Fatalf("footer mentions buttons that do not exist: %s", blob)
+	}
+}
+
+// ---- fx1116 chat hardening ----
+
+func TestDiscordInteractionFromOtherChannelIsSilent(t *testing.T) {
+	g, fh, calls := newFakeGateway(t, func(decisionCall) error { return nil })
+	in := buttonPress("dwa:a:ap1", "42")
+	in.ChannelID = "other-channel"
+	g.handleInteraction(in)
+	if len(fh.paths()) != 0 || len(*calls) != 0 {
+		t.Fatalf("mismatch must send nothing (no ack, no ephemeral reply): %v %v", fh.paths(), *calls)
+	}
+}
+
+func TestDiscordRESTClientHasTimeout(t *testing.T) {
+	g := NewDiscordGateway("t", "c", nil, nil)
+	if g.httpc.Timeout != discordRESTTimeout || discordRESTTimeout != 10*time.Second {
+		t.Fatalf("timeout = %v", g.httpc.Timeout)
+	}
+	if cap(g.interactionSem) != maxConcurrentInteractions {
+		t.Fatal("interaction semaphore missing")
+	}
+}
+
+type seqRT struct {
+	mu    sync.Mutex
+	codes []int
+	n     int
+}
+
+func (s *seqRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	s.mu.Lock()
+	code := 200
+	if s.n < len(s.codes) {
+		code = s.codes[s.n]
+	}
+	s.n++
+	s.mu.Unlock()
+	body := `{}`
+	if code == 429 {
+		body = `{"retry_after":0.01}`
+	}
+	return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+}
+
+func TestDiscordDoRetriesOneRateLimit(t *testing.T) {
+	g := NewDiscordGateway("t", "c", nil, nil)
+	rt := &seqRT{codes: []int{429, 429, 200}}
+	g.httpc = &http.Client{Transport: rt}
+	g.discordDo("PATCH", "http://d.test/x", strings.NewReader(`{}`), "application/json")
+	if rt.n != 2 {
+		t.Fatalf("want one retry (2 calls), got %d", rt.n)
+	}
+	rt2 := &seqRT{codes: []int{429, 200}}
+	g.httpc = &http.Client{Transport: rt2}
+	g.discordDo("PATCH", "http://d.test/x", strings.NewReader(`{}`), "application/json")
+	if rt2.n != 2 {
+		t.Fatalf("429 then success: %d calls", rt2.n)
+	}
+}
+
+// A decision by Discord must still update the other chat surfaces: only the
+// message the deciding interaction edited is skipped (it dropped its own ref).
+func TestDecisionMadeViaChatStillUpdatesOtherGateways(t *testing.T) {
+	g1, fh1, _ := newFakeGateway(t, func(decisionCall) error { return nil })
+	g2, fh2, _ := newFakeGateway(t, func(decisionCall) error { return nil })
+	g1.SendApprovalMessage(ApprovalNotification{ApprovalID: "ap1", Method: "GET", Path: "/x"})
+	g2.SendApprovalMessage(ApprovalNotification{ApprovalID: "ap1", Method: "GET", Path: "/x"})
+	n := NewNotifier(nil)
+	t.Cleanup(n.Stop)
+	n.Gateways.Store("c1", g1)
+	n.Gateways.Store("c2", g2)
+	g1.finishMessage("msg-1", "ap1", "Approved by <@1>") // g1 handled its own press
+	n.DecisionMade("ap1", "discord:1", ViaDiscord, "approved")
+	deadline := time.Now().Add(3 * time.Second)
+	for fh2.find("PATCH", "/channels/chan1/messages/msg-1") == nil && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if fh2.find("PATCH", "/channels/chan1/messages/msg-1") == nil {
+		t.Fatal("the other gateway's message was skipped because via==discord")
+	}
+	n1 := 0
+	for _, p := range fh1.paths() {
+		if strings.HasPrefix(p, "PATCH") {
+			n1++
+		}
+	}
+	if n1 != 1 {
+		t.Fatalf("deciding gateway's message edited %d times, want 1 (its own edit only)", n1)
+	}
+}
+
+func TestDecisionMadeQueueIsBounded(t *testing.T) {
+	n := NewNotifier(nil)
+	t.Cleanup(n.Stop)
+	before := runtime.NumGoroutine()
+	start := time.Now()
+	for i := 0; i < 5000; i++ {
+		n.DecisionMade("ap"+strconv.Itoa(i), "admin:a", ViaWeb, "approved")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("DecisionMade blocked the decider")
+	}
+	if grown := runtime.NumGoroutine() - before; grown > decisionWorkers+3 {
+		t.Fatalf("goroutines grew by %d: one per decision?", grown)
+	}
+}
+
+func TestTTLMapExpiresAndIsConcurrencySafe(t *testing.T) {
+	now := time.Unix(1000, 0)
+	m := &ttlMap[string]{ttl: time.Hour, now: func() time.Time { return now }}
+	m.Store("a", "1")
+	now = now.Add(30 * time.Minute)
+	m.Store("b", "2")
+	now = now.Add(45 * time.Minute) // a is 75 min old, b 45
+	if _, ok := m.Load("a"); ok {
+		t.Fatal("a should have expired")
+	}
+	if v, ok := m.Load("b"); !ok || v != "2" {
+		t.Fatal("b should live")
+	}
+	now = now.Add(2 * time.Hour)
+	m.Store("c", "3") // triggers the sweep
+	if m.Len() != 1 {
+		t.Fatalf("sweep left %d entries", m.Len())
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				k := strconv.Itoa(j % 7)
+				m.Store(k, "x")
+				m.Load(k)
+				m.LoadAndDelete(k)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+// A decision that landed before the message ref was stored still updates the
+// message right after it is sent.
+func TestDiscordDecisionBeforeStoreEditsImmediately(t *testing.T) {
+	g, fh, _ := newFakeGateway(t, func(decisionCall) error { return nil })
+	g.WithDecisionLookup(func(string) (queries.ApprovalDecision, error) {
+		return queries.ApprovalDecision{Status: "approved", DecidedBy: "admin:alice", DecidedVia: "web"}, nil
+	})
+	g.SendApprovalMessage(ApprovalNotification{ApprovalID: "ap1", Method: "GET", Path: "/x"})
+	edit := fh.find("PATCH", "/channels/chan1/messages/msg-1")
+	if edit == nil || !strings.Contains(edit.body["content"].(string), "Approved by admin:alice") {
+		t.Fatalf("not edited: %v", fh.paths())
+	}
+}
+
+func TestTelegramDecisionBeforeStoreEditsImmediately(t *testing.T) {
+	fh := &fakeHTTP{}
+	n := NewNotifier(nil).WithDecisionLookup(func(string) (queries.ApprovalDecision, error) {
+		return queries.ApprovalDecision{Status: "rejected", DecidedBy: "approver:ci"}, nil
+	})
+	t.Cleanup(n.Stop)
+	n.client = &http.Client{Transport: fh}
+	t.Setenv("DUCKWAY_TELEGRAM_BASE_URL", "http://tg.test")
+	if err := n.sendTelegram(`{"bot_token":"1:x","chat_id":"2"}`, ApprovalNotification{ApprovalID: "ap1", Method: "GET", Path: "/x"}); err != nil {
+		t.Fatal(err)
+	}
+	edit := fh.find("POST", "/editMessageText")
+	if edit == nil || !strings.Contains(edit.body["text"].(string), "Rejected by approver:ci") {
+		t.Fatalf("not edited: %v", fh.paths())
+	}
+	if _, ok := n.tgMessages.Load("ap1"); ok {
+		if refs, _ := n.tgMessages.Load("ap1"); len(refs) != 0 {
+			t.Fatal("ref should be dropped after the immediate edit")
+		}
+	}
+}
+
+func TestTelegramAlreadyDecidedNamesDecider(t *testing.T) {
+	p := NewTelegramPoller("1:x", "2", nil, nil).WithDecider(func(string, bool, int, ChatActor) error {
+		return &AlreadyDecidedError{Decision: queries.ApprovalDecision{Status: "approved", DecidedBy: "admin:alice"}}
+	})
+	var answers []string
+	p.client = &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		if strings.Contains(r.URL.Path, "answerCallbackQuery") {
+			answers = append(answers, string(b))
+		}
+		return okJSON(`{}`), nil
+	})}
+	p.handleCallback(&tgCallbackQuery{ID: "cb1", Data: "approve:a1"})
+	if len(answers) != 1 || !strings.Contains(answers[0], "Already decided (approved) by admin:alice") {
+		t.Fatalf("answers: %v", answers)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,10 +38,15 @@ type DiscordGateway struct {
 	httpc   *http.Client
 
 	// Maps message ID → approval ID (for reaction-based approval)
-	pendingApprovals sync.Map // string → string
+	pendingApprovals ttlMap[string]
 	// Maps approval ID → message ID, so a decision made elsewhere can still
-	// update the message (best effort, in-memory).
-	messageByApproval sync.Map // string → string
+	// update the message (best effort, in-memory, entries expire after 48 h).
+	messageByApproval ttlMap[string]
+	// lookup reads an approval's current decision; set so a decision that landed
+	// before the message ref was stored still updates the message.
+	lookup DecisionLookup
+	// interactionSem bounds concurrent interaction handlers.
+	interactionSem chan struct{}
 
 	ws          *websocket.Conn
 	heartbeatMs int
@@ -104,13 +110,14 @@ type reactionAddData struct {
 
 func NewDiscordGateway(botToken, channelID string, onApprove, onReject func(string) error) *DiscordGateway {
 	return &DiscordGateway{
-		botToken:  botToken,
-		channelID: channelID,
-		onApprove: onApprove,
-		onReject:  onReject,
-		apiBase:   discordAPIBase(),
-		httpc:     http.DefaultClient,
-		stopCh:    make(chan struct{}),
+		botToken:       botToken,
+		channelID:      channelID,
+		onApprove:      onApprove,
+		onReject:       onReject,
+		apiBase:        discordAPIBase(),
+		httpc:          &http.Client{Timeout: discordRESTTimeout},
+		interactionSem: make(chan struct{}, maxConcurrentInteractions),
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -119,6 +126,24 @@ func NewDiscordGateway(botToken, channelID string, onApprove, onReject func(stri
 // callbacks.
 func (g *DiscordGateway) WithDecider(fn DecisionFunc) *DiscordGateway {
 	g.decide = fn
+	return g
+}
+
+// discordRESTTimeout bounds every Discord REST call made from interactions and
+// message edits, so a stalled connection cannot pin a goroutine.
+const discordRESTTimeout = 10 * time.Second
+
+// maxConcurrentInteractions bounds INTERACTION_CREATE handlers; extra presses
+// beyond it are dropped (Discord shows "interaction failed" to the presser).
+const maxConcurrentInteractions = 16
+
+// DecisionLookup reads the current decision of an approval.
+type DecisionLookup func(approvalID string) (queries.ApprovalDecision, error)
+
+// WithDecisionLookup lets the gateway catch a decision made before the
+// message ref was stored (a fast web/TUI decision) and edit the message at once.
+func (g *DiscordGateway) WithDecisionLookup(fn DecisionLookup) *DiscordGateway {
+	g.lookup = fn
 	return g
 }
 
@@ -210,6 +235,15 @@ func (g *DiscordGateway) SendApprovalMessage(notif ApprovalNotification) {
 	g.messageByApproval.Store(notif.ApprovalID, msg.ID)
 
 	// Add ✅ and ❌ reactions to the message
+	// A decision may have landed while the message was in flight: its observer
+	// found no ref to edit. Check after storing and edit now.
+	if g.lookup != nil {
+		if dec, err := g.lookup(notif.ApprovalID); err == nil && dec.Status != "" && dec.Status != "pending" {
+			g.MarkDecided(notif.ApprovalID, "**"+describeDecision(dec.Status, dec.DecidedBy, 0, time.Now())+"**")
+			return
+		}
+	}
+
 	g.react(g.channelID, msg.ID, "✅")
 	time.Sleep(300 * time.Millisecond) // Rate limit
 	g.react(g.channelID, msg.ID, "❌")
@@ -402,7 +436,15 @@ func (g *DiscordGateway) handleDispatch(eventType string, data json.RawMessage, 
 	case "INTERACTION_CREATE":
 		var in interactionData
 		if json.Unmarshal(data, &in) == nil {
-			go g.handleInteraction(in)
+			select {
+			case g.interactionSem <- struct{}{}:
+				go func() {
+					defer func() { <-g.interactionSem }()
+					g.handleInteraction(in)
+				}()
+			default:
+				log.Printf("[discord-gw] too many concurrent interactions; dropped one")
+			}
 		}
 
 	case "MESSAGE_REACTION_ADD":
@@ -428,7 +470,7 @@ func (g *DiscordGateway) handleReaction(reaction reactionAddData) {
 	if !ok {
 		return
 	}
-	approvalID := val.(string)
+	approvalID := val
 	actor := ChatActor{Kind: "discord", UserID: reaction.UserID, Username: reaction.Member.User.Username, RoleIDs: reaction.Member.Roles}
 
 	var approve bool
@@ -503,7 +545,7 @@ func (g *DiscordGateway) MarkDecided(approvalID, line string) {
 	if !ok {
 		return
 	}
-	msgID := v.(string)
+	msgID := v
 	g.pendingApprovals.Delete(msgID)
 	g.editResult(g.channelID, msgID, line)
 }
@@ -542,6 +584,11 @@ func (g *DiscordGateway) handleInteraction(in interactionData) {
 	if in.Type != componentType || !strings.HasPrefix(in.Data.CustomID, "dwa:") {
 		return
 	}
+	// Interactions from other channels are ignored silently: no ack and no reply,
+	// before anything is said to the presser.
+	if in.ChannelID != g.channelID {
+		return
+	}
 	g.ackInteraction(in, map[string]interface{}{"type": 6}) // DEFERRED_UPDATE_MESSAGE
 
 	var approvalID string
@@ -565,8 +612,7 @@ func (g *DiscordGateway) handleInteraction(in interactionData) {
 	case in.User != nil:
 		actor.UserID, actor.Username = in.User.ID, in.User.Username
 	}
-	if in.ChannelID != g.channelID || approvalID == "" {
-		g.followup(in, "This button does not belong to the approval channel.")
+	if approvalID == "" {
 		return
 	}
 	if err := g.decideAs(approvalID, approve, minutes, actor); err != nil {
@@ -642,7 +688,7 @@ func (g *DiscordGateway) handleCommand(msg messageCreateData) {
 	g.sendMessage(msg.ChannelID, fmt.Sprintf("%s (`%s`)", resultLine(approve, 0, actor), approvalID))
 	// The held-request message (if this process sent it) loses its buttons too.
 	if v, ok := g.messageByApproval.Load(approvalID); ok {
-		g.finishMessage(v.(string), approvalID, resultLine(approve, 0, actor))
+		g.finishMessage(v, approvalID, resultLine(approve, 0, actor))
 	}
 }
 
@@ -672,24 +718,75 @@ func (g *DiscordGateway) sendHeartbeat(ws *websocket.Conn) {
 	websocket.JSON.Send(ws, hb)
 }
 
-// discordDo is a fire-and-forget Discord REST call. It properly closes
-// the response body so the connection is returned to the pool.
-func (g *DiscordGateway) discordDo(method, url string, body io.Reader, contentType string) {
-	req, err := http.NewRequest(method, url, body)
-	if err != nil {
-		log.Printf("[discord-gw] build request %s: %v", method, scrubNetErr(err))
-		return
+// discordDo is a fire-and-forget Discord REST call. It closes the response body
+// so the connection returns to the pool, and honours one 429 retry_after (capped
+// at 5 s) before giving up. body must be re-readable for the retry, so callers
+// pass strings.Reader (or nil).
+func (g *DiscordGateway) discordDo(method, url string, body *strings.Reader, contentType string) {
+	for attempt := 0; attempt < 2; attempt++ {
+		var rd io.Reader
+		if body != nil {
+			body.Seek(0, io.SeekStart)
+			rd = body
+		}
+		req, err := http.NewRequest(method, url, rd)
+		if err != nil {
+			log.Printf("[discord-gw] build request %s: %v", method, scrubNetErr(err))
+			return
+		}
+		req.Header.Set("Authorization", "Bot "+g.botToken)
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		resp, err := g.httpc.Do(req)
+		if err != nil {
+			return
+		}
+		wait := time.Duration(0)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			wait = retryAfter(b, resp.Header.Get("Retry-After"))
+		} else {
+			io.Copy(io.Discard, resp.Body)
+		}
+		resp.Body.Close()
+		if wait <= 0 {
+			return
+		}
+		select {
+		case <-time.After(wait):
+		case <-g.stopCh:
+			return
+		}
 	}
-	req.Header.Set("Authorization", "Bot "+g.botToken)
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
+}
+
+// retryAfter reads a Discord (retry_after seconds, JSON body) or HTTP
+// Retry-After value from a 429, capped at 5 s.
+func retryAfter(body []byte, header string) time.Duration {
+	var v struct {
+		RetryAfter float64 `json:"retry_after"`
 	}
-	resp, err := g.httpc.Do(req)
-	if err != nil {
-		return
+	secs := 1.0
+	if json.Unmarshal(body, &v) == nil && v.RetryAfter > 0 {
+		secs = v.RetryAfter
+	} else if f, err := strconv.ParseFloat(strings.TrimSpace(header), 64); err == nil && f > 0 {
+		secs = f
 	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	return capRetryAfter(secs)
+}
+
+// capRetryAfter converts a retry_after in seconds (<= 0: one second) to a
+// wait of at most 5 s.
+func capRetryAfter(secs float64) time.Duration {
+	if secs <= 0 {
+		secs = 1
+	}
+	d := time.Duration(secs * float64(time.Second))
+	if d > 5*time.Second {
+		d = 5 * time.Second
+	}
+	return d
 }
 
 func (g *DiscordGateway) react(channelID, messageID, emoji string) {

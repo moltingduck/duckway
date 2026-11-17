@@ -444,6 +444,7 @@ func (s *Server) startApprovalListeners(ss *SharedServices) {
 			// Every decision goes through the channel guard: the channel must still
 			// be active and unchanged, and the actor must be on its approver list.
 			gw := services.NewDiscordGateway(cfg.BotToken, cfg.ChannelID, nil, nil).
+				WithDecisionLookup(ss.ApprovalQ.GetDecision).
 				WithDecider(services.GuardChannelDecision(notifQ, ch.ID, ch.Config, decide))
 			gw.Start()
 			s.register(gw)
@@ -461,6 +462,7 @@ func (s *Server) startApprovalListeners(ss *SharedServices) {
 				continue
 			}
 			poller := services.NewTelegramPoller(cfg.BotToken, cfg.ChatID, nil, nil).
+				WithMessageDone(notifier.TelegramMessageDone).
 				WithDecider(services.GuardChannelDecision(notifQ, ch.ID, ch.Config, decide))
 			poller.Start()
 			s.register(poller)

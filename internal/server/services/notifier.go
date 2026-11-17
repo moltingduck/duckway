@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,9 +25,43 @@ type Notifier struct {
 	// Discord gateways by channel ID — used for reaction-based approvals
 	Gateways sync.Map // channelID → *DiscordGateway
 	// Telegram held-request messages by approval ID, so a decision made
-	// elsewhere can still update them (best effort, in-memory, this process only).
-	tgMessages sync.Map // approvalID → []tgMessageRef
+	// elsewhere can still update them (best effort, in-memory, this process only,
+	// entries expire after 48 h).
+	tgMessages ttlMap[[]tgMessageRef]
+
+	// lookup reads an approval's current decision (decision-before-store check).
+	lookup DecisionLookup
+
+	// DecisionMade work runs on a small bounded worker pool, not one goroutine per decision.
+	decisionQ   chan decisionJob
+	workersOnce sync.Once
+	stopCh      chan struct{}
+	stopOnce    sync.Once
 }
+
+// decisionJob is one queued chat-message update.
+type decisionJob struct {
+	approvalID, decidedBy, via, status string
+	notBefore                          time.Time
+}
+
+const (
+	decisionQueueSize = 256
+	decisionWorkers   = 2
+	// chatDecisionGrace lets the chat surface that made the decision finish
+	// editing its own message (and drop its ref) before the observer runs, so
+	// only the other messages are touched.
+	chatDecisionGrace = 500 * time.Millisecond
+)
+
+// WithDecisionLookup enables the decision-before-store check for Telegram messages.
+func (n *Notifier) WithDecisionLookup(fn DecisionLookup) *Notifier {
+	n.lookup = fn
+	return n
+}
+
+// Stop ends the decision workers.
+func (n *Notifier) Stop() { n.stopOnce.Do(func() { close(n.stopCh) }) }
 
 type tgMessageRef struct {
 	botToken string
@@ -35,14 +70,12 @@ type tgMessageRef struct {
 	at       time.Time
 }
 
-// tgMessageTTL bounds how long an undecided Telegram message ref is kept (a
-// decision made by another process never reaches this one's map).
-const tgMessageTTL = 48 * time.Hour
-
 func NewNotifier(channels *queries.NotificationQueries) *Notifier {
 	return &Notifier{
-		channels: channels,
-		client:   &http.Client{Timeout: 10 * time.Second},
+		channels:  channels,
+		client:    &http.Client{Timeout: 10 * time.Second},
+		decisionQ: make(chan decisionJob, decisionQueueSize),
+		stopCh:    make(chan struct{}),
 	}
 }
 
@@ -175,16 +208,16 @@ func (n *Notifier) sendTelegram(configJSON string, notif ApprovalNotification) e
 		} `json:"result"`
 	}
 	if b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20)); json.Unmarshal(b, &sent) == nil && sent.Result.MessageID != 0 {
-		refs, _ := n.tgMessages.Load(notif.ApprovalID)
-		list, _ := refs.([]tgMessageRef)
-		now := time.Now()
-		n.tgMessages.Range(func(k, v any) bool { // drop refs nobody decided in this process
-			if refs, _ := v.([]tgMessageRef); len(refs) > 0 && now.Sub(refs[0].at) > tgMessageTTL {
-				n.tgMessages.Delete(k)
+		ref := tgMessageRef{cfg.BotToken, cfg.ChatID, sent.Result.MessageID, time.Now()}
+		n.tgMessages.Update(notif.ApprovalID, func(old []tgMessageRef, _ bool) []tgMessageRef { return append(old, ref) })
+		// A decision may have landed while the message was in flight: its observer
+		// found no ref. Check after storing and edit now.
+		if n.lookup != nil {
+			if dec, err := n.lookup(notif.ApprovalID); err == nil && dec.Status != "" && dec.Status != "pending" {
+				n.removeTelegramRef(notif.ApprovalID, ref.chatID, ref.msgID)
+				n.editTelegramRef(ref, notif.ApprovalID, describeDecision(dec.Status, dec.DecidedBy, 0, time.Now()))
 			}
-			return true
-		})
-		n.tgMessages.Store(notif.ApprovalID, append(list, tgMessageRef{cfg.BotToken, cfg.ChatID, sent.Result.MessageID, now}))
+		}
 	}
 	return nil
 }
@@ -246,12 +279,12 @@ func (n *Notifier) sendDiscordBot(configJSON string, notif ApprovalNotification)
 		"title":       "🔑 Duckway Approval Required",
 		"color":       16750848,
 		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`", notif.ClientName, notif.ServiceName, notif.Method, notif.requestTarget(), notif.ApprovalID) + ruleLine(notif.Rule) + bodyLine(notif.BodyHash),
-		"footer":      map[string]string{"text": "Use the buttons, or reply: !approve " + notif.ApprovalID + "  or  !reject " + notif.ApprovalID},
+		"footer":      map[string]string{"text": "No listener is running for this channel: decide in the Duckway console or ducklord."},
 	}
 
+	// No buttons: nothing listens for them without a gateway.
 	body, _ := json.Marshal(map[string]interface{}{
-		"embeds":     []interface{}{embed},
-		"components": ApprovalComponents(notif.ApprovalID),
+		"embeds": []interface{}{embed},
 	})
 
 	apiURL := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase(), cfg.ChannelID)
@@ -276,36 +309,121 @@ func (n *Notifier) sendDiscordBot(configJSON string, notif ApprovalNotification)
 }
 
 // DecisionMade updates the held-request messages of an approval that was
-// decided somewhere other than the chat surface that shows them (web console,
-// TUI, expiry, or the other chat). It is a DecisionHook body: best effort, never
-// blocks the decider, and only touches messages this process sent.
+// decided somewhere (web console, TUI, expiry, or a chat). It is a DecisionHook
+// body: best effort, never blocks the decider (it only enqueues), and only
+// touches messages this process sent. The chat surface that decided has already
+// edited its own message and dropped its ref, so nothing is skipped by via.
 func (n *Notifier) DecisionMade(approvalID, decidedBy, via, status string) {
-	line := describeDecision(status, decidedBy, 0, time.Now())
-	go func() {
-		n.Gateways.Range(func(_, v any) bool {
-			if via != ViaDiscord {
-				if gw, ok := v.(*DiscordGateway); ok {
-					gw.MarkDecided(approvalID, "**"+line+"**")
+	n.workersOnce.Do(func() {
+		for i := 0; i < decisionWorkers; i++ {
+			go n.decisionWorker()
+		}
+	})
+	job := decisionJob{approvalID: approvalID, decidedBy: decidedBy, via: via, status: status}
+	if via == ViaDiscord || via == ViaTelegram {
+		job.notBefore = time.Now().Add(chatDecisionGrace)
+	}
+	select {
+	case n.decisionQ <- job:
+	default:
+		log.Printf("[notifier] decision queue full; chat message for approval %s not updated", approvalID)
+	}
+}
+
+func (n *Notifier) decisionWorker() {
+	for {
+		select {
+		case <-n.stopCh:
+			return
+		case job := <-n.decisionQ:
+			if d := time.Until(job.notBefore); d > 0 {
+				select {
+				case <-time.After(d):
+				case <-n.stopCh:
+					return
 				}
 			}
-			return true
-		})
-		refs, ok := n.tgMessages.LoadAndDelete(approvalID)
-		if !ok || via == ViaTelegram {
-			return
+			n.applyDecision(job)
 		}
-		for _, r := range refs.([]tgMessageRef) {
-			body, _ := json.Marshal(map[string]interface{}{"chat_id": r.chatID, "message_id": r.msgID,
-				"text": "Duckway approval " + approvalID + ": " + line})
-			resp, err := n.client.Post(fmt.Sprintf("%s/bot%s/editMessageText", telegramAPIBase(), r.botToken), "application/json", bytes.NewReader(body))
-			if err != nil {
-				log.Printf("[notifier] telegram result edit failed: %v", scrubNetErr(err))
-				continue
-			}
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+	}
+}
+
+func (n *Notifier) applyDecision(job decisionJob) {
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("[notifier] decision update panic: %v", p)
 		}
 	}()
+	line := describeDecision(job.status, job.decidedBy, 0, time.Now())
+	n.Gateways.Range(func(_, v any) bool {
+		if gw, ok := v.(*DiscordGateway); ok {
+			gw.MarkDecided(job.approvalID, "**"+line+"**")
+		}
+		return true
+	})
+	refs, ok := n.tgMessages.LoadAndDelete(job.approvalID)
+	if !ok {
+		return
+	}
+	for _, r := range refs {
+		n.editTelegramRef(r, job.approvalID, line)
+	}
+}
+
+// removeTelegramRef forgets one message ref (it was already edited).
+func (n *Notifier) removeTelegramRef(approvalID, chatID string, msgID int64) {
+	n.tgMessages.Update(approvalID, func(old []tgMessageRef, _ bool) []tgMessageRef {
+		var keep []tgMessageRef
+		for _, r := range old {
+			if !(r.chatID == chatID && r.msgID == msgID) {
+				keep = append(keep, r)
+			}
+		}
+		return keep
+	})
+}
+
+// TelegramMessageDone tells the notifier that the poller already edited the
+// message it received a button press on, so the decision observer skips it.
+func (n *Notifier) TelegramMessageDone(approvalID string, chatID int64, msgID int) {
+	n.removeTelegramRef(approvalID, strconv.FormatInt(chatID, 10), int64(msgID))
+}
+
+// editTelegramRef rewrites a held-request message with the result line,
+// honouring one 429 retry_after.
+func (n *Notifier) editTelegramRef(r tgMessageRef, approvalID, line string) {
+	body, _ := json.Marshal(map[string]interface{}{"chat_id": r.chatID, "message_id": r.msgID,
+		"text": "Duckway approval " + approvalID + ": " + line})
+	url := fmt.Sprintf("%s/bot%s/editMessageText", telegramAPIBase(), r.botToken)
+	for attempt := 0; attempt < 2; attempt++ {
+		resp, err := n.client.Post(url, "application/json", bytes.NewReader(body))
+		if err != nil {
+			log.Printf("[notifier] telegram result edit failed: %v", scrubNetErr(err))
+			return
+		}
+		wait := time.Duration(0)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			var v struct {
+				Parameters struct {
+					RetryAfter float64 `json:"retry_after"`
+				} `json:"parameters"`
+			}
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			_ = json.Unmarshal(b, &v)
+			wait = capRetryAfter(v.Parameters.RetryAfter)
+		} else {
+			io.Copy(io.Discard, resp.Body)
+		}
+		resp.Body.Close()
+		if wait <= 0 {
+			return
+		}
+		select {
+		case <-time.After(wait):
+		case <-n.stopCh:
+			return
+		}
+	}
 }
 
 // TestChannel sends a test message to a specific channel and optionally

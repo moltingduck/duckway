@@ -113,7 +113,7 @@ func TestDeciderLostRaceReportsExistingDecider(t *testing.T) {
 	if !errors.Is(err, queries.ErrApprovalNotPending) {
 		t.Fatal("must unwrap to ErrApprovalNotPending")
 	}
-	if decisionFailure(err) != "Already decided" {
+	if decisionFailure(err) != "Already decided (approved) by admin:alice" {
 		t.Fatalf("chat wording: %q", decisionFailure(err))
 	}
 	if len(*recs) != 1 {

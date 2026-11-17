@@ -82,8 +82,9 @@ func (s *Server) initShared() *SharedServices {
 
 	crypto := services.NewCrypto(s.config.EncryptionKey)
 	resolver := services.NewKeyResolver(crypto, apiKeyQ, placeholderQ, groupQ, approvalQ)
-	notifier := services.NewNotifier(notifQ)
+	notifier := services.NewNotifier(notifQ).WithDecisionLookup(approvalQ.GetDecision)
 	s.notifier = notifier
+	s.stoppers = append(s.stoppers, notifier)
 	canarySvc := services.NewCanaryService(canaryQ)
 
 	adminAuth := middleware.NewAdminAuth(s.config.SessionSecret).WithEpochStore(settingsQ)
