@@ -475,6 +475,14 @@ func TestPreviewInfoRefsEvaluatesBothMappedForms(t *testing.T) {
 	if refused == nil || refused.Bucket != "unchanged" || refused.Before.Verdict != "refused" || refused.After.Verdict != "refused" {
 		t.Fatalf("both mapped forms refused must be a known verdict: %+v", refused)
 	}
+	// Both POST forms refused but the plain GET allowed (any other service value): unknown.
+	seedLogRow(t, f, f.placeholderID, "anthropic", "GET", "/v1/other.git/info/refs", "allowed", 1, "")
+	_, r = previewDo(t, p.Token, f.placeholderID, map[string]interface{}{"permission_config": cfg})
+	if g := r.item("/v1/other.git/info/refs"); g == nil || g.Bucket != "unchanged" && g.Bucket != "unknown" {
+		t.Fatalf("unexpected: %+v", g)
+	} else if g.Bucket != "unknown" {
+		t.Fatalf("plain GET allowed must keep the group unknown: %+v", g)
+	}
 	mixed := r.item("/v1/repo.git/info/refs")
 	if mixed == nil || mixed.Bucket != "unknown" || mixed.ReasonCode != "query_not_logged" {
 		t.Fatalf("upload-pack allowed, receive-pack refused must be unknown: %+v", mixed)

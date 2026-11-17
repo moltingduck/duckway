@@ -579,11 +579,13 @@ func (p *ImpactPreview) evalCandidate(ctx context.Context, t *previewTarget, sd 
 	if strings.EqualFold(g.Method, http.MethodGet) && strings.HasSuffix(g.Path, ".git/info/refs") {
 		// The query is not logged. The proxy rewrites GET .../info/refs?service=X to
 		// POST .../git-X before the ACL check (proxyACLRequest), so evaluate both
-		// forms it maps to: refused only when each is refused, otherwise unknown.
+		// forms it maps to: refused only when each is refused (and the plain GET, for any other service value), otherwise unknown.
 		base := strings.TrimSuffix(g.Path, ".git/info/refs")
 		first := p.aclOnlyAt(http.MethodPost, base+".git/git-upload-pack", layers, ReasonQuery)
 		second := p.aclOnlyAt(http.MethodPost, base+".git/git-receive-pack", layers, ReasonQuery)
-		if first.Unknown == "" && second.Unknown == "" {
+		// Any other service value is checked unchanged, as the plain GET.
+		third := p.aclOnlyAt(g.Method, g.Path, layers, ReasonQuery)
+		if first.Unknown == "" && second.Unknown == "" && third.Unknown == "" {
 			return first
 		}
 		return sideResult{Unknown: ReasonQuery}
