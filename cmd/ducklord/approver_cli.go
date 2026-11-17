@@ -16,7 +16,7 @@ import (
 )
 
 const approverUsage = `usage:
-  ducklord approver login [--server <url>] [--config <path>]   (token from stdin or a hidden prompt)
+  ducklord approver login [--server <url>] [--insecure] [--config <path>]   (token from stdin or a hidden prompt)
   ducklord approver logout [--config <path>]`
 
 // approverCredentialsFor returns the credentials file beside the given config
@@ -36,7 +36,7 @@ func runApproverCommand(args []string, in io.Reader, out io.Writer) error {
 		return errors.New(approverUsage)
 	}
 	sub, rest := args[0], args[1:]
-	server, configPath := "", ""
+	server, configPath, insecure := "", "", false
 	for i := 0; i < len(rest); i++ {
 		switch rest[i] {
 		case "--server":
@@ -45,6 +45,11 @@ func runApproverCommand(args []string, in io.Reader, out io.Writer) error {
 			}
 			server = rest[i+1]
 			i++
+		case "--insecure":
+			if sub != "login" {
+				return errors.New(approverUsage)
+			}
+			insecure = true
 		case "--config", "-c":
 			if i+1 >= len(rest) {
 				return fmt.Errorf("--config requires a value")
@@ -64,13 +69,13 @@ func runApproverCommand(args []string, in io.Reader, out io.Writer) error {
 		fmt.Fprintln(out, "Approver login removed.")
 		return nil
 	case "login":
-		return approverLogin(path, server, in, out)
+		return approverLogin(path, server, insecure, in, out)
 	default:
 		return fmt.Errorf("unknown approver command %q\n%s", sub, approverUsage)
 	}
 }
 
-func approverLogin(path, server string, in io.Reader, out io.Writer) error {
+func approverLogin(path, server string, insecure bool, in io.Reader, out io.Writer) error {
 	reader := bufio.NewReader(in)
 	if server == "" {
 		if existing, err := ducklord.LoadApproverCredentials(path); err == nil {
@@ -94,7 +99,13 @@ func approverLogin(path, server string, in io.Reader, out io.Writer) error {
 		return err
 	}
 	if u, _ := url.Parse(normalized); u != nil && u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		if !insecure {
+			return fmt.Errorf("refusing plain http to %s: the approver token would cross the network unencrypted; use https or pass --insecure", normalized)
+		}
 		fmt.Fprintln(out, "warning: the server URL is plain http; the approver token will cross the network unencrypted.")
+	}
+	if w := localAgentWarning(); w != "" {
+		fmt.Fprintln(out, w)
 	}
 	token, err := readApproverToken(in, reader, out)
 	if err != nil {

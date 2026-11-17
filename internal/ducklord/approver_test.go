@@ -197,3 +197,95 @@ func TestApproverWatchEventsStopsOnUnauthorized(t *testing.T) {
 		t.Fatalf("events = %v", got)
 	}
 }
+
+func TestApproverClientRefusesRedirectsAndSendsClientHeader(t *testing.T) {
+	var hits atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	defer other.Close()
+	var hdr atomic.Value
+	c := approverServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			hdr.Store(r.Header.Get(ApproverClientHeader))
+			_, _ = w.Write([]byte(`{"id":"a","status":"approved"}`))
+			return
+		}
+		http.Redirect(w, r, other.URL+"/steal", http.StatusFound)
+	})
+	if _, err := c.List(context.Background(), nil, 0); err == nil {
+		t.Fatal("redirect should surface as an error")
+	}
+	if hits.Load() != 0 {
+		t.Fatal("redirect was followed with the token")
+	}
+	if _, err := c.Approve(context.Background(), "a", 0); err != nil || hdr.Load() != "ducklord-tui" {
+		t.Fatalf("approve header = %v err=%v", hdr.Load(), err)
+	}
+	hdr.Store("")
+	if _, err := c.Reject(context.Background(), "a"); err != nil || hdr.Load() != "ducklord-tui" {
+		t.Fatalf("reject header = %v err=%v", hdr.Load(), err)
+	}
+}
+
+func TestApproverWatchEventsIdleWatchdogReconnects(t *testing.T) {
+	old := approverStreamIdle
+	approverStreamIdle = 80 * time.Millisecond
+	t.Cleanup(func() { approverStreamIdle = old })
+	var conns atomic.Int32
+	c := approverServer(t, func(w http.ResponseWriter, r *http.Request) {
+		conns.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: hello\ndata: {}\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // silent: no heartbeats
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var kinds []ApproverEventKind
+	for ev := range c.WatchEvents(ctx, ApproverBackoff{Min: 5 * time.Millisecond, Max: 10 * time.Millisecond}) {
+		kinds = append(kinds, ev.Kind)
+		if conns.Load() >= 2 && ev.Kind == ApproverEventConnected {
+			cancel()
+		}
+	}
+	if conns.Load() < 2 || len(kinds) < 3 || kinds[1] != ApproverEventDisconnected {
+		t.Fatalf("conns=%d kinds=%v", conns.Load(), kinds)
+	}
+}
+
+func TestApproverWatchEventsRequireHelloAndFloorAfterBye(t *testing.T) {
+	var conns atomic.Int32
+	var first, second atomic.Int64
+	c := approverServer(t, func(w http.ResponseWriter, r *http.Request) {
+		n := conns.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if n == 1 {
+			fmt.Fprint(w, "event: approvals\ndata: {\"pending\":7}\n\nevent: hello\ndata: {}\n\nevent: bye\ndata: {}\n\n")
+			first.Store(time.Now().UnixNano())
+			return
+		}
+		second.Store(time.Now().UnixNano())
+		fmt.Fprint(w, "event: hello\ndata: {}\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var kinds []ApproverEventKind
+	for ev := range c.WatchEvents(ctx, ApproverBackoff{Min: 150 * time.Millisecond, Max: time.Second}) {
+		kinds = append(kinds, ev.Kind)
+		if conns.Load() >= 2 {
+			cancel()
+		}
+	}
+	if len(kinds) == 0 || kinds[0] != ApproverEventConnected {
+		t.Fatalf("an event before hello must not count: %v", kinds)
+	}
+	for _, k := range kinds[:1] {
+		if k == ApproverEventApprovals {
+			t.Fatal("pre-hello approvals event delivered")
+		}
+	}
+	if d := time.Duration(second.Load() - first.Load()); d < 120*time.Millisecond {
+		t.Fatalf("reconnect after bye too fast: %v", d)
+	}
+}

@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -84,13 +86,43 @@ func NewApproverClient(server, token string, httpClient *http.Client) (*Approver
 	}
 	c := &ApproverClient{server: server, token: token}
 	if httpClient != nil {
-		c.http, c.stream = httpClient, httpClient
+		cp := *httpClient
+		cp.CheckRedirect = refuseRedirect
+		c.http, c.stream = &cp, &cp
 	} else {
-		c.http = &http.Client{Timeout: 15 * time.Second}
-		c.stream = &http.Client{}
+		c.http = &http.Client{Timeout: 15 * time.Second, Transport: approverTransport(), CheckRedirect: refuseRedirect}
+		c.stream = &http.Client{Transport: approverTransport(), CheckRedirect: refuseRedirect}
 	}
 	return c, nil
 }
+
+// ApproverClientHeader names the client kind on decisions; the server records
+// decided_via from it.
+const (
+	ApproverClientHeader = "X-Duckway-Approver-Client"
+	ApproverClientValue  = "ducklord-tui"
+)
+
+// refuseRedirect never follows a redirect: every request carries the approver
+// token, and a redirect could move it to another origin or downgrade to http.
+func refuseRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+// approverTransport has bounded connect, TLS and response-header waits; the
+// stream's body is bounded by the idle watchdog instead.
+func approverTransport() *http.Transport {
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 20 * time.Second,
+		MaxIdleConns:          2,
+		IdleConnTimeout:       60 * time.Second,
+	}
+}
+
+// approverStreamIdle is how long the stream may stay silent (heartbeat
+// comments count) before it is cancelled and reconnected.
+var approverStreamIdle = 45 * time.Second
 
 // Server returns the normalized server URL.
 func (c *ApproverClient) Server() string { return c.server }
@@ -109,6 +141,9 @@ func (c *ApproverClient) request(ctx context.Context, client *http.Client, metho
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	if method == http.MethodPost {
+		req.Header.Set(ApproverClientHeader, ApproverClientValue)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -209,6 +244,8 @@ func (c *ApproverClient) Reject(ctx context.Context, id string) (*ApproverDecisi
 	return &out, nil
 }
 
+var errApproverStreamIdle = errors.New("approver events: stream idle, reconnecting")
+
 // ApproverEventKind labels what WatchEvents reports.
 type ApproverEventKind string
 
@@ -237,7 +274,7 @@ var DefaultApproverBackoff = ApproverBackoff{Min: time.Second, Max: 30 * time.Se
 
 // WatchEvents streams /approver/events until ctx ends, reconnecting with
 // exponential backoff (reset after a successful hello; a planned "bye" at the
-// server's lifetime cap reconnects immediately). A 401 stops the watch after an
+// server's lifetime cap reconnects after the minimum delay). A 401 stops the watch after an
 // unauthorized event. The returned channel closes when the watch ends.
 func (c *ApproverClient) WatchEvents(ctx context.Context, backoff ApproverBackoff) <-chan ApproverEvent {
 	if backoff.Min <= 0 {
@@ -271,6 +308,14 @@ func (c *ApproverClient) WatchEvents(ctx context.Context, backoff ApproverBackof
 				delay = backoff.Min
 			}
 			if planned {
+				// A planned bye reconnects, but never in a tight loop.
+				timer := time.NewTimer(backoff.Min)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
 				continue
 			}
 			if !emit(ApproverEvent{Kind: ApproverEventDisconnected, Err: err, Retry: delay}) {
@@ -290,8 +335,16 @@ func (c *ApproverClient) WatchEvents(ctx context.Context, backoff ApproverBackof
 }
 
 func (c *ApproverClient) streamOnce(ctx context.Context, emit func(ApproverEvent) bool) (planned, hello bool, err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var idled atomic.Bool
+	watchdog := time.AfterFunc(approverStreamIdle, func() { idled.Store(true); cancel() })
+	defer watchdog.Stop()
 	resp, err := c.request(ctx, c.stream, http.MethodGet, "/approver/events", nil)
 	if err != nil {
+		if idled.Load() {
+			err = errApproverStreamIdle
+		}
 		return false, false, err
 	}
 	defer resp.Body.Close()
@@ -304,13 +357,17 @@ func (c *ApproverClient) streamOnce(ctx context.Context, emit func(ApproverEvent
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	var event, data string
+	connected := false
 	dispatch := func() bool {
 		defer func() { event, data = "", "" }()
 		switch event {
 		case "hello":
-			hello = true
+			hello, connected = true, true
 			return emit(ApproverEvent{Kind: ApproverEventConnected})
 		case "approvals":
+			if !connected {
+				return true // events only count after the server's hello
+			}
 			var p struct{ Pending, Total int64 }
 			_ = json.Unmarshal([]byte(data), &p)
 			return emit(ApproverEvent{Kind: ApproverEventApprovals, Pending: p.Pending, Total: p.Total})
@@ -320,6 +377,7 @@ func (c *ApproverClient) streamOnce(ctx context.Context, emit func(ApproverEvent
 		return true
 	}
 	for sc.Scan() {
+		watchdog.Reset(approverStreamIdle)
 		line := sc.Text()
 		switch {
 		case line == "":
@@ -335,6 +393,9 @@ func (c *ApproverClient) streamOnce(ctx context.Context, emit func(ApproverEvent
 		case strings.HasPrefix(line, "data:"):
 			data = strings.TrimSpace(line[len("data:"):])
 		}
+	}
+	if idled.Load() {
+		return false, hello, errApproverStreamIdle
 	}
 	if err := sc.Err(); err != nil {
 		return false, hello, err
