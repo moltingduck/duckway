@@ -110,7 +110,7 @@ Admin auth plus SameOrigin, the same as the other admin APIs. All three return t
   - `approver:<name>` from an approver token;
   - `discord:<user id>` or `telegram:<user id>` from chat;
   - `system:sweeper` for expiry.
-- Values of `decided_via`: `web`, `tui`, `discord`, `telegram`, `sweeper`.
+- Values of `decided_via`: `web`, `tui`, `api`, `discord`, `telegram`, `sweeper`. An approver token decides with `tui` only when the client sends `X-Duckway-Approver-Client: ducklord-tui` (ducklord does); any other holder of a token is `api`.
 - Show both in the web inbox history.
 - A concurrent decision returns 409 with the existing decider, so a UI can show "already approved by …".
 
@@ -153,7 +153,7 @@ This part comes after the imp1116 split lands.
 | `id` | INTEGER PK autoincrement. |
 | `created_at` | |
 | `actor` | `admin:<user>`, `approver:<name>`, `discord:<id>`, `telegram:<id>`, `system:<x>` or `anonymous`. |
-| `via` | `web`, `api`, `tui`, `discord`, `telegram` or `system`. |
+| `via` | `web`, `api`, `tui`, `discord`, `telegram` or `system`. Admin console actions are `web` whether they come from a browser page or the console's JSON API (both are signed-in admin sessions, so the client cannot be told apart). |
 | `remote_addr` | |
 | `action` | For example `placeholder.update`. |
 | `resource_type` | |
