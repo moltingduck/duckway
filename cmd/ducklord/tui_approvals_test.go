@@ -568,3 +568,128 @@ func TestApprovalsCommandPaletteEntryOpensPanel(t *testing.T) {
 		t.Fatalf("palette action = %q", s.commandPaletteAction)
 	}
 }
+
+func TestApprovalsPanelSanitizesServerStrings(t *testing.T) {
+	s := approvalsTestState()
+	evil := "\x1b]0;pwn\x07\x1b[31mred\x1b[0m"
+	s.approvals.items[0].Status = evil
+	s.approvals.items[0].HeldReason = evil
+	s.approvals.message, s.approvals.messageErr = evil, true
+	s.approvals.localWarning = ""
+	for _, detail := range []bool{false, true} {
+		s.approvals.detail = detail
+		text := linesText(s.approvalsLines(130, 30))
+		if strings.Contains(text, "\x1b") || strings.Contains(text, "\x07") {
+			t.Fatalf("control bytes reached the panel (detail=%v): %q", detail, text)
+		}
+	}
+	if strings.ContainsAny(approvalRow(s.approvals.items[0]), "\x1b\x07") {
+		t.Fatal("approvalRow leaked control bytes")
+	}
+	s.approvals.showHistory, s.approvals.history = true, []ducklord.ApproverApproval{{ID: "h", Status: evil}}
+	s.approvals.guardUntil = time.Time{}
+	s.handleApprovalsInput([]byte("y"))
+	if strings.ContainsAny(s.approvals.message, "\x1b\x07") {
+		t.Fatalf("history message leaked: %q", s.approvals.message)
+	}
+	s.approvals.loggedIn, s.approvals.loadErr = false, evil
+	if text := linesText(s.approvalsLines(100, 30)); strings.ContainsAny(text, "\x1b\x07") {
+		t.Fatalf("loadErr leaked: %q", text)
+	}
+	l := approvalsTestLoop(t, newApproverFixture(t), false)
+	l.onApprovalsEvent(approvalsEvent{kind: "decision", id: "x", err: &ducklord.AlreadyDecidedError{DecidedBy: evil, DecidedVia: evil}})
+	if strings.ContainsAny(l.state.approvals.message, "\x1b\x07") {
+		t.Fatalf("already-decided message leaked: %q", l.state.approvals.message)
+	}
+}
+
+func TestApprovalsListInFlightKeepsOneAndRefetchesOnce(t *testing.T) {
+	f := newApproverFixture(t)
+	l := approvalsTestLoop(t, f, true)
+	l.startApprovals()
+	a := &l.state.approvals
+	a.listInFlight = true // pretend a fetch is running
+	gen := a.generation
+	l.refreshApprovals()
+	l.refreshApprovals()
+	if !a.listDirty || a.generation != gen {
+		t.Fatalf("dirty=%v gen %d->%d", a.listDirty, gen, a.generation)
+	}
+	// The in-flight response is applied (not dropped) and triggers one re-fetch.
+	l.onApprovalsEvent(approvalsEvent{kind: "list", gen: gen, items: sampleApprovals()})
+	if len(a.items) != 2 || a.listDirty || !a.listInFlight {
+		t.Fatalf("items=%d dirty=%v inFlight=%v", len(a.items), a.listDirty, a.listInFlight)
+	}
+}
+
+func TestApprovalsStreamEventsFromPreviousWatchAreIgnored(t *testing.T) {
+	f := newApproverFixture(t)
+	l := approvalsTestLoop(t, f, true)
+	l.startApprovals()
+	a := &l.state.approvals
+	old := a.watchEpoch
+	l.startApprovals() // re-login
+	if a.watchEpoch == old {
+		t.Fatal("epoch not advanced")
+	}
+	l.onApprovalsEvent(approvalsEvent{kind: "stream", epoch: old, stream: ducklord.ApproverEvent{Kind: ducklord.ApproverEventUnauthorized}})
+	if a.conn == "revoked" {
+		t.Fatal("stale unauthorized event applied")
+	}
+	l.onApprovalsEvent(approvalsEvent{kind: "stream", epoch: old, stream: ducklord.ApproverEvent{Kind: ducklord.ApproverEventApprovals, Pending: 99}})
+	if a.pendingCount == 99 {
+		t.Fatal("stale approvals event applied")
+	}
+	// A list response from the previous login is also void.
+	l.onApprovalsEvent(approvalsEvent{kind: "list", gen: a.generation - 1, items: sampleApprovals()})
+	if len(a.items) == 2 {
+		t.Fatal("stale list applied")
+	}
+}
+
+func TestApprovalsPanelHeldReasonWrappedAndPickerDefault(t *testing.T) {
+	s := approvalsTestState()
+	long := strings.Repeat("held because reason ", 12) + "END-OF-REASON"
+	s.approvals.items[0].HeldReason = long
+	s.approvals.detail = true
+	for _, cols := range []int{80, 130} {
+		text := linesText(s.approvalsLines(cols, 40))
+		if !strings.Contains(text, "END-OF-REASON") {
+			t.Fatalf("cols %d: held reason truncated:\n%s", cols, text)
+		}
+	}
+	s.approvals.detail = false
+	s.approvals.items[0].DefaultMinutes = 240
+	s.approvals.guardUntil = time.Time{}
+	s.handleApprovalsInput([]byte("Y"))
+	if !s.approvals.picker || s.approvals.pickerIndex != 2 {
+		t.Fatalf("picker should preselect the 4 hours default: %+v", s.approvals.pickerIndex)
+	}
+	s.approvals.picker = false
+	s.approvals.items[0].DefaultMinutes = 30 // not an option: no false claim
+	s.handleApprovalsInput([]byte("Y"))
+	if text := linesText(s.approvalsLines(130, 30)); !strings.Contains(text, "server default for y: 30 min") {
+		t.Fatalf("picker missing accurate default note:\n%s", text)
+	}
+	s.approvals.picker = false
+	s.approvals.detail, s.approvals.selected = true, 1
+	text := linesText(s.approvalsLines(130, 30))
+	if strings.Contains(text, "approve lasts") || !strings.Contains(text, "Query:   not recorded") || !strings.Contains(text, "Body:    not recorded") {
+		t.Fatalf("detail copy:\n%s", text)
+	}
+}
+
+func TestApprovalsPanelShowsLocalAgentWarning(t *testing.T) {
+	old := localAgentProbe
+	localAgentProbe = func() (string, bool) { return "/x/ducklion.sock", true }
+	t.Cleanup(func() { localAgentProbe = old })
+	l := approvalsTestLoop(t, newApproverFixture(t), false)
+	l.openApprovals()
+	if text := linesText(l.state.approvalsLines(100, 30)); !strings.Contains(text, "local ducklion daemon") {
+		t.Fatalf("warning missing (logged out):\n%s", text)
+	}
+	l.state.approvals.loggedIn = true
+	if text := linesText(l.state.approvalsLines(100, 30)); !strings.Contains(text, "local ducklion daemon") {
+		t.Fatalf("warning missing (logged in):\n%s", text)
+	}
+}

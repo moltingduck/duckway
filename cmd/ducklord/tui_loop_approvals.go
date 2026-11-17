@@ -20,6 +20,7 @@ type approvalsEvent struct {
 	approved bool
 	decision *ducklord.ApproverDecision
 	stream   ducklord.ApproverEvent
+	epoch    uint64 // watch epoch the stream event came from
 }
 
 // startApprovals loads the stored approver login, if any, and starts the live
@@ -32,16 +33,20 @@ func (l *tuiLoop) startApprovals() {
 		l.approvalsCancel = nil
 	}
 	a.loggedIn, a.client, a.loadErr, a.conn = false, nil, "", ""
+	a.watchEpoch++
+	a.generation++ // list responses of the previous login are void
+	a.loading, a.listInFlight, a.listDirty = false, false, false
+	a.localWarning = localAgentWarning()
 	creds, err := ducklord.LoadApproverCredentials(approverCredentialsFor(state.cfgPath))
 	if err != nil {
 		if !errors.Is(err, ducklord.ErrApproverNotLoggedIn) {
-			a.loadErr = err.Error()
+			a.loadErr = oneLine(err.Error())
 		}
 		return
 	}
 	client, err := ducklord.NewApproverClient(creds.Server, creds.Token, nil)
 	if err != nil {
-		a.loadErr = err.Error()
+		a.loadErr = oneLine(err.Error())
 		return
 	}
 	a.loggedIn, a.client, a.server, a.conn = true, client, client.Server(), "connecting"
@@ -51,11 +56,11 @@ func (l *tuiLoop) startApprovals() {
 	ctx, cancel := context.WithCancel(l.ctx)
 	l.approvalsCancel = cancel
 	events := client.WatchEvents(ctx, ducklord.DefaultApproverBackoff)
-	done := l.approvalsDone
+	done, epoch := l.approvalsDone, a.watchEpoch
 	go func() {
 		for ev := range events {
 			select {
-			case done <- approvalsEvent{kind: "stream", stream: ev}:
+			case done <- approvalsEvent{kind: "stream", stream: ev, epoch: epoch}:
 			case <-ctx.Done():
 				return
 			}
@@ -71,6 +76,7 @@ func (l *tuiLoop) openApprovals() {
 		l.startApprovals()
 	}
 	a.open, a.detail, a.picker, a.message = true, false, false, ""
+	a.localWarning = localAgentWarning()
 	a.guardKeys()
 	if a.loggedIn {
 		l.refreshApprovals()
@@ -90,8 +96,11 @@ func (l *tuiLoop) refreshApprovals() {
 	if !a.loggedIn || a.client == nil || l.approvalsDone == nil {
 		return
 	}
-	a.generation++
-	a.loading = true
+	if a.listInFlight {
+		a.listDirty = true // one more fetch once the current one lands
+		return
+	}
+	a.listInFlight, a.loading = true, true
 	gen, client, history := a.generation, a.client, a.showHistory
 	go func() {
 		items, err := client.List(l.ctx, []string{"pending"}, 200)
@@ -155,17 +164,21 @@ func (l *tuiLoop) onApprovalsEvent(ev approvalsEvent) {
 	fail := func(err error) {
 		if errors.Is(err, ducklord.ErrApproverUnauthorized) {
 			a.conn = "revoked"
-			a.message, a.messageErr = err.Error(), true
+			a.message, a.messageErr = oneLine(err.Error()), true
 			return
 		}
-		a.message, a.messageErr = "approver API: "+err.Error(), true
+		a.message, a.messageErr = "approver API: "+oneLine(err.Error()), true
 	}
 	switch ev.kind {
 	case "list":
 		if ev.gen != a.generation {
-			return // a newer refresh is in flight
+			return // from a previous login
 		}
-		a.loading = false
+		a.loading, a.listInFlight = false, false
+		if a.listDirty {
+			a.listDirty = false
+			defer l.refreshApprovals()
+		}
 		if ev.err != nil {
 			fail(ev.err)
 			return
@@ -184,13 +197,16 @@ func (l *tuiLoop) onApprovalsEvent(ev approvalsEvent) {
 		default:
 			var decided *ducklord.AlreadyDecidedError
 			if errors.As(ev.err, &decided) {
-				a.message, a.messageErr = ev.err.Error(), true
+				a.message, a.messageErr = oneLine(ev.err.Error()), true
 			} else {
 				fail(ev.err)
 			}
 		}
 		l.refreshApprovals()
 	case "stream":
+		if ev.epoch != a.watchEpoch {
+			return // an earlier watch (before a re-login)
+		}
 		switch ev.stream.Kind {
 		case ducklord.ApproverEventConnected:
 			a.conn = "live"

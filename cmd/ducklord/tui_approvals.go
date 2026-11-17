@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
@@ -48,7 +49,11 @@ type approvalsState struct {
 	messageErr   bool
 	busy         string // approval ID being decided
 	loading      bool
-	generation   uint64 // fences list responses
+	generation   uint64 // fences list responses across logins
+	watchEpoch   uint64 // fences stream events across logins
+	listInFlight bool
+	listDirty    bool   // a refresh was requested while one was in flight
+	localWarning string // set when agents may run locally as this user
 	guardUntil   time.Time
 }
 
@@ -180,11 +185,25 @@ func (s *tuiState) handleApprovalsInput(b []byte) approvalsCmd {
 	case "n":
 		return a.decide("reject", 0)
 	case "Y":
-		if _, ok := a.decidable(); ok {
+		if it, ok := a.decidable(); ok {
 			a.picker, a.pickerIndex = true, 1
+			if i := pickerDefaultIndex(it); i >= 0 {
+				a.pickerIndex = i
+			}
 		}
 	}
 	return approvalsCmd{}
+}
+
+// pickerDefaultIndex is the duration option equal to the approval's default
+// TTL, or -1.
+func pickerDefaultIndex(it ducklord.ApproverApproval) int {
+	for i, d := range approvalDurations {
+		if d.minutes == it.DefaultMinutes && it.DefaultMinutes > 0 {
+			return i
+		}
+	}
+	return -1
 }
 
 // decidable reports the selected approval if it can still be decided here.
@@ -197,7 +216,7 @@ func (a *approvalsState) decidable() (ducklord.ApproverApproval, bool) {
 	case !ok:
 		a.message = "nothing selected"
 	case a.showHistory || it.Status != "pending":
-		a.message = "history is read-only: " + it.Status
+		a.message = "history is read-only: " + oneLine(it.Status)
 		return it, false
 	case a.busy != "":
 		a.message = "a decision is already in flight"
@@ -241,6 +260,11 @@ func (s *tuiState) approvalsHeaderLabel() string {
 	return fmt.Sprintf("  approvals: %d pending", a.pendingCount)
 }
 
+// oneLine sanitizes a server-provided string for a single terminal row.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(sanitizeTerminalText(s)), " ")
+}
+
 func approvalAge(created string) string {
 	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02T15:04:05"} {
 		if t, err := time.Parse(layout, created); err == nil {
@@ -260,18 +284,61 @@ func approvalAge(created string) string {
 }
 
 func approvalRow(it ducklord.ApproverApproval) string {
-	return fmt.Sprintf("%-8s %4s  %s · %s %s %s", it.Status, approvalAge(it.CreatedAt), displayField(it.ClientName), displayField(it.Service),
+	return fmt.Sprintf("%-8s %4s  %s · %s %s %s", oneLine(it.Status), approvalAge(it.CreatedAt), displayField(it.ClientName), displayField(it.Service),
 		displayField(it.Method), displayField(it.Path))
 }
 
-func approvalDetailLines(it ducklord.ApproverApproval, full bool) []string {
+// wrapApprovalField wraps "label value" to width, indenting continuation rows
+// under the value. width <= 0 returns a single row.
+func wrapApprovalField(label, value string, width int) []string {
+	value = oneLine(value)
+	if width <= 0 || utf8.RuneCountInString(label+value) <= width || width <= len(label)+4 {
+		return []string{label + value}
+	}
+	avail := width - len(label)
+	indent := strings.Repeat(" ", len(label))
+	var out []string
+	cur := ""
+	flush := func() { out = append(out, label+cur); label, cur = indent, "" }
+	for _, w := range strings.Fields(value) {
+		for utf8.RuneCountInString(w) > avail { // a word longer than the row
+			if cur != "" {
+				flush()
+			}
+			r := []rune(w)
+			cur, w = string(r[:avail]), string(r[avail:])
+			flush()
+		}
+		switch {
+		case cur == "":
+			cur = w
+		case utf8.RuneCountInString(cur)+1+utf8.RuneCountInString(w) <= avail:
+			cur += " " + w
+		default:
+			flush()
+			cur = w
+		}
+	}
+	if cur != "" {
+		flush()
+	}
+	return out
+}
+
+// approvalDetailLinesWidth renders the detail; in full mode the held reason is
+// wrapped to width rather than cut.
+func approvalDetailLinesWidth(it ducklord.ApproverApproval, full bool, width int) []string {
+	held := []string{"Held:    " + displayField(it.HeldReason)}
+	if full {
+		held = wrapApprovalField("Held:    ", it.HeldReason, width)
+	}
 	lines := []string{
 		"Status:  " + displayField(it.Status),
 		"Client:  " + displayField(it.ClientName),
 		"Service: " + displayField(it.Service),
 		"Request: " + displayField(it.Method) + " " + displayField(it.Path),
-		"Held:    " + displayField(it.HeldReason),
 	}
+	lines = append(lines, held...)
 	if it.DecidedBy != "" {
 		via := ""
 		if it.DecidedVia != "" {
@@ -285,12 +352,12 @@ func approvalDetailLines(it ducklord.ApproverApproval, full bool) []string {
 	if it.Query != "" {
 		lines = append(lines, "Query:   "+displayField(it.Query)+" (redacted)")
 	} else {
-		lines = append(lines, "Query:   (none)")
+		lines = append(lines, "Query:   not recorded")
 	}
 	if it.BodyHash != "" {
 		lines = append(lines, "Body:    sha256 "+displayField(it.BodyHash), "         (approvers see the hash, never the body)")
 	} else {
-		lines = append(lines, "Body:    (none)")
+		lines = append(lines, "Body:    not recorded")
 	}
 	if it.Rule != "" {
 		lines = append(lines, "Rule:    "+displayField(it.Rule))
@@ -300,7 +367,7 @@ func approvalDetailLines(it ducklord.ApproverApproval, full bool) []string {
 		lines = append(lines, "Expires: "+displayField(*it.ExpiresAt))
 	}
 	if it.DefaultMinutes > 0 {
-		lines = append(lines, fmt.Sprintf("Default: approve lasts %d min (Y chooses another)", it.DefaultMinutes))
+		lines = append(lines, fmt.Sprintf("Default: y approves for %d min (Y chooses another)", it.DefaultMinutes))
 	}
 	return lines
 }
@@ -331,7 +398,10 @@ func (s *tuiState) approvalsLines(cols, rows int) []modalRenderLine {
 			modalRenderLine{"", "  2. Run:  ducklord approver login --server https://your-duckway"},
 			modalRenderLine{"", "  3. Press r here, or reopen this panel."})
 		if a.loadErr != "" {
-			lines = append(lines, modalRenderLine{"", ""}, modalRenderLine{modalDanger, "  " + a.loadErr})
+			lines = append(lines, modalRenderLine{"", ""}, modalRenderLine{modalDanger, "  " + oneLine(a.loadErr)})
+		}
+		if a.localWarning != "" {
+			lines = append(lines, modalRenderLine{"", ""}, modalRenderLine{modalDanger, "  " + a.localWarning})
 		}
 		return append(lines, modalRenderLine{"", ""}, modalRenderLine{modalMuted, "  r check again · Esc close"})
 	}
@@ -339,7 +409,7 @@ func (s *tuiState) approvalsLines(cols, rows int) []modalRenderLine {
 	if conn == "" {
 		conn = "connecting"
 	}
-	status := fmt.Sprintf("  %s · live updates: %s", displayField(a.server), conn)
+	status := fmt.Sprintf("  %s · live updates: %s", oneLine(a.server), conn)
 	if a.countKnown {
 		status += fmt.Sprintf(" · %d pending", a.pendingCount)
 	}
@@ -352,7 +422,10 @@ func (s *tuiState) approvalsLines(cols, rows int) []modalRenderLine {
 		if a.messageErr {
 			style = modalDanger
 		}
-		lines = append(lines, modalRenderLine{style, "  " + a.message})
+		lines = append(lines, modalRenderLine{style, "  " + oneLine(a.message)})
+	}
+	if a.localWarning != "" {
+		lines = append(lines, modalRenderLine{modalDanger, "  " + a.localWarning})
 	}
 
 	list := a.visible()
@@ -383,15 +456,29 @@ func (s *tuiState) approvalsLines(cols, rows int) []modalRenderLine {
 	var right []string
 	switch {
 	case a.picker:
+		cur, _ := a.current()
 		if it, ok := a.current(); ok {
 			right = append(right, "Approve for how long?  ("+displayField(it.Method)+" "+displayField(it.Path)+")")
+			if it.DefaultMinutes > 0 && pickerDefaultIndex(it) < 0 {
+				right = append(right, fmt.Sprintf("(server default for y: %d min)", it.DefaultMinutes))
+			}
 		}
 		for i, d := range approvalDurations {
-			right = append(right, choiceLine(i == a.pickerIndex, fmt.Sprintf("%d  %s", i+1, d.label)))
+			label := d.label
+			if cur.DefaultMinutes == d.minutes {
+				label += " (default)"
+			}
+			right = append(right, choiceLine(i == a.pickerIndex, fmt.Sprintf("%d  %s", i+1, label)))
 		}
 	default:
 		if it, ok := a.current(); ok {
-			right = approvalDetailLines(it, a.detail)
+			dw := 0
+			if wide {
+				dw = boxInner - min(58, boxInner/2) - 3
+			} else {
+				dw = boxInner - 2
+			}
+			right = approvalDetailLinesWidth(it, a.detail, dw)
 		}
 	}
 

@@ -79,3 +79,46 @@ func TestApproverLoginRejectsBadTokenWithoutStoring(t *testing.T) {
 		}
 	}
 }
+
+func TestApproverLoginRefusesPlainHTTPForNonLoopbackUnlessInsecure(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	var out bytes.Buffer
+	err := runApproverCommand([]string{"login", "--server", "http://duck.example.com:9", "--config", cfg}, strings.NewReader("dwa_x\n"), &out)
+	if err == nil || !strings.Contains(err.Error(), "--insecure") {
+		t.Fatalf("plain http to a remote host must be refused, got %v", err)
+	}
+	if _, serr := os.Stat(filepath.Join(filepath.Dir(cfg), "approver.json")); !os.IsNotExist(serr) {
+		t.Fatalf("credentials stored after refusal: %v", serr)
+	}
+	// --insecure passes the scheme gate (the unreachable host then fails validation, not the scheme check).
+	err = runApproverCommand([]string{"login", "--server", "http://127.0.0.1:1", "--insecure", "--config", cfg}, strings.NewReader("dwa_x\n"), &out)
+	if err == nil || strings.Contains(err.Error(), "refusing plain http") {
+		t.Fatalf("loopback with --insecure: %v", err)
+	}
+	if err := runApproverCommand([]string{"login", "--server", "http://duck.example.com:9", "--insecure", "--config", cfg}, strings.NewReader("dwa_x\n"), &out); err != nil && strings.Contains(err.Error(), "refusing plain http") {
+		t.Fatalf("--insecure not honoured: %v", err)
+	}
+	if !strings.Contains(out.String(), "plain http") {
+		t.Fatalf("expected the plain-http warning with --insecure:\n%s", out.String())
+	}
+}
+
+func TestApproverLoginWarnsWhenAgentsRunLocally(t *testing.T) {
+	old := localAgentProbe
+	localAgentProbe = func() (string, bool) { return "/x/ducklion.sock", true }
+	t.Cleanup(func() { localAgentProbe = old })
+	srv := approverTestServer(t, "dwa_good")
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	var out bytes.Buffer
+	if err := runApproverCommand([]string{"login", "--server", srv.URL, "--config", cfg}, strings.NewReader("dwa_good\n"), &out); err != nil {
+		t.Fatalf("a warning must not block login: %v", err)
+	}
+	if !strings.Contains(out.String(), "warning: a local ducklion daemon") || strings.Contains(out.String(), "dwa_good") {
+		t.Fatalf("output = %q", out.String())
+	}
+	localAgentProbe = func() (string, bool) { return "", false }
+	out.Reset()
+	if err := runApproverCommand([]string{"login", "--config", cfg}, strings.NewReader("dwa_good\n"), &out); err != nil || strings.Contains(out.String(), "warning") {
+		t.Fatalf("no daemon, no warning: %v %q", err, out.String())
+	}
+}
