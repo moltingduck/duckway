@@ -153,7 +153,7 @@ This part comes after the imp1116 split lands.
 | `id` | INTEGER PK autoincrement. |
 | `created_at` | |
 | `actor` | `admin:<user>`, `approver:<name>`, `discord:<id>`, `telegram:<id>`, `system:<x>` or `anonymous`. |
-| `via` | `web`, `api`, `tui`, `discord`, `telegram` or `system`. Admin console actions are `web` whether they come from a browser page or the console's JSON API (both are signed-in admin sessions, so the client cannot be told apart). |
+| `via` | `web`, `api`, `tui`, `discord`, `telegram`, `sweeper` or `system`. Admin console actions are `web` whether they come from a browser page or the console's JSON API (both are signed-in admin sessions, so the client cannot be told apart). |
 | `remote_addr` | |
 | `action` | For example `placeholder.update`. |
 | `resource_type` | |

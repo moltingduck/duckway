@@ -53,3 +53,7 @@ coverage.out
 
 /admin
 /gateway
+
+# runtime artefacts
+server.pid
+*.pid

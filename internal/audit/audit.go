@@ -32,7 +32,7 @@ import (
 // (or an already-encoded JSON string); they are redacted on the way in.
 type Entry struct {
 	Actor        string // admin:<user>, approver:<name>, discord:<id>, telegram:<id>, system:<x>, anonymous
-	Via          string // web, api, tui, discord, telegram, system
+	Via          string // web, api, tui, discord, telegram, sweeper, system
 	RemoteAddr   string
 	Action       string // e.g. placeholder.update
 	ResourceType string

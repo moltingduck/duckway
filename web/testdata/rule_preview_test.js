@@ -88,6 +88,11 @@ check('token-wide approval over a refused request carries a hint', () => {
   assert.strictEqual(R.rowModel(Object.assign({}, held, { before: { verdict: 'allowed' } })).note, '');
   assert.strictEqual(R.rowModel(Object.assign({}, held, { after: { verdict: 'held', kind: 'rule' } })).note, '');
 });
+check('429 gets the busy message', () => {
+  assert.strictEqual(R.errorText({ status: 429, message: 'x' }), 'Another preview is running. Try again in a moment.');
+  assert.strictEqual(R.errorText(new Error('a preview is already running')), 'Another preview is running. Try again in a moment.');
+  assert.strictEqual(R.errorText(new Error('boom')), 'Could not preview: boom');
+});
 check('simulator links are same-origin token links only', () => {
   assert.strictEqual(R.rowModel(result.items[1]).href, '');
   assert.strictEqual(R.safeHref('https://evil.example/admin/phantom-tokens/x?a=1'), '');
