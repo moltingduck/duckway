@@ -610,12 +610,12 @@ func sameConfig(a, b string) bool {
 	return reflect.DeepEqual(x, y)
 }
 
-// GuardChannelAction wraps an approve/reject callback so it only runs while
+// guardChannelAction wraps an approve/reject callback so it only runs while
 // the channel it came from is still active and its stored config still equals
 // the one the listener started with. The DB is consulted on every call and
 // nothing is cached, so a disabled or edited channel loses the ability to
 // approve immediately, even though its listener runs until the next restart.
-func GuardChannelAction(q *queries.NotificationQueries, channelID, startedConfig string, fn func(string) error) func(string) error {
+func guardChannelAction(q *queries.NotificationQueries, channelID, startedConfig string, fn func(string) error) func(string) error {
 	return func(approvalID string) error {
 		cur, err := q.GetByID(channelID)
 		if err != nil || !cur.IsActive || !sameConfig(cur.Config, startedConfig) {
@@ -625,7 +625,7 @@ func GuardChannelAction(q *queries.NotificationQueries, channelID, startedConfig
 	}
 }
 
-// GuardChannelDecision is GuardChannelAction for decisions that carry the
+// GuardChannelDecision is guardChannelAction for decisions that carry the
 // actor: besides the active/unchanged-config checks it requires the actor to be
 // on the channel's approver list, read from the database on every call. An
 // empty list refuses everyone (ErrNotApprover).

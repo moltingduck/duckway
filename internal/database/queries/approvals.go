@@ -195,13 +195,6 @@ func ApprovalExpiry(d time.Duration) string {
 	return time.Now().UTC().Add(d).Format(ApprovalTimeLayout)
 }
 
-// Approve marks a PENDING approval granted without recording who decided it.
-// Production paths use ApproveBy; this form remains for callers (tests) that
-// do not attribute the decision.
-func (q *ApprovalQueries) Approve(id string, expiresAt string) error {
-	return q.ApproveBy(id, expiresAt, "", "")
-}
-
 // ApproveBy marks a PENDING approval granted until expiresAt (anything already
 // decided is left untouched and ErrApprovalNotPending is returned), a UTC timestamp in
 // ApprovalTimeLayout (see ApprovalExpiry). Anything else is an error: the
@@ -222,12 +215,6 @@ func (q *ApprovalQueries) ApproveBy(id string, expiresAt string, decidedBy, deci
 		return err
 	}
 	return requireOneRow(res)
-}
-
-// Reject marks a PENDING approval rejected without recording who decided it
-// (see RejectBy).
-func (q *ApprovalQueries) Reject(id string) error {
-	return q.RejectBy(id, "", "")
 }
 
 // RejectBy marks a PENDING approval rejected. Anything already decided

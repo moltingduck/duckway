@@ -139,6 +139,7 @@ func NewAdminHandler(
 		notifications: notifications,
 		canary:        canary,
 		auth:          auth,
+		decider:       svc.NewApprovalDecider(approvals),
 	}
 }
 
@@ -425,13 +426,6 @@ func (h *AdminHandler) NotificationsPage(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-func (h *AdminHandler) approvalDecider() *svc.ApprovalDecider {
-	if h.decider == nil {
-		h.decider = svc.NewApprovalDecider(h.approvals)
-	}
-	return h.decider
-}
-
 // WithDecider shares the server's approval decider (decision observers).
 func (h *AdminHandler) WithDecider(d *svc.ApprovalDecider) *AdminHandler {
 	h.decider = d
@@ -440,7 +434,7 @@ func (h *AdminHandler) WithDecider(d *svc.ApprovalDecider) *AdminHandler {
 
 func (h *AdminHandler) ApproveAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := h.approvalDecider().Approve(r.Context(), id, 0, adminActor(r), svc.ViaWeb); err != nil {
+	if err := h.decider.Approve(r.Context(), id, 0, adminActor(r), svc.ViaWeb); err != nil {
 		if errors.Is(err, queries.ErrApprovalNotPending) {
 			http.Redirect(w, r, "/admin/approvals?notice=already-decided", http.StatusSeeOther)
 			return
@@ -452,7 +446,7 @@ func (h *AdminHandler) ApproveAction(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminHandler) RejectAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := h.approvalDecider().Reject(r.Context(), id, adminActor(r), svc.ViaWeb); err != nil {
+	if err := h.decider.Reject(r.Context(), id, adminActor(r), svc.ViaWeb); err != nil {
 		if errors.Is(err, queries.ErrApprovalNotPending) {
 			http.Redirect(w, r, "/admin/approvals?notice=already-decided", http.StatusSeeOther)
 			return

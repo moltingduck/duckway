@@ -28,7 +28,7 @@ func TestApproveStoresGoComputedUTCExpiry(t *testing.T) {
 	if _, err := db.Exec(`UPDATE approvals SET scope='rule:POST /x' WHERE id='scoped'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Approve("future", ApprovalExpiry(time.Hour)); err != nil {
+	if err := q.ApproveBy("future", ApprovalExpiry(time.Hour), "test", "web"); err != nil {
 		t.Fatal(err)
 	}
 	var exp string
@@ -38,10 +38,10 @@ func TestApproveStoresGoComputedUTCExpiry(t *testing.T) {
 	if got, err := q.GetValidApproval("p"); err != nil || got.ID != "future" {
 		t.Fatalf("valid approval: %v %v", got, err)
 	}
-	if err := q.Approve("past", "2000-01-01 00:00:00"); err != nil {
+	if err := q.ApproveBy("past", "2000-01-01 00:00:00", "test", "web"); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Approve("scoped", ApprovalExpiry(time.Hour)); err != nil {
+	if err := q.ApproveBy("scoped", ApprovalExpiry(time.Hour), "test", "web"); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := q.GetValidScopedApproval("p", "rule:POST /x"); err != nil || got.ID != "scoped" {
@@ -56,7 +56,7 @@ func TestApproveStoresGoComputedUTCExpiry(t *testing.T) {
 	// Anything that is not a UTC timestamp is an error (no SQL expressions, no
 	// relative strings, no other layouts) and changes nothing.
 	for _, bad := range []string{"datetime('now', '+60 minutes')", "datetime('now', '+1 minutes'); DROP TABLE approvals", "", "2099-01-01", "2099-01-01T00:00:00Z", "tomorrow"} {
-		if err := q.Approve("future", bad); err == nil {
+		if err := q.ApproveBy("future", bad, "test", "web"); err == nil {
 			t.Errorf("Approve(%q) must be rejected", bad)
 		}
 	}
@@ -108,20 +108,20 @@ func TestDecidedApprovalsCannotBeChanged(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := q.Reject("rejected"); err != nil {
+	if err := q.RejectBy("rejected", "test", "web"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`UPDATE approvals SET status = 'ignored' WHERE id = 'ignored'`); err != nil {
 		t.Fatal(err)
 	}
 	first := "2030-01-01 00:00:00"
-	if err := q.Approve("approved", first); err != nil {
+	if err := q.ApproveBy("approved", first, "test", "web"); err != nil {
 		t.Fatal(err)
 	}
 
 	// Approving a rejected / ignored approval fails and changes nothing.
 	for _, id := range []string{"rejected", "ignored"} {
-		if err := q.Approve(id, "2031-01-01 00:00:00"); !errors.Is(err, ErrApprovalNotPending) {
+		if err := q.ApproveBy(id, "2031-01-01 00:00:00", "test", "web"); !errors.Is(err, ErrApprovalNotPending) {
 			t.Errorf("approve %s: err=%v, want ErrApprovalNotPending", id, err)
 		}
 		if st, exp := statusAndExpiry(t, db, id); st == "approved" || exp != "" {
@@ -129,28 +129,28 @@ func TestDecidedApprovalsCannotBeChanged(t *testing.T) {
 		}
 	}
 	// Re-approving does not move expires_at.
-	if err := q.Approve("approved", "2099-01-01 00:00:00"); !errors.Is(err, ErrApprovalNotPending) {
+	if err := q.ApproveBy("approved", "2099-01-01 00:00:00", "test", "web"); !errors.Is(err, ErrApprovalNotPending) {
 		t.Errorf("re-approve: err=%v", err)
 	}
 	if st, exp := statusAndExpiry(t, db, "approved"); st != "approved" || exp != first {
 		t.Errorf("expiry extended: status=%q expires=%q, want %q", st, exp, first)
 	}
 	// Rejecting an approved approval fails and keeps it approved.
-	if err := q.Reject("approved"); !errors.Is(err, ErrApprovalNotPending) {
+	if err := q.RejectBy("approved", "test", "web"); !errors.Is(err, ErrApprovalNotPending) {
 		t.Errorf("reject approved: err=%v", err)
 	}
 	if st, _ := statusAndExpiry(t, db, "approved"); st != "approved" {
 		t.Errorf("approved approval was overturned: %q", st)
 	}
 	// Rejecting twice, and an unknown id, are also "not pending".
-	if err := q.Reject("rejected"); !errors.Is(err, ErrApprovalNotPending) {
+	if err := q.RejectBy("rejected", "test", "web"); !errors.Is(err, ErrApprovalNotPending) {
 		t.Errorf("re-reject: %v", err)
 	}
-	if err := q.Approve("nope", first); !errors.Is(err, ErrApprovalNotPending) {
+	if err := q.ApproveBy("nope", first, "test", "web"); !errors.Is(err, ErrApprovalNotPending) {
 		t.Errorf("unknown id: %v", err)
 	}
 	// A pending approval still works.
-	if err := q.Approve("pending", first); err != nil {
+	if err := q.ApproveBy("pending", first, "test", "web"); err != nil {
 		t.Errorf("pending approve: %v", err)
 	}
 }

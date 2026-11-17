@@ -59,14 +59,14 @@ func telegramAPIBase() string {
 	return "https://api.telegram.org"
 }
 
+// decideAs applies a decision through the wired DecisionFunc only. With none
+// wired it fails closed: the plain onApprove/onReject callbacks carry no actor
+// and would bypass the approver allowlist.
 func (p *TelegramPoller) decideAs(approvalID string, approve bool, minutes int, actor ChatActor) error {
-	if p.decide != nil {
-		return p.decide(approvalID, approve, minutes, actor)
+	if p.decide == nil {
+		return ErrChannelNotAuthoritative
 	}
-	if approve {
-		return p.onApprove(approvalID)
-	}
-	return p.onReject(approvalID)
+	return p.decide(approvalID, approve, minutes, actor)
 }
 
 func (p *TelegramPoller) Start() {

@@ -85,7 +85,7 @@ func TestProxyApproveRuleHoldsUntilApproved(t *testing.T) {
 	}
 
 	// Approval (with a relative TTL) releases exactly that request.
-	if err := rig.f.approvalQ.Approve(id, queries.ApprovalExpiry(time.Hour)); err != nil {
+	if err := rig.f.approvalQ.ApproveBy(id, queries.ApprovalExpiry(time.Hour), "test", "web"); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := rig.do("POST", "/v1/messages"); code != http.StatusOK {
@@ -105,7 +105,7 @@ func TestProxyApproveRuleApprovalIsScopedToRequest(t *testing.T) {
 		{"method":"POST","path":"/v1/a","approve":true},{"method":"DELETE","path":"/v1/a","approve":true},{"method":"POST","path":"/v1/b","approve":true}]}]}`
 	rig := newApproveRig(t, acl)
 	_, resp := rig.do("POST", "/v1/a")
-	if err := rig.f.approvalQ.Approve(resp["approval_id"], queries.ApprovalExpiry(time.Hour)); err != nil {
+	if err := rig.f.approvalQ.ApproveBy(resp["approval_id"], queries.ApprovalExpiry(time.Hour), "test", "web"); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := rig.do("POST", "/v1/a"); code != http.StatusOK {
@@ -125,7 +125,7 @@ func TestProxyApproveRuleApprovalIsScopedToRequest(t *testing.T) {
 func TestProxyApproveRuleRejectedAndExpiredAreNotForwarded(t *testing.T) {
 	rig := newApproveRig(t, approvePostsACL)
 	_, resp := rig.do("POST", "/v1/messages")
-	if err := rig.f.approvalQ.Reject(resp["approval_id"]); err != nil {
+	if err := rig.f.approvalQ.RejectBy(resp["approval_id"], "test", "web"); err != nil {
 		t.Fatal(err)
 	}
 	code, again := rig.do("POST", "/v1/messages")
@@ -133,7 +133,7 @@ func TestProxyApproveRuleRejectedAndExpiredAreNotForwarded(t *testing.T) {
 		t.Fatalf("rejected request must be held again under a new approval: %d %v", code, again)
 	}
 	// An approval whose TTL has run out no longer releases the request.
-	if err := rig.f.approvalQ.Approve(again["approval_id"], "2000-01-01 00:00:00"); err != nil {
+	if err := rig.f.approvalQ.ApproveBy(again["approval_id"], "2000-01-01 00:00:00", "test", "web"); err != nil {
 		t.Fatal(err)
 	}
 	if code, r := rig.do("POST", "/v1/messages"); code != http.StatusForbidden || r["error"] != "duckway_approval_pending" {

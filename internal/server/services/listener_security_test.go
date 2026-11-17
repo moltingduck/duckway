@@ -55,7 +55,7 @@ func TestGuardChannelActionChecksDBAtCallTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	g := GuardChannelAction(q, "ch1", cfg, func(string) error { calls++; return nil })
+	g := guardChannelAction(q, "ch1", cfg, func(string) error { calls++; return nil })
 	if err := g("a1"); err != nil || calls != 1 {
 		t.Fatalf("active+matching must run: err=%v calls=%d", err, calls)
 	}
@@ -95,7 +95,7 @@ func TestGuardChannelActionComparesCanonicalJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	g := GuardChannelAction(q, "ch1", started, func(string) error { calls++; return nil })
+	g := guardChannelAction(q, "ch1", started, func(string) error { calls++; return nil })
 	// Formatting-only change (whitespace, key order): still the same config.
 	if err := q.UpdateFull("ch1", "n", "{ \"chat_id\": \"1\",\n  \"bot_token\": \"t\" }"); err != nil {
 		t.Fatal(err)
@@ -177,7 +177,7 @@ func TestMdSafeNeutralisesBackticksInPlainFields(t *testing.T) {
 func TestTelegramCallbackAlreadyDecidedAnswersOnce(t *testing.T) {
 	var answers []string
 	var edits int
-	p := NewTelegramPoller("1:x", "2", func(string) error { return queries.ErrApprovalNotPending }, func(string) error { return queries.ErrApprovalNotPending })
+	p := NewTelegramPoller("1:x", "2", nil, nil).WithDecider(func(string, bool, int, ChatActor) error { return queries.ErrApprovalNotPending })
 	p.client = &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
 		b, _ := io.ReadAll(r.Body)
 		if strings.Contains(r.URL.Path, "answerCallbackQuery") {
@@ -203,5 +203,23 @@ func TestDecisionFailureText(t *testing.T) {
 	}
 	if !strings.HasPrefix(decisionFailure(errors.New("disk")), "Failed:") {
 		t.Fatal("other errors keep their text")
+	}
+}
+
+// With no DecisionFunc wired, decisions fail closed: the actor-less callbacks
+// must never run (they would bypass the approver allowlist).
+func TestChatGatewaysFailClosedWithoutDecider(t *testing.T) {
+	called := false
+	cb := func(string) error { called = true; return nil }
+	g := NewDiscordGateway("t", "c", cb, cb)
+	if err := g.decideAs("a1", true, 0, ChatActor{Kind: "discord", UserID: "1"}); !errors.Is(err, ErrChannelNotAuthoritative) {
+		t.Fatalf("discord: %v", err)
+	}
+	p := NewTelegramPoller("1:x", "2", cb, cb)
+	if err := p.decideAs("a1", false, 0, ChatActor{Kind: "telegram", UserID: "1"}); !errors.Is(err, ErrChannelNotAuthoritative) {
+		t.Fatalf("telegram: %v", err)
+	}
+	if called {
+		t.Fatal("actor-less callback ran")
 	}
 }

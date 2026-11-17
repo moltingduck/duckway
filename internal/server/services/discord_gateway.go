@@ -129,16 +129,14 @@ func discordAPIBase() string {
 	return "https://discord.com/api/v10"
 }
 
-// decideAs applies a decision, falling back to the plain callbacks when no
-// DecisionFunc is configured.
+// decideAs applies a decision through the wired DecisionFunc only. With none
+// wired it fails closed: the plain onApprove/onReject callbacks carry no actor
+// and would bypass the approver allowlist.
 func (g *DiscordGateway) decideAs(approvalID string, approve bool, minutes int, actor ChatActor) error {
-	if g.decide != nil {
-		return g.decide(approvalID, approve, minutes, actor)
+	if g.decide == nil {
+		return ErrChannelNotAuthoritative
 	}
-	if approve {
-		return g.onApprove(approvalID)
-	}
-	return g.onReject(approvalID)
+	return g.decide(approvalID, approve, minutes, actor)
 }
 
 // Message component custom IDs on held-request messages.

@@ -389,7 +389,7 @@ func TestKeyResolver_Resolve_ApprovalGranted(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 	// Approve with a far-future expiry.
-	if err := f.approvals.Approve("appr-1", "2099-01-01 00:00:00"); err != nil {
+	if err := f.approvals.ApproveBy("appr-1", "2099-01-01 00:00:00", "test", "web"); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 
