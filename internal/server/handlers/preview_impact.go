@@ -577,9 +577,16 @@ func (p *ImpactPreview) evalCandidate(ctx context.Context, t *previewTarget, sd 
 	layers := []proxyACLLayer{{queries.LayerService, s.DefaultACL}, {queries.LayerAPIKey, cand.ACL}, {queries.LayerPlaceholder, sd.tokenConfig}}
 	aclMethod, aclPath := proxyACLRequest(g.Method, g.Path, "")
 	if strings.EqualFold(g.Method, http.MethodGet) && strings.HasSuffix(g.Path, ".git/info/refs") {
-		// The query (service=git-upload-pack or git-receive-pack) is not logged, so
-		// the verdict is unknown unless the ACL layers refuse it whatever it says.
-		return p.aclOnly(g, layers, ReasonQuery)
+		// The query is not logged. The proxy rewrites GET .../info/refs?service=X to
+		// POST .../git-X before the ACL check (proxyACLRequest), so evaluate both
+		// forms it maps to: refused only when each is refused, otherwise unknown.
+		base := strings.TrimSuffix(g.Path, ".git/info/refs")
+		first := p.aclOnlyAt(http.MethodPost, base+".git/git-upload-pack", layers, ReasonQuery)
+		second := p.aclOnlyAt(http.MethodPost, base+".git/git-receive-pack", layers, ReasonQuery)
+		if first.Unknown == "" && second.Unknown == "" {
+			return first
+		}
+		return sideResult{Unknown: ReasonQuery}
 	}
 	if requestBodyRequiredForProxyACL(layers, aclMethod, aclPath) {
 		return sideResult{Unknown: ReasonBodyConstraints}
@@ -618,8 +625,12 @@ func pushCommands(refs []queries.DenyRef) []receivePackCommand {
 // lacks): a refusal there is known whatever the body says, anything else is
 // unknown for reason. With no service name decide stops after the layers.
 func (p *ImpactPreview) aclOnly(g queries.ReplayGroup, layers []proxyACLLayer, reason string) sideResult {
+	return p.aclOnlyAt(g.Method, g.Path, layers, reason)
+}
+
+func (p *ImpactPreview) aclOnlyAt(method, path string, layers []proxyACLLayer, reason string) sideResult {
 	st := &gatewayState{in: gatewayInput{
-		Method: g.Method, Path: g.Path, Layers: layers, Check: dryACLCheck(p.sim.pc), Body: gatewayBody{InHand: true},
+		Method: method, Path: path, Layers: layers, Check: dryACLCheck(p.sim.pc), Body: gatewayBody{InHand: true},
 	}}
 	if d := st.decide(); d != nil && d.Verdict == GatewayRefused {
 		return fromDecision(d)

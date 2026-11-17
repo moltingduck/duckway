@@ -190,7 +190,7 @@ func TestTelegramCallbackAlreadyDecidedAnswersOnce(t *testing.T) {
 	})}
 	for _, data := range []string{"approve:a1", "reject:a1"} {
 		answers, edits = nil, 0
-		p.handleCallback(&tgCallbackQuery{ID: "cb1", Data: data})
+		p.handleCallback(tgCB("cb1", data, 2))
 		if len(answers) != 1 || !strings.Contains(answers[0], "Already decided") || edits != 0 {
 			t.Fatalf("%s: answers=%v edits=%d", data, answers, edits)
 		}

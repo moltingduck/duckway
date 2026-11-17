@@ -707,8 +707,25 @@ func TestTelegramAlreadyDecidedNamesDecider(t *testing.T) {
 		}
 		return okJSON(`{}`), nil
 	})}
-	p.handleCallback(&tgCallbackQuery{ID: "cb1", Data: "approve:a1"})
+	p.handleCallback(tgCB("cb1", "approve:a1", 2))
 	if len(answers) != 1 || !strings.Contains(answers[0], "Already decided (approved) by admin:alice") {
 		t.Fatalf("answers: %v", answers)
+	}
+}
+
+func tgCB(id, data string, chat int64) *tgCallbackQuery {
+	cb := &tgCallbackQuery{ID: id, Data: data}
+	cb.Message.MessageID, cb.Message.Chat.ID = 5, chat
+	return cb
+}
+
+// A button pressed in any other chat is ignored: no answer, no decision.
+func TestTelegramCallbackFromOtherChatIsIgnored(t *testing.T) {
+	p, fh, calls := newFakeTelegram(t, func(decisionCall) error { return nil })
+	cb := tgCallback("approve:ap1", 4242)
+	cb.Message.Chat.ID = 999 // the poller is configured for chat "2"
+	p.handleCallback(cb)
+	if len(*calls) != 0 || len(fh.paths()) != 0 {
+		t.Fatalf("decisions=%v requests=%v", *calls, fh.paths())
 	}
 }

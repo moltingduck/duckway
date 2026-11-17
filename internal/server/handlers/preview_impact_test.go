@@ -455,25 +455,29 @@ func TestPreviewDefaultBranchLookupFailureIsUnknown(t *testing.T) {
 	}
 }
 
-// A git discovery request refused by the ACL layers whatever its query says has
-// a known verdict; only an ACL-allowed one is unknown (the query is not logged).
-func TestPreviewInfoRefsKnownWhenACLRefusesRegardlessOfQuery(t *testing.T) {
-	rig := newApproveRig(t, pvCurrent)
+// A git discovery request is evaluated as the proxy does: GET .../info/refs?service=X
+// is checked as POST .../git-X. The query is not logged, so both forms are
+// checked: refused only when both are refused, otherwise unknown.
+func TestPreviewInfoRefsEvaluatesBothMappedForms(t *testing.T) {
+	cfg := `{"version":"1","provider":"anthropic","rules":[{"name":"r","deny_all_other":true,"endpoints":[
+	  {"method":"POST","path":"/v1/repo.git/git-upload-pack","allow":true},
+	  {"method":"GET","path":"/v1/*","allow":true}]}]}`
+	rig := newApproveRig(t, cfg)
 	f := rig.f
 	seedLogRow(t, f, f.placeholderID, "anthropic", "GET", "/other/repo.git/info/refs", "acl_denied", 3, "")
 	seedLogRow(t, f, f.placeholderID, "anthropic", "GET", "/v1/repo.git/info/refs", "allowed", 1, "")
 	p := newPreviewFor(f, newSimFor(f))
-	code, r := previewDo(t, p.Token, f.placeholderID, map[string]interface{}{"permission_config": pvDraft})
+	code, r := previewDo(t, p.Token, f.placeholderID, map[string]interface{}{"permission_config": cfg})
 	if code != 200 {
 		t.Fatalf("%d %s", code, r.Error)
 	}
 	refused := r.item("/other/repo.git/info/refs")
 	if refused == nil || refused.Bucket != "unchanged" || refused.Before.Verdict != "refused" || refused.After.Verdict != "refused" {
-		t.Fatalf("refused discovery must be a known verdict, not unknown: %+v", refused)
+		t.Fatalf("both mapped forms refused must be a known verdict: %+v", refused)
 	}
-	allowed := r.item("/v1/repo.git/info/refs")
-	if allowed == nil || allowed.Bucket != "unknown" || allowed.ReasonCode != "query_not_logged" {
-		t.Fatalf("allowed discovery stays unknown: %+v", allowed)
+	mixed := r.item("/v1/repo.git/info/refs")
+	if mixed == nil || mixed.Bucket != "unknown" || mixed.ReasonCode != "query_not_logged" {
+		t.Fatalf("upload-pack allowed, receive-pack refused must be unknown: %+v", mixed)
 	}
 }
 
