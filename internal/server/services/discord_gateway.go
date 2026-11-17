@@ -726,7 +726,7 @@ func (g *DiscordGateway) discordDo(method, url string, body *strings.Reader, con
 	for attempt := 0; attempt < 2; attempt++ {
 		var rd io.Reader
 		if body != nil {
-			body.Seek(0, io.SeekStart)
+			_, _ = body.Seek(0, io.SeekStart)
 			rd = body
 		}
 		req, err := http.NewRequest(method, url, rd)

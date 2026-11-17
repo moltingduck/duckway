@@ -375,7 +375,7 @@ func (n *Notifier) removeTelegramRef(approvalID, chatID string, msgID int64) {
 	n.tgMessages.Update(approvalID, func(old []tgMessageRef, _ bool) []tgMessageRef {
 		var keep []tgMessageRef
 		for _, r := range old {
-			if !(r.chatID == chatID && r.msgID == msgID) {
+			if r.chatID != chatID || r.msgID != msgID {
 				keep = append(keep, r)
 			}
 		}

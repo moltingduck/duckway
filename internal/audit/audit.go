@@ -282,6 +282,10 @@ func SetSecretNamer(f func(string) bool) { secretNamer.Store(&f) }
 // deliberately small and over-inclusive.
 func fallbackSecret(name string) bool {
 	n := strings.ToLower(name)
+	switch n {
+	case "token_endpoint", "token_type", "tokens_remaining", "tokens_limit", "has_token":
+		return false // provider metadata that merely contains "token"
+	}
 	if n == "key" || n == "keys" || strings.HasSuffix(n, "_key") || strings.HasSuffix(n, "-key") {
 		return true
 	}
