@@ -10,7 +10,24 @@ import (
 	"github.com/hackerduck/duckway/internal/database/queries"
 )
 
-func init() { audit.SetSecretNamer(isSecretFieldName) }
+func init() { audit.SetSecretNamer(isAuditSecretField) }
+
+// auditSecretWords are stored-credential markers the console never renders
+// (ciphertext, digests) but which snapshots carry; they extend isSecretFieldName,
+// the single source of field-name rules.
+var auditSecretWords = map[string]bool{"encrypted": true, "hash": true, "webhook": true, "salt": true}
+
+func isAuditSecretField(name string) bool {
+	if isSecretFieldName(name) {
+		return true
+	}
+	for _, w := range nameWords(name) {
+		if auditSecretWords[w] {
+			return true
+		}
+	}
+	return false
+}
 
 // AuditSnapshots reads the rule- and access-bearing resources for the audit
 // log's before/after JSON. Values are raw only where the audit recorder will

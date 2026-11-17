@@ -273,21 +273,19 @@ func (r *Recorder) RecordSignIn(ctx context.Context, username string, ok bool, r
 
 var secretNamer atomic.Pointer[func(string) bool]
 
-// SetSecretNamer plugs in the console's field-name redaction rules (handlers
-// owns them). Names it flags are treated as secret in addition to the built-in list.
+// SetSecretNamer installs the console's field-name redaction rules (the
+// handlers package owns them and is the single source of truth). Once set, the
+// namer alone decides; identifiers (id, *_id) are always visible.
 func SetSecretNamer(f func(string) bool) { secretNamer.Store(&f) }
 
-var visibleNames = map[string]bool{"token_endpoint": true, "token_type": true, "tokens_remaining": true, "tokens_limit": true, "has_token": true}
-
-func builtinSecret(name string) bool {
+// fallbackSecret is the fail-closed rule used only while no namer is installed:
+// deliberately small and over-inclusive.
+func fallbackSecret(name string) bool {
 	n := strings.ToLower(name)
-	if visibleNames[n] {
-		return false
-	}
 	if n == "key" || n == "keys" || strings.HasSuffix(n, "_key") || strings.HasSuffix(n, "-key") {
 		return true
 	}
-	for _, w := range []string{"secret", "password", "passwd", "token", "webhook", "authorization", "credential", "private_key", "api_key", "apikey", "encrypted", "hash", "cookie", "bot_token", "passphrase"} {
+	for _, w := range []string{"secret", "password", "token", "credential", "authorization", "cookie", "hash", "encrypted", "webhook"} {
 		if strings.Contains(n, w) {
 			return true
 		}
@@ -299,13 +297,10 @@ func isSecret(name string) bool {
 	if n := strings.ToLower(name); n == "id" || strings.HasSuffix(n, "_id") || strings.HasSuffix(n, "-id") {
 		return false // identifiers (api_key_id, client_id) name a secret's owner, not the secret
 	}
-	if builtinSecret(name) {
-		return true
-	}
 	if f := secretNamer.Load(); f != nil {
 		return (*f)(name)
 	}
-	return false
+	return fallbackSecret(name)
 }
 
 // Masks stored in place of secret values.
